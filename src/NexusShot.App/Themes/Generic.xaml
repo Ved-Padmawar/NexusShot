@@ -17,5 +17,6 @@
 
     <Style BasedOn="{StaticResource ToolTileStyle}" TargetType="controls:ToolTile" />
     <Style BasedOn="{StaticResource ColorSwatchStyle}" TargetType="controls:ColorSwatch" />
+    <Style BasedOn="{StaticResource HexColorPickerStyle}" TargetType="controls:HexColorPicker" />
 
 </ResourceDictionary>

@@ -75,6 +75,232 @@
         </Setter>
     </Style>
 
+    <!--  Compact numeric/hex field. The stock TextBox template pads its content box asymmetrically
+          (10,6,6,5), which floats short text off-centre; this retemplates with even padding.  -->
+    <Style x:Key="ChannelBoxStyle" TargetType="TextBox">
+        <Setter Property="Height" Value="30" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontFamily" Value="Consolas, Cascadia Mono, monospace" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeCaption}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceRaised}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource StrokeDefault}" />
+        <Setter Property="SelectionHighlightColor" Value="{ThemeResource Accent}" />
+        <Setter Property="CornerRadius" Value="{StaticResource RadiusControl}" />
+        <!--  TextBox renders its text inside the ContentElement ScrollViewer, which ignores
+              HorizontalContentAlignment. TextAlignment is the only thing that centres it across;
+              vertically, the ScrollViewer must size to its text and centre itself in the box.  -->
+        <Setter Property="TextAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Grid>
+                        <Border
+                            x:Name="Root"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}" />
+                        <ScrollViewer
+                            x:Name="ContentElement"
+                            Margin="4,0"
+                            Padding="0"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Center"
+                            AutomationProperties.AccessibilityView="Raw"
+                            HorizontalScrollBarVisibility="Hidden"
+                            IsTabStop="False"
+                            VerticalScrollBarVisibility="Hidden"
+                            ZoomMode="Disabled" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource StrokeStrong}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Focused">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource Accent}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.5" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="ChannelLabelStyle" TargetType="TextBlock">
+        <Setter Property="Margin" Value="0,3,0,0" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="FontSize" Value="9" />
+        <Setter Property="Foreground" Value="{ThemeResource TextTertiary}" />
+    </Style>
+
+    <!--  Hex-first picker: saturation/value field, hue rail, preview, hex + R/G/B boxes.  -->
+    <Style x:Key="HexColorPickerStyle" TargetType="controls:HexColorPicker">
+        <Setter Property="Width" Value="260" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:HexColorPicker">
+                    <StackPanel Spacing="10">
+                        <!--  Saturation across, value down: white-to-hue wash, then a black wash.  -->
+                        <Grid
+                            Height="140"
+                            CornerRadius="{StaticResource RadiusControl}">
+                            <Canvas x:Name="PART_Spectrum" Background="Transparent">
+                                <Rectangle
+                                    x:Name="PART_SpectrumHue"
+                                    Width="260"
+                                    Height="140" />
+                                <Rectangle Width="260" Height="140">
+                                    <Rectangle.Fill>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                            <GradientStop Offset="0" Color="#FFFFFFFF" />
+                                            <GradientStop Offset="1" Color="#00FFFFFF" />
+                                        </LinearGradientBrush>
+                                    </Rectangle.Fill>
+                                </Rectangle>
+                                <Rectangle Width="260" Height="140">
+                                    <Rectangle.Fill>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                            <GradientStop Offset="0" Color="#00000000" />
+                                            <GradientStop Offset="1" Color="#FF000000" />
+                                        </LinearGradientBrush>
+                                    </Rectangle.Fill>
+                                </Rectangle>
+                                <!--  Double ring: white core, dark outer, so the thumb holds over any hue.  -->
+                                <Grid
+                                    x:Name="PART_SpectrumThumb"
+                                    Width="14"
+                                    Height="14"
+                                    IsHitTestVisible="False">
+                                    <Ellipse Stroke="#66000000" StrokeThickness="3" />
+                                    <Ellipse Stroke="#FFFFFFFF" StrokeThickness="2" />
+                                </Grid>
+                            </Canvas>
+                            <Rectangle
+                                RadiusX="6"
+                                RadiusY="6"
+                                Stroke="{ThemeResource StrokeDefault}"
+                                StrokeThickness="1"
+                                IsHitTestVisible="False" />
+                        </Grid>
+
+                        <Canvas
+                            x:Name="PART_HueRail"
+                            Height="14"
+                            Background="Transparent">
+                            <Rectangle
+                                Width="260"
+                                Height="14"
+                                RadiusX="7"
+                                RadiusY="7">
+                                <Rectangle.Fill>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                        <GradientStop Offset="0" Color="#FF0000" />
+                                        <GradientStop Offset="0.166" Color="#FFFF00" />
+                                        <GradientStop Offset="0.333" Color="#00FF00" />
+                                        <GradientStop Offset="0.5" Color="#00FFFF" />
+                                        <GradientStop Offset="0.666" Color="#0000FF" />
+                                        <GradientStop Offset="0.833" Color="#FF00FF" />
+                                        <GradientStop Offset="1" Color="#FF0000" />
+                                    </LinearGradientBrush>
+                                </Rectangle.Fill>
+                            </Rectangle>
+                            <Grid
+                                x:Name="PART_HueThumb"
+                                Width="14"
+                                Height="14"
+                                IsHitTestVisible="False">
+                                <Ellipse Stroke="#66000000" StrokeThickness="3" />
+                                <Ellipse Stroke="#FFFFFFFF" StrokeThickness="2" />
+                            </Grid>
+                        </Canvas>
+
+                        <!--  Hex is the primary field; R/G/B edit the same colour channel-wise.  -->
+                        <Grid ColumnSpacing="6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="34" />
+                                <ColumnDefinition Width="34" />
+                                <ColumnDefinition Width="34" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Border
+                                Grid.RowSpan="2"
+                                Width="30"
+                                Height="30"
+                                VerticalAlignment="Top"
+                                CornerRadius="{StaticResource RadiusControl}"
+                                BorderBrush="{ThemeResource StrokeDefault}"
+                                BorderThickness="1">
+                                <Rectangle x:Name="PART_Preview" RadiusX="5" RadiusY="5" />
+                            </Border>
+
+                            <TextBox
+                                x:Name="PART_HexBox"
+                                Grid.Column="1"
+                                MaxLength="7"
+                                Style="{StaticResource ChannelBoxStyle}"
+                                Text="#FF3B30" />
+                            <TextBox
+                                x:Name="PART_RBox"
+                                Grid.Column="2"
+                                MaxLength="3"
+                                Style="{StaticResource ChannelBoxStyle}" />
+                            <TextBox
+                                x:Name="PART_GBox"
+                                Grid.Column="3"
+                                MaxLength="3"
+                                Style="{StaticResource ChannelBoxStyle}" />
+                            <TextBox
+                                x:Name="PART_BBox"
+                                Grid.Column="4"
+                                MaxLength="3"
+                                Style="{StaticResource ChannelBoxStyle}" />
+
+                            <TextBlock
+                                Grid.Row="1"
+                                Grid.Column="1"
+                                Style="{StaticResource ChannelLabelStyle}"
+                                Text="HEX" />
+                            <TextBlock
+                                Grid.Row="1"
+                                Grid.Column="2"
+                                Style="{StaticResource ChannelLabelStyle}"
+                                Text="R" />
+                            <TextBlock
+                                Grid.Row="1"
+                                Grid.Column="3"
+                                Style="{StaticResource ChannelLabelStyle}"
+                                Text="G" />
+                            <TextBlock
+                                Grid.Row="1"
+                                Grid.Column="4"
+                                Style="{StaticResource ChannelLabelStyle}"
+                                Text="B" />
+                        </Grid>
+                    </StackPanel>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!--
         Colour swatch. The dot is the whole control; selection is a ring drawn outside the dot,
         which is why the control is 26px for a 16px dot. Nothing reserves an indicator column.
@@ -159,6 +385,60 @@
                             RadiusY="6" />
                         <ContentPresenter
                             x:Name="Presenter"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Content="{TemplateBinding Content}"
+                            Foreground="{TemplateBinding Foreground}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextPrimary}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                        <Setter Target="Fill.Fill" Value="{ThemeResource FillPressed}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextTertiary}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--  Toolbar button that sizes to its content: the colour chip plus its hex readout. Same
+          hover/pressed language as IconButtonStyle, which is locked to a 32x32 square.  -->
+    <Style x:Key="ChipButtonStyle" TargetType="Button">
+        <Setter Property="Height" Value="30" />
+        <Setter Property="Padding" Value="6,0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="{StaticResource RadiusControl}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid Background="Transparent" CornerRadius="{TemplateBinding CornerRadius}">
+                        <Rectangle
+                            x:Name="Fill"
+                            Fill="{ThemeResource FillHover}"
+                            Opacity="0"
+                            RadiusX="6"
+                            RadiusY="6" />
+                        <ContentPresenter
+                            x:Name="Presenter"
+                            Padding="{TemplateBinding Padding}"
                             HorizontalAlignment="Center"
                             VerticalAlignment="Center"
                             Content="{TemplateBinding Content}"

@@ -119,47 +119,54 @@
                         VerticalAlignment="Center"
                         Orientation="Horizontal"
                         Spacing="2" />
+                    <!--  The chip is the live colour and the hex is its readout, so the button
+                          states the current colour instead of merely advertising that colours exist.  -->
                     <Button
-                        Width="30"
-                        Height="30"
-                        Padding="6"
-                        Style="{StaticResource IconButtonStyle}"
+                        Style="{StaticResource ChipButtonStyle}"
                         ToolTipService.ToolTip="Choose custom color">
-                        <Grid Width="19" Height="19">
-                            <Rectangle RadiusX="4" RadiusY="4">
-                                <Rectangle.Fill>
-                                    <LinearGradientBrush StartPoint="0,1" EndPoint="1,0">
-                                        <GradientStop Offset="0" Color="#FF3B30" />
-                                        <GradientStop Offset="0.25" Color="#FFCC00" />
-                                        <GradientStop Offset="0.5" Color="#34C759" />
-                                        <GradientStop Offset="0.75" Color="#0A84FF" />
-                                        <GradientStop Offset="1" Color="#AF52DE" />
-                                    </LinearGradientBrush>
-                                </Rectangle.Fill>
-                            </Rectangle>
-                            <Ellipse
-                                x:Name="CurrentColorPreview"
-                                Width="8"
-                                Height="8"
-                                HorizontalAlignment="Right"
-                                VerticalAlignment="Bottom"
-                                Fill="#FF3B30"
-                                Stroke="{ThemeResource SurfaceRaised}"
-                                StrokeThickness="2" />
-                        </Grid>
+                        <StackPanel
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            Spacing="7">
+                            <Border
+                                Width="16"
+                                Height="16"
+                                CornerRadius="4"
+                                BorderBrush="{ThemeResource StrokeStrong}"
+                                BorderThickness="1">
+                                <Rectangle
+                                    x:Name="CurrentColorPreview"
+                                    Fill="#FF3B30"
+                                    RadiusX="3"
+                                    RadiusY="3" />
+                            </Border>
+                            <TextBlock
+                                x:Name="CurrentColorHex"
+                                VerticalAlignment="Center"
+                                FontFamily="Consolas, Cascadia Mono, monospace"
+                                FontSize="{StaticResource FontSizeCaption}"
+                                Foreground="{ThemeResource TextSecondary}"
+                                Text="#FF3B30" />
+                            <FontIcon
+                                VerticalAlignment="Center"
+                                FontSize="8"
+                                Foreground="{ThemeResource TextTertiary}"
+                                Glyph="&#xE70D;" />
+                        </StackPanel>
                         <Button.Flyout>
                             <Flyout Opening="ColorFlyout_Opening">
-                                <ColorPicker
+                                <Flyout.FlyoutPresenterStyle>
+                                    <Style TargetType="FlyoutPresenter">
+                                        <Setter Property="Padding" Value="12" />
+                                        <Setter Property="Background" Value="{ThemeResource SurfaceOverlay}" />
+                                        <Setter Property="BorderBrush" Value="{ThemeResource StrokeDefault}" />
+                                        <Setter Property="BorderThickness" Value="1" />
+                                        <Setter Property="CornerRadius" Value="{StaticResource RadiusContainer}" />
+                                    </Style>
+                                </Flyout.FlyoutPresenterStyle>
+                                <controls:HexColorPicker
                                     x:Name="CustomColorPicker"
-                                    ColorChanged="CustomColorPicker_ColorChanged"
-                                    IsAlphaEnabled="False"
-                                    IsAlphaSliderVisible="False"
-                                    IsAlphaTextInputVisible="False"
-                                    IsColorChannelTextInputVisible="True"
-                                    IsColorSliderVisible="True"
-                                    IsColorSpectrumVisible="True"
-                                    IsHexInputVisible="True"
-                                    IsMoreButtonVisible="False" />
+                                    ColorPicked="CustomColorPicker_ColorPicked" />
                             </Flyout>
                         </Button.Flyout>
                     </Button>
@@ -259,12 +266,18 @@
             HorizontalScrollBarVisibility="Auto"
             VerticalScrollBarVisibility="Auto"
             ZoomMode="Disabled">
-            <Border
+            <!--  The frame is a non-clipping Grid rather than a Border containing ImageHost.
+                  Selection adorners are centered on image-edge geometry and may extend half a
+                  grip outside it, as in graphics-scene editors. The decorative border remains a
+                  separate child and does not clip those adorners.  -->
+            <Grid
                 x:Name="CanvasFrame"
                 HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                BorderBrush="{ThemeResource StrokeDefault}"
-                BorderThickness="1">
+                VerticalAlignment="Center">
+                <Border
+                    BorderBrush="{ThemeResource StrokeDefault}"
+                    BorderThickness="1"
+                    IsHitTestVisible="False" />
                 <controls:CursorInteractionGrid
                     x:Name="ImageHost"
                     Background="Transparent"
@@ -290,7 +303,7 @@
                     <!--  Hosts the inline TextBox while a text annotation is being typed.  -->
                     <Canvas x:Name="TextEditCanvas" />
                 </controls:CursorInteractionGrid>
-            </Border>
+            </Grid>
         </ScrollViewer>
 
         <!--  Bottom bar  -->
@@ -301,11 +314,25 @@
             BorderBrush="{ThemeResource StrokeSubtle}"
             BorderThickness="0,1,0,0">
             <Grid>
-                <TextBlock
-                    x:Name="StatusText"
-                    VerticalAlignment="Center"
-                    FontSize="{StaticResource FontSizeCaption}"
-                    Foreground="{ThemeResource TextTertiary}" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock
+                        x:Name="StatusText"
+                        VerticalAlignment="Center"
+                        FontSize="{StaticResource FontSizeCaption}"
+                        Foreground="{ThemeResource TextTertiary}" />
+                    <Button
+                        x:Name="FitZoomButton"
+                        Click="FitZoom_Click"
+                        Style="{StaticResource ShellButtonStyle}"
+                        ToolTipService.ToolTip="Fit image to window (Ctrl+0)"
+                        Content="Fit" />
+                    <Button
+                        x:Name="ActualPixelsButton"
+                        Click="ActualPixels_Click"
+                        Style="{StaticResource ShellButtonStyle}"
+                        ToolTipService.ToolTip="One image pixel per screen pixel (Ctrl+1)"
+                        Content="100%" />
+                </StackPanel>
                 <StackPanel
                     HorizontalAlignment="Right"
                     Orientation="Horizontal"

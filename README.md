@@ -87,8 +87,8 @@ To produce a self-contained, distributable installer `.exe`, run the build scrip
 repository root:
 
 ```powershell
-pwsh -NoProfile -File installer\build-installer.ps1                 # version 1.0.0
-pwsh -NoProfile -File installer\build-installer.ps1 -Version 1.1.0  # override the version
+pwsh -NoProfile -File installer\build-installer.ps1                 # version 1.1.0
+pwsh -NoProfile -File installer\build-installer.ps1 -Version 1.2.0  # override the version
 ```
 
 The script publishes NexusShot self-contained (bundling the .NET and Windows App SDK runtimes, so
@@ -107,6 +107,7 @@ src/NexusShot.App/
   Capture/    GDI capture + the layered Win32 region overlay
   Controls/   ToolTile, ColorSwatch, BrandMark (custom templated controls)
   Editor/     EditorDocument (state, undo/redo, selection)
+              BoxGeometry (shared crop/shape/text interaction geometry)
               AnnotationFlattener (export)
               LiveAnnotationRenderer (on-screen preview)
   Helpers/    ImageLoader, MonitorHelper
@@ -232,6 +233,8 @@ Annotations are structured objects and are only rasterised on copy or export.
 - A `FileSystemWatcher` on the save folder keeps the sidebar synchronized with File Explorer:
   external deletes remove tiles, renames update them, and new PNGs appear automatically. Missing
   files are pruned from history at startup, off the UI thread.
-- History thumbnails decode lazily at thumbnail resolution; full-size bitmaps are never held for the grid.
+- History thumbnails decode lazily at thumbnail resolution. The selected detail image decodes at
+  source resolution for crisp high-DPI display and is released as soon as selection changes, so
+  full-size bitmaps are never accumulated across the grid.
 - Blur and pixelate use `LockBits` rather than `GetPixel`/`SetPixel`, which is orders of magnitude faster.
 - Logs are JSON-lines under `%LOCALAPPDATA%\NexusShot\logs`, rotating at 1 MB. Image contents are never logged.

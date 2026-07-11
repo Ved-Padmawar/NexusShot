@@ -6,7 +6,7 @@ Publishes NexusShot self-contained and compiles the Inno Setup installer.
 .\installer\build-installer.ps1                # dist\NexusShot-1.0.0.exe
 .\installer\build-installer.ps1 -Version 1.2.0
 #>
-param([string]$Version = "1.0.0")
+param([string]$Version = "1.1.0")
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent

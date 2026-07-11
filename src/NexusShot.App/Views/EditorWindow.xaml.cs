@@ -40,9 +40,9 @@ public sealed partial class EditorWindow : Window
     private bool _isAdjustingThickness;
     private bool _isLoadingTextFormat;
     private bool _isLoadingThickness;
-    private bool _isLoadingColorPicker;
-    private Point? _pendingGesturePoint;
+    private readonly List<Point> _pendingGesturePoints = [];
     private bool _gestureFramePending;
+    private bool _fitToViewport = true;
     private Point? _brushCursorPoint;
     private readonly DispatcherTimer _saveToastTimer = new() { Interval = TimeSpan.FromSeconds(2) };
 
@@ -95,6 +95,8 @@ public sealed partial class EditorWindow : Window
         _document.Changed += (_, _) => Redraw();
         _document.ActiveAnnotationChanged += (_, annotation) =>
             LiveAnnotationRenderer.UpdateActive(AnnotationCanvas, _document, annotation, _pixelSource, AdornerScale());
+        _document.DirtyAnnotationsChanged += (_, annotations) =>
+            LiveAnnotationRenderer.UpdateDirty(AnnotationCanvas, annotations, _pixelSource);
         _document.PendingCropChanged += (_, _) =>
             LiveAnnotationRenderer.UpdateCropAdorner(AnnotationCanvas, _document, AdornerScale());
         Root.KeyDown += Root_KeyDown;
@@ -157,13 +159,33 @@ public sealed partial class EditorWindow : Window
         CanvasFrame.Height = _imageHeight * scale;
     }
 
-    /// <summary>Uniform fit scale, never magnifying beyond 1:1.</summary>
+    /// <summary>
+    /// Uniform view scale. At 100%, one image pixel maps to one physical display pixel rather
+    /// than one XAML DIP; this is essential on 125–200% DPI displays for pixel inspection.
+    /// Fit mode uses the available viewport and never enlarges beyond physical 1:1.
+    /// </summary>
     private double DisplayScale()
     {
+        var rasterizationScale = Root.XamlRoot?.RasterizationScale ?? 1;
+        var physicalOneToOne = 1 / rasterizationScale;
+        if (!_fitToViewport) return physicalOneToOne;
         var availableWidth = Math.Max(200, CanvasScroller.ViewportWidth - 64);
         var availableHeight = Math.Max(200, CanvasScroller.ViewportHeight - 64);
-        if (_imageWidth == 0 || _imageHeight == 0) return 1;
-        return Math.Min(1, Math.Min(availableWidth / _imageWidth, availableHeight / _imageHeight));
+        if (_imageWidth == 0 || _imageHeight == 0) return physicalOneToOne;
+        return Math.Min(physicalOneToOne,
+            Math.Min(availableWidth / _imageWidth, availableHeight / _imageHeight));
+    }
+
+    private void FitZoom_Click(object sender, RoutedEventArgs e) => SetFitMode(true);
+
+    private void ActualPixels_Click(object sender, RoutedEventArgs e) => SetFitMode(false);
+
+    private void SetFitMode(bool fit)
+    {
+        if (_fitToViewport == fit) return;
+        _fitToViewport = fit;
+        SizeCanvasToFit();
+        if (_isLoaded) Redraw();
     }
 
     /// <summary>Maps a pointer position on the scaled host back into image-pixel coordinates.</summary>
@@ -201,9 +223,8 @@ public sealed partial class EditorWindow : Window
         _document.SetColor(hex);
         var color = ParseColor(hex);
         CurrentColorPreview.Fill = new SolidColorBrush(color);
-        _isLoadingColorPicker = true;
-        CustomColorPicker.Color = color;
-        _isLoadingColorPicker = false;
+        CurrentColorHex.Text = hex.ToUpperInvariant();
+        CustomColorPicker.SetColorSilently(color);
         foreach (var swatch in ColorPanel.Children.OfType<ColorSwatch>())
             swatch.IsSelected = swatch.ColorHex == hex;
         if (_brushCursorPoint is { } point) UpdateBrushCursor(point);
@@ -346,10 +367,29 @@ public sealed partial class EditorWindow : Window
     {
         if (!_isLoaded) return;
         var point = ToImagePoint(e);
-        UpdateBrushCursor(point);
         if (e.GetCurrentPoint(ImageHost).Properties.IsLeftButtonPressed)
         {
-            _pendingGesturePoint = point;
+            if (_document.ActiveTool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser
+                or EditorTool.Blur or EditorTool.Pixelate)
+            {
+                // PointerMoved can represent several hardware samples. Preserve them in the
+                // stroke model, but notify/render only once on the next composition frame.
+                var samples = e.GetIntermediatePoints(ImageHost);
+                for (var i = samples.Count - 1; i >= 0; i--)
+                {
+                    var sample = samples[i].Position;
+                    var imagePoint = new Point(
+                        Math.Clamp(sample.X, 0, _imageWidth),
+                        Math.Clamp(sample.Y, 0, _imageHeight));
+                    if (_pendingGesturePoints.Count == 0 || _pendingGesturePoints[^1] != imagePoint)
+                        _pendingGesturePoints.Add(imagePoint);
+                }
+            }
+            else
+            {
+                _pendingGesturePoints.Clear();
+                _pendingGesturePoints.Add(point);
+            }
             if (!_gestureFramePending)
             {
                 _gestureFramePending = true;
@@ -357,6 +397,7 @@ public sealed partial class EditorWindow : Window
             }
             return;
         }
+        UpdateBrushCursor(point);
         if (_document.ActiveTool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser) return;
         UpdateHoverCursor(point);
     }
@@ -395,13 +436,13 @@ public sealed partial class EditorWindow : Window
 
         // Keep the outline legible over both light and dark pixels without changing its diameter.
         BrushCursorOuter.StrokeThickness = 3 * inverseScale;
-        BrushCursorInner.StrokeThickness = _document.ActiveTool == EditorTool.Brush
-            ? inverseScale
-            : 0;
+        // Brush and eraser use identical ring geometry. Their fill alone communicates the mode;
+        // omitting the eraser's inner ring made an equal-diameter outline look optically smaller.
+        BrushCursorInner.StrokeThickness = inverseScale;
         var cursorColor = ParseColor(_document.ColorHex);
         BrushCursorInner.Fill = _document.ActiveTool == EditorTool.Brush
             ? new SolidColorBrush(cursorColor)
-            : null;
+            : new SolidColorBrush(Windows.UI.Color.FromArgb(28, 255, 255, 255));
         ImageHost.SetHiddenCursor();
     }
 
@@ -417,9 +458,13 @@ public sealed partial class EditorWindow : Window
     {
         CompositionTarget.Rendering -= ApplyPendingGesture;
         _gestureFramePending = false;
-        if (_pendingGesturePoint is not { } point) return;
-        _pendingGesturePoint = null;
-        _document.ContinueGesture(point);
+        if (_pendingGesturePoints.Count == 0) return;
+        var points = _pendingGesturePoints.ToArray();
+        _pendingGesturePoints.Clear();
+        _document.ContinueGesture(points);
+        // Cursor feedback and paint/erase output advance on the same composition frame. Moving
+        // the cursor on raw input while the stroke was frame-batched produced a visible dab trail.
+        UpdateBrushCursor(points[^1]);
     }
 
     /// <summary>Cursor feedback while hovering: resize arrows over handles (selection or crop
@@ -483,9 +528,15 @@ public sealed partial class EditorWindow : Window
             CompositionTarget.Rendering -= ApplyPendingGesture;
             _gestureFramePending = false;
         }
-        _pendingGesturePoint = null;
+        // The release point joins the batch the cancelled render frame never ran. Feeding it
+        // separately would replay the last sample, which the eraser turns into a duplicate mask point.
         var point = ToImagePoint(e);
-        _document.ContinueGesture(point);
+        if (_pendingGesturePoints.Count == 0 || _pendingGesturePoints[^1] != point)
+            _pendingGesturePoints.Add(point);
+        var pending = _pendingGesturePoints.ToArray();
+        _pendingGesturePoints.Clear();
+        _document.ContinueGesture(pending);
+        UpdateBrushCursor(point);
 
         // Typing starts only for a newly drawn text annotation; a resize/move of an existing
         // one ends like any other gesture.
@@ -657,6 +708,8 @@ public sealed partial class EditorWindow : Window
                 case Windows.System.VirtualKey.C: Copy_Click(sender, new RoutedEventArgs()); break;
                 case Windows.System.VirtualKey.S when shift: SaveAs_Click(sender, new RoutedEventArgs()); break;
                 case Windows.System.VirtualKey.S: Save_Click(sender, new RoutedEventArgs()); break;
+                case Windows.System.VirtualKey.Number0: SetFitMode(true); break;
+                case Windows.System.VirtualKey.Number1: SetFitMode(false); break;
                 default: return;
             }
             e.Handled = true;
@@ -712,19 +765,11 @@ public sealed partial class EditorWindow : Window
     /// <summary>Ends the drag, so the next slider interaction starts a fresh undo step.</summary>
     private void Thickness_DragEnded(object sender, PointerRoutedEventArgs e) => _isAdjustingThickness = false;
 
-    private void ColorFlyout_Opening(object sender, object e)
-    {
-        _isLoadingColorPicker = true;
-        CustomColorPicker.Color = ParseColor(_document.ColorHex);
-        _isLoadingColorPicker = false;
-    }
+    private void ColorFlyout_Opening(object sender, object e) =>
+        CustomColorPicker.SetColorSilently(ParseColor(_document.ColorHex));
 
-    private void CustomColorPicker_ColorChanged(ColorPicker sender, ColorChangedEventArgs args)
-    {
-        if (_isLoadingColorPicker) return;
-        var color = args.NewColor;
-        SelectColor($"#{color.R:X2}{color.G:X2}{color.B:X2}");
-    }
+    private void CustomColorPicker_ColorPicked(object? sender, Windows.UI.Color color) =>
+        SelectColor(HexColorPicker.ToHex(color));
 
     private void Undo_Click(object sender, RoutedEventArgs e) => _document.Undo();
     private void Redo_Click(object sender, RoutedEventArgs e) => _document.Redo();

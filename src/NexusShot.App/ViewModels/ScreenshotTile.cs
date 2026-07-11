@@ -11,12 +11,12 @@ namespace NexusShot.App.ViewModels;
 public sealed class ScreenshotTile(ScreenshotHistoryItem item) : ObservableObject
 {
     private const int ThumbnailWidth = 220;
-    private const int PreviewWidth = 1400;
 
     private BitmapImage? _thumbnail;
     private BitmapImage? _preview;
     private bool _isLoadingThumbnail;
     private bool _isLoadingPreview;
+    private int _previewGeneration;
 
     public ScreenshotHistoryItem Item { get; } = item;
 
@@ -99,14 +99,35 @@ public sealed class ScreenshotTile(ScreenshotHistoryItem item) : ObservableObjec
     private async Task LoadPreviewAsync()
     {
         _isLoadingPreview = true;
+        var generation = ++_previewGeneration;
         try
         {
             if (File.Exists(Item.FilePath))
-                Preview = await ImageLoader.LoadAsync(Item.FilePath, PreviewWidth);
+            {
+                // Only one detail preview is retained by MainWindow, so decode the source at its
+                // real resolution. A fixed 1400px cap was enlarged on wide/high-DPI windows and
+                // was the direct cause of the visibly soft main-window image.
+                var preview = await ImageLoader.LoadAsync(Item.FilePath);
+                if (generation == _previewGeneration) Preview = preview;
+            }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or FileNotFoundException)
         {
             // A missing or locked file simply shows no preview.
         }
+        finally
+        {
+            // Must clear on every exit — including a missing file — or the tile never retries.
+            _isLoadingPreview = false;
+        }
+    }
+
+    /// <summary>Releases the full-resolution detail bitmap when this tile is no longer selected.
+    /// A generation token prevents an in-flight decode from repopulating the cache afterward.</summary>
+    public void ReleasePreview()
+    {
+        _previewGeneration++;
+        _isLoadingPreview = false;
+        Preview = null;
     }
 }

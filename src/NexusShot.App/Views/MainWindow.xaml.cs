@@ -158,7 +158,11 @@ public sealed partial class MainWindow : Window
         // instead of waiting for the next reselection.
         if (!ReferenceEquals(_detailTile, tile))
         {
-            if (_detailTile is not null) _detailTile.PropertyChanged -= DetailTile_PropertyChanged;
+            if (_detailTile is not null)
+            {
+                _detailTile.PropertyChanged -= DetailTile_PropertyChanged;
+                _detailTile.ReleasePreview();
+            }
             _detailTile = tile;
             if (tile is not null) tile.PropertyChanged += DetailTile_PropertyChanged;
         }

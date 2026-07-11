@@ -25,6 +25,7 @@ public sealed class EditorDocument
     private readonly List<Annotation> _annotations = [];
     private readonly Stack<IReadOnlyList<Annotation>> _undo = new();
     private readonly Stack<IReadOnlyList<Annotation>> _redo = new();
+    private readonly Dictionary<Guid, Rect> _strokeBounds = [];
 
     private Annotation? _draft;
     private Point _dragOrigin;
@@ -36,6 +37,8 @@ public sealed class EditorDocument
     // would fill the undo stack with identical states every time the user merely clicks a shape.
     private bool _gestureUndoPushed;
     private bool _eraserChanged;
+    private readonly Dictionary<Annotation, EraserMask> _activeEraserMasks = [];
+    private readonly HashSet<Annotation> _eraserDirtyAnnotations = [];
 
     public IReadOnlyList<Annotation> Annotations => _annotations;
     public EditorTool ActiveTool { get; set; } = EditorTool.Select;
@@ -86,6 +89,9 @@ public sealed class EditorDocument
     /// instead of rebuilding the whole canvas on every pointer event.
     /// </summary>
     public event EventHandler<Annotation>? ActiveAnnotationChanged;
+
+    /// <summary>Only the paint strokes changed by the current eraser input batch.</summary>
+    public event EventHandler<IReadOnlyCollection<Annotation>>? DirtyAnnotationsChanged;
 
     /// <summary>Raised at pointer-move rate while the crop frame is dragged, so the view can
     /// refresh just the crop adorner instead of rebuilding every annotation visual.</summary>
@@ -138,11 +144,7 @@ public sealed class EditorDocument
     public ResizeHandle? GetCropHandleAt(Point point, double tolerance)
     {
         if (PendingCrop is not { } crop) return null;
-        foreach (var (handle, position) in BoxHandlePositions(crop))
-        {
-            if (Distance(point, position) <= tolerance) return handle;
-        }
-        return null;
+        return BoxGeometry.HitTestHandle(crop, point, tolerance);
     }
 
     /// <summary>Begins a pointer gesture. <paramref name="handleTolerance"/> is the grab radius in
@@ -152,6 +154,8 @@ public sealed class EditorDocument
         _dragOrigin = point;
         _gestureUndoPushed = false;
         _eraserChanged = false;
+        _activeEraserMasks.Clear();
+        _eraserDirtyAnnotations.Clear();
 
         // An active crop session owns the pointer: handles resize, the interior moves, and
         // clicks outside the frame do nothing until the session is committed or cancelled.
@@ -218,7 +222,44 @@ public sealed class EditorDocument
     }
 
     /// <summary>Continues the active gesture.</summary>
-    public void ContinueGesture(Point point)
+    public void ContinueGesture(Point point) => ContinueGestureCore(point, true);
+
+    /// <summary>
+    /// Adds coalesced pointer samples as one document update. Freehand geometry keeps the input
+    /// fidelity while the view receives only one render notification for the batch.
+    /// </summary>
+    public void ContinueGesture(IReadOnlyList<Point> points)
+    {
+        if (_gesture == GestureKind.Draw && _draft is { Tool: EditorTool.Eraser } eraser)
+        {
+            ContinueEraserBatch(eraser, points);
+            return;
+        }
+        for (var i = 0; i < points.Count; i++)
+            ContinueGestureCore(points[i], i == points.Count - 1);
+    }
+
+    private void ContinueEraserBatch(Annotation eraser, IReadOnlyList<Point> points)
+    {
+        if (points.Count == 0) return;
+        var path = new List<Point>(points.Count + 1) { eraser.Points[^1] };
+        foreach (var point in points)
+        {
+            eraser.End = point;
+            var count = eraser.Points.Count;
+            AppendStrokePoint(eraser, point);
+            if (eraser.Points.Count > count) path.Add(eraser.Points[^1]);
+        }
+        if (path.Count == 1) path.Add(path[0]);
+        _eraserChanged |= ApplyEraserPath(path, PaintStrokeGeometry.Radius(eraser.StrokeThickness));
+        if (_eraserDirtyAnnotations.Count > 0)
+        {
+            DirtyAnnotationsChanged?.Invoke(this, _eraserDirtyAnnotations.ToArray());
+            _eraserDirtyAnnotations.Clear();
+        }
+    }
+
+    private void ContinueGestureCore(Point point, bool notify)
     {
         switch (_gesture)
         {
@@ -226,27 +267,37 @@ public sealed class EditorDocument
                 EnsureGestureUndo();
                 var (moveX, moveY) = ClampDeltaToImage(Selected, point.X - _dragOrigin.X, point.Y - _dragOrigin.Y);
                 Selected.Translate(moveX, moveY);
+                if (_strokeBounds.TryGetValue(Selected.Id, out var cachedBounds))
+                    _strokeBounds[Selected.Id] = new Rect(
+                        cachedBounds.X + moveX, cachedBounds.Y + moveY,
+                        cachedBounds.Width, cachedBounds.Height);
                 _dragOrigin = point;
-                ActiveAnnotationChanged?.Invoke(this, Selected);
+                if (notify) ActiveAnnotationChanged?.Invoke(this, Selected);
                 break;
 
             case GestureKind.Resize when Selected is not null:
                 EnsureGestureUndo();
                 ApplyResize(Selected, point);
-                ActiveAnnotationChanged?.Invoke(this, Selected);
+                if (notify) ActiveAnnotationChanged?.Invoke(this, Selected);
                 break;
 
             case GestureKind.Draw when _draft is not null:
                 _draft.End = point;
-                if (IsStroke(_draft.Tool)) _draft.Points.Add(point);
+                if (IsStroke(_draft.Tool)) AppendStrokePoint(_draft, point);
                 if (_draft.Tool == EditorTool.Eraser)
                 {
                     _eraserChanged |= ApplyEraserSegment(_draft);
-                    Changed?.Invoke(this, EventArgs.Empty);
+                    // Live preview updates only the affected retained vector strokes. Exact
+                    // bitmap masking remains an export/commit concern.
+                    if (notify && _eraserDirtyAnnotations.Count > 0)
+                    {
+                        DirtyAnnotationsChanged?.Invoke(this, _eraserDirtyAnnotations.ToArray());
+                        _eraserDirtyAnnotations.Clear();
+                    }
                 }
                 else
                 {
-                    ActiveAnnotationChanged?.Invoke(this, _draft);
+                    if (notify) ActiveAnnotationChanged?.Invoke(this, _draft);
                 }
                 break;
 
@@ -255,12 +306,12 @@ public sealed class EditorDocument
                 var dy = Math.Clamp(point.Y - _dragOrigin.Y, -crop.Y, ImageHeight - crop.Bottom);
                 PendingCrop = new Rect(crop.X + dx, crop.Y + dy, crop.Width, crop.Height);
                 _dragOrigin = point;
-                PendingCropChanged?.Invoke(this, EventArgs.Empty);
+                if (notify) PendingCropChanged?.Invoke(this, EventArgs.Empty);
                 break;
 
             case GestureKind.CropResize when PendingCrop is not null:
                 PendingCrop = ResizeCropFrame(point);
-                PendingCropChanged?.Invoke(this, EventArgs.Empty);
+                if (notify) PendingCropChanged?.Invoke(this, EventArgs.Empty);
                 break;
         }
     }
@@ -271,46 +322,19 @@ public sealed class EditorDocument
     {
         if (ImageWidth <= 0 || ImageHeight <= 0) return (dx, dy);
         var bounds = annotation.Bounds;
-        return (
-            Math.Clamp(dx, Math.Min(0, -bounds.Left), Math.Max(0, ImageWidth - bounds.Right)),
-            Math.Clamp(dy, Math.Min(0, -bounds.Top), Math.Max(0, ImageHeight - bounds.Bottom)));
+        var translated = BoxGeometry.Translate(bounds, dx, dy, new Rect(0, 0, ImageWidth, ImageHeight));
+        return (translated.X - bounds.X, translated.Y - bounds.Y);
     }
 
     /// <summary>Resizes the crop frame from its origin bounds, normalised and clamped to the image.</summary>
     private Rect ResizeCropFrame(Point point)
     {
-        var origin = _resizeOriginBounds;
-        var (left, top, right, bottom) = _resizeHandle switch
-        {
-            ResizeHandle.TopLeft => (point.X, point.Y, origin.Right, origin.Bottom),
-            ResizeHandle.Top => (origin.Left, point.Y, origin.Right, origin.Bottom),
-            ResizeHandle.TopRight => (origin.Left, point.Y, point.X, origin.Bottom),
-            ResizeHandle.Left => (point.X, origin.Top, origin.Right, origin.Bottom),
-            ResizeHandle.Right => (origin.Left, origin.Top, point.X, origin.Bottom),
-            ResizeHandle.BottomLeft => (point.X, origin.Top, origin.Right, point.Y),
-            ResizeHandle.Bottom => (origin.Left, origin.Top, origin.Right, point.Y),
-            _ => (origin.Left, origin.Top, point.X, point.Y),
-        };
-
-        var x1 = Math.Clamp(Math.Min(left, right), 0, ImageWidth);
-        var x2 = Math.Clamp(Math.Max(left, right), 0, ImageWidth);
-        var y1 = Math.Clamp(Math.Min(top, bottom), 0, ImageHeight);
-        var y2 = Math.Clamp(Math.Max(top, bottom), 0, ImageHeight);
-
-        // Enforce a minimum frame by growing back into the image, never past its edge.
-        var minWidth = Math.Min(8, ImageWidth);
-        var minHeight = Math.Min(8, ImageHeight);
-        if (x2 - x1 < minWidth)
-        {
-            x2 = Math.Min(ImageWidth, x1 + minWidth);
-            x1 = Math.Max(0, x2 - minWidth);
-        }
-        if (y2 - y1 < minHeight)
-        {
-            y2 = Math.Min(ImageHeight, y1 + minHeight);
-            y1 = Math.Max(0, y2 - minHeight);
-        }
-        return new Rect(x1, y1, x2 - x1, y2 - y1);
+        return BoxGeometry.Resize(
+            _resizeOriginBounds,
+            _resizeHandle,
+            point,
+            new Rect(0, 0, ImageWidth, ImageHeight),
+            new Size(8, 8));
     }
 
     /// <summary>Ends the active gesture, discarding degenerate shapes.</summary>
@@ -355,7 +379,8 @@ public sealed class EditorDocument
         {
             EditorTool.Text => false,
             EditorTool.Counter => false,
-            _ when IsStroke(_draft.Tool) => _draft.Points.Count < 2,
+            // A single paint sample is a valid round dab whose diameter is StrokeThickness.
+            _ when IsStroke(_draft.Tool) => _draft.Points.Count == 0,
             _ => bounds.Width < 3 && bounds.Height < 3,
         };
 
@@ -402,16 +427,8 @@ public sealed class EditorDocument
     /// <summary>The eight box handle positions, for hit testing and for the view's adorners.</summary>
     public static IEnumerable<(ResizeHandle Handle, Point Position)> BoxHandlePositions(Rect bounds)
     {
-        var centerX = bounds.Left + bounds.Width / 2;
-        var centerY = bounds.Top + bounds.Height / 2;
-        yield return (ResizeHandle.TopLeft, new Point(bounds.Left, bounds.Top));
-        yield return (ResizeHandle.Top, new Point(centerX, bounds.Top));
-        yield return (ResizeHandle.TopRight, new Point(bounds.Right, bounds.Top));
-        yield return (ResizeHandle.Left, new Point(bounds.Left, centerY));
-        yield return (ResizeHandle.Right, new Point(bounds.Right, centerY));
-        yield return (ResizeHandle.BottomLeft, new Point(bounds.Left, bounds.Bottom));
-        yield return (ResizeHandle.Bottom, new Point(centerX, bounds.Bottom));
-        yield return (ResizeHandle.BottomRight, new Point(bounds.Right, bounds.Bottom));
+        foreach (var handle in BoxGeometry.Handles)
+            yield return (handle, BoxGeometry.HandlePosition(bounds, handle));
     }
 
     private void ApplyResize(Annotation annotation, Point point)
@@ -425,21 +442,13 @@ public sealed class EditorDocument
 
         // The origin bounds anchor the sides the handle does not move; crossing an anchored side
         // simply normalises through Start/End ordering.
-        var origin = _resizeOriginBounds;
-        var (left, top, right, bottom) = _resizeHandle switch
-        {
-            ResizeHandle.TopLeft => (point.X, point.Y, origin.Right, origin.Bottom),
-            ResizeHandle.Top => (origin.Left, point.Y, origin.Right, origin.Bottom),
-            ResizeHandle.TopRight => (origin.Left, point.Y, point.X, origin.Bottom),
-            ResizeHandle.Left => (point.X, origin.Top, origin.Right, origin.Bottom),
-            ResizeHandle.Right => (origin.Left, origin.Top, point.X, origin.Bottom),
-            ResizeHandle.BottomLeft => (point.X, origin.Top, origin.Right, point.Y),
-            ResizeHandle.Bottom => (origin.Left, origin.Top, origin.Right, point.Y),
-            _ => (origin.Left, origin.Top, point.X, point.Y),
-        };
-
-        annotation.Start = new Point(left, top);
-        annotation.End = new Point(right, bottom);
+        var resized = BoxGeometry.Resize(
+            _resizeOriginBounds,
+            _resizeHandle,
+            point,
+            new Rect(0, 0, ImageWidth, ImageHeight));
+        annotation.Start = new Point(resized.Left, resized.Top);
+        annotation.End = new Point(resized.Right, resized.Bottom);
     }
 
     public void SetColor(string colorHex)
@@ -589,26 +598,77 @@ public sealed class EditorDocument
         if (eraser.Points.Count == 0) return false;
         var end = eraser.Points[^1];
         var start = eraser.Points.Count > 1 ? eraser.Points[^2] : end;
-        // Erasing uses the same round-dab geometry as painting: the stored thickness is the
-        // diameter and the pointer samples form its centreline.
-        var radius = PaintStrokeGeometry.Radius(eraser.StrokeThickness);
+        return ApplyEraserPath([start, end], PaintStrokeGeometry.Radius(eraser.StrokeThickness));
+    }
+
+    private bool ApplyEraserPath(IReadOnlyList<Point> path, double radius)
+    {
         var changed = false;
+        var hitNow = new HashSet<Annotation>();
 
         foreach (var stroke in _annotations.Where(a => a.Tool is EditorTool.Pen or EditorTool.Brush))
         {
-            var reach = radius + stroke.StrokeThickness / 2;
-            var hitArea = new Rect(
-                Math.Min(start.X, end.X) - reach,
-                Math.Min(start.Y, end.Y) - reach,
-                Math.Abs(end.X - start.X) + reach * 2,
-                Math.Abs(end.Y - start.Y) + reach * 2);
-            var bounds = stroke.Bounds;
-            if (hitArea.Right < bounds.Left || hitArea.Left > bounds.Right
-                || hitArea.Bottom < bounds.Top || hitArea.Top > bounds.Bottom) continue;
-            stroke.Erasures.Add(new EraserMask { Radius = radius, Points = [start, end] });
+            var bounds = GetStrokeBounds(stroke);
+            if (!PathMayTouchBounds(path, bounds, radius + stroke.StrokeThickness / 2)) continue;
+            hitNow.Add(stroke);
+            _eraserDirtyAnnotations.Add(stroke);
+            if (!_activeEraserMasks.TryGetValue(stroke, out var mask))
+            {
+                mask = new EraserMask { Radius = radius, Points = [.. path] };
+                stroke.Erasures.Add(mask);
+                _activeEraserMasks.Add(stroke, mask);
+            }
+            else
+            {
+                var first = mask.Points.Count > 0 && mask.Points[^1] == path[0] ? 1 : 0;
+                for (var i = first; i < path.Count; i++) mask.Points.Add(path[i]);
+            }
             changed = true;
         }
+
+        // A later re-entry starts a new mask rather than drawing an erasing bridge across an
+        // area where this stroke was not under the cursor.
+        foreach (var stroke in _activeEraserMasks.Keys.Where(stroke => !hitNow.Contains(stroke)).ToArray())
+            _activeEraserMasks.Remove(stroke);
         return changed;
+    }
+
+    private Rect GetStrokeBounds(Annotation stroke)
+    {
+        if (_strokeBounds.TryGetValue(stroke.Id, out var bounds)) return bounds;
+        bounds = stroke.Bounds;
+        _strokeBounds[stroke.Id] = bounds;
+        return bounds;
+    }
+
+    private static bool PathMayTouchBounds(IReadOnlyList<Point> path, Rect bounds, double reach)
+    {
+        for (var i = 1; i < path.Count; i++)
+        {
+            var a = path[i - 1];
+            var b = path[i];
+            if (Math.Max(a.X, b.X) + reach >= bounds.Left
+                && Math.Min(a.X, b.X) - reach <= bounds.Right
+                && Math.Max(a.Y, b.Y) + reach >= bounds.Top
+                && Math.Min(a.Y, b.Y) - reach <= bounds.Bottom) return true;
+        }
+        return false;
+    }
+
+    private static void AppendStrokePoint(Annotation stroke, Point point)
+    {
+        if (stroke.Points.Count == 0)
+        {
+            stroke.Points.Add(point);
+            return;
+        }
+
+        var previous = stroke.Points[^1];
+        var dx = point.X - previous.X;
+        var dy = point.Y - previous.Y;
+        // Hardware can report several samples inside the same subpixel. They add model size and
+        // render work without changing the visible path.
+        if (dx * dx + dy * dy >= 0.25) stroke.Points.Add(point);
     }
 
     /// <summary>
@@ -682,6 +742,7 @@ public sealed class EditorDocument
         var selectedId = Selected?.Id;
         _annotations.Clear();
         _annotations.AddRange(snapshot);
+        _strokeBounds.Clear();
         Selected = selectedId is null ? null : _annotations.FirstOrDefault(a => a.Id == selectedId);
         _draft = null;
         _gesture = GestureKind.None;
