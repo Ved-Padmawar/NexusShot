@@ -1,0 +1,55 @@
+<!--
+    The NexusShot brand mark, drawn as vectors rather than loaded from a PNG.
+
+    An unpackaged WinUI 3 app has no reliable ms-appx:/// resource root for loose content files, so
+    an <Image> here would need a filesystem path resolved at runtime. The mark is three shapes; XAML
+    draws it exactly, at any size, in any theme, with no asset to keep in sync.
+
+    Geometry matches the 1024-unit viewBox of assets/icons/icon-source.svg, shifted by the tile's
+    32px inset so the drawing is a clean 960x960. The Grid's rounded clip supplies the tile corners,
+    which is what lets the cyan half be a plain triangle rather than a rounded-corner path.
+-->
+<UserControl
+    x:Class="NexusShot.App.Controls.BrandMark"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Viewbox Stretch="Uniform">
+        <!--  Rounded clip: the tile's corner radius, so every child is cropped to the tile.  -->
+        <Border
+            Width="960"
+            Height="960"
+            Background="#3a4652"
+            CornerRadius="220">
+            <Grid>
+                <!--  Cyan half: the triangle above the 135° diagonal.  -->
+                <Path Fill="#46bae3">
+                    <Path.Data>
+                        <PathGeometry>
+                            <PathFigure IsClosed="True" StartPoint="0,0">
+                                <LineSegment Point="960,0" />
+                                <LineSegment Point="0,960" />
+                            </PathFigure>
+                        </PathGeometry>
+                    </Path.Data>
+                </Path>
+
+                <!--  Crop marks. Corners sit on the diagonal so each arm crosses both halves.  -->
+                <Path
+                    Data="M268 488 V268 H488"
+                    Stroke="#18222b"
+                    StrokeEndLineCap="Round"
+                    StrokeLineJoin="Round"
+                    StrokeStartLineCap="Round"
+                    StrokeThickness="84" />
+                <Path
+                    Data="M472 692 H692 V472"
+                    Stroke="#18222b"
+                    StrokeEndLineCap="Round"
+                    StrokeLineJoin="Round"
+                    StrokeStartLineCap="Round"
+                    StrokeThickness="84" />
+            </Grid>
+        </Border>
+    </Viewbox>
+</UserControl>

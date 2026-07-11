@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- NexusShot brand mark: rounded-square tile with a 135° cyan/steel diagonal
+       split (matching the NexusSpace / NexusVoice / NexusSearch / NexusSend family)
+       and a crop-marks glyph that represents region capture.
+
+       Two offset corner brackets read as "select a region" far more legibly at
+       16px than a camera body would: a camera reduces to an indistinct blob,
+       whereas the brackets stay two clean strokes. They straddle the diagonal so
+       the single glyph reads against both halves of the split, as in the siblings.
+
+       The tile is full-bleed (fills the canvas, only a hair of inset so the
+       rounded corners aren't clipped). Tile-style app icons should fill their
+       frame edge-to-edge; the rounded tile IS the icon, so baking in large
+       transparent margins makes it render smaller than other apps' icons in
+       the taskbar/tray. Mirrors NexusSearch's icon-source.svg. -->
+  <defs>
+    <!-- 135deg split: steel-cyan over the top-left half, dark steel below. -->
+    <linearGradient id="split" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#53caf6"/>
+      <stop offset="50%"  stop-color="#46bae3"/>
+      <stop offset="50%"  stop-color="#3a4652"/>
+      <stop offset="100%" stop-color="#3a4652"/>
+    </linearGradient>
+  </defs>
+
+  <!-- full-bleed rounded-square tile (small inset to protect the corners) -->
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="#3a4652"/>
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#split)"/>
+
+  <!-- Crop marks: two corner brackets of a square selection centred on the tile.
+       Same stroke colour, weight, and round cap as the sibling glyphs.
+
+       Each bracket's *corner* sits on the 135° diagonal (x == y), so its two arms
+       extend symmetrically into the cyan half and the steel half. This is what the
+       sibling glyphs do by being centred, and it is load-bearing here: an earlier
+       version offset the brackets into opposite halves, which put the whole
+       bottom-right bracket on dark steel. #18222b ink on #3a4652 steel is almost
+       no contrast, so at 16px that bracket vanished and the mark read as a single
+       stray corner. Straddling the diagonal gives every stroke a light backing
+       for part of its length. -->
+  <g fill="none" stroke="#18222b" stroke-width="84" stroke-linecap="round" stroke-linejoin="round">
+    <!-- top-left bracket: corner at (300,300), on the diagonal -->
+    <path d="M300 520 V300 H520"/>
+    <!-- bottom-right bracket: corner at (724,724), on the diagonal -->
+    <path d="M504 724 H724 V504"/>
+  </g>
+</svg>

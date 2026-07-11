@@ -1,0 +1,12 @@
+bin/
+obj/
+build/
+dist/
+docs/
+*.user
+.vs/
+*.suo
+AppPackages/
+*.appx
+*.msix
+Generated Files/

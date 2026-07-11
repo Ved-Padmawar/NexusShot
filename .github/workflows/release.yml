@@ -1,0 +1,42 @@
+name: Release
+
+# Build the installer and publish it to a GitHub Release when a version tag is pushed.
+#   git tag v1.1.0 && git push origin v1.1.0
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # required to create the release and upload assets
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Derive version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart("v")
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build installer
+        shell: pwsh
+        run: pwsh -NoProfile -File installer\build-installer.ps1 -Version ${{ steps.version.outputs.value }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/NexusShot-${{ steps.version.outputs.value }}.exe
+          generate_release_notes: true

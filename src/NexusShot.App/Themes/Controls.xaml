@@ -1,0 +1,409 @@
+<!--
+    Control templates for the NexusShot shell.
+
+    These replace the stock WinUI templates outright rather than restyling them. The default
+    ToggleButton and RadioButton templates reserve space for a focus rect, a check glyph, and a
+    minimum touch target that a 32px icon tile cannot satisfy: a RadioButton in particular always
+    lays out a 20px indicator column ahead of its content, which is what clipped the colour dots.
+
+    Every brush reference is {ThemeResource}, including inside VisualState.Setters. A
+    {StaticResource} here would bake in whichever theme was active when the control was first
+    realised, and the control would stop following later theme changes.
+-->
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:NexusShot.App.Controls">
+
+    <!--
+        Icon tile for the editor toolbar. A square, borderless target whose selected state is a
+        filled pill rather than the system accent, so the toolbar reads as one object.
+    -->
+    <Style x:Key="ToolTileStyle" TargetType="controls:ToolTile">
+        <Setter Property="Width" Value="32" />
+        <Setter Property="Height" Value="32" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:ToolTile">
+                    <Grid Background="Transparent" CornerRadius="{StaticResource RadiusControl}">
+                        <Rectangle
+                            x:Name="Fill"
+                            Fill="{ThemeResource FillHover}"
+                            Opacity="0"
+                            RadiusX="6"
+                            RadiusY="6" />
+                        <ContentPresenter
+                            x:Name="Presenter"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Content="{TemplateBinding Content}"
+                            Foreground="{TemplateBinding Foreground}" />
+
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextPrimary}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                        <Setter Target="Fill.Fill" Value="{ThemeResource FillPressed}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Selected">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                        <Setter Target="Fill.Fill" Value="{ThemeResource Accent}" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextOnAccent}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextTertiary}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+        Colour swatch. The dot is the whole control; selection is a ring drawn outside the dot,
+        which is why the control is 26px for a 16px dot. Nothing reserves an indicator column.
+    -->
+    <Style x:Key="ColorSwatchStyle" TargetType="controls:ColorSwatch">
+        <Setter Property="Width" Value="26" />
+        <Setter Property="Height" Value="26" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:ColorSwatch">
+                    <Grid Background="Transparent">
+                        <!--  Selection ring, inset so its stroke lands inside the 26px box.  -->
+                        <Ellipse
+                            x:Name="Ring"
+                            Margin="1"
+                            Opacity="0"
+                            Stroke="{ThemeResource TextPrimary}"
+                            StrokeThickness="1.5" />
+                        <Ellipse
+                            x:Name="Dot"
+                            Width="16"
+                            Height="16"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Fill="{TemplateBinding SwatchBrush}"
+                            Stroke="{ThemeResource StrokeStrong}"
+                            StrokeThickness="1" />
+
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Ring.Opacity" Value="0.35" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Ring.Opacity" Value="0.5" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Selected">
+                                    <VisualState.Setters>
+                                        <Setter Target="Ring.Opacity" Value="1" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--  Vertical hairline between toolbar groups.  -->
+    <Style x:Key="ToolSeparatorStyle" TargetType="Rectangle">
+        <Setter Property="Width" Value="1" />
+        <Setter Property="Height" Value="20" />
+        <Setter Property="Margin" Value="6,0" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Fill" Value="{ThemeResource StrokeDefault}" />
+    </Style>
+
+    <!--  Flat icon button: the toolbar's undo/redo/delete and the sidebar's settings gear.  -->
+    <Style x:Key="IconButtonStyle" TargetType="Button">
+        <Setter Property="Width" Value="32" />
+        <Setter Property="Height" Value="32" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="{StaticResource RadiusControl}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid Background="Transparent" CornerRadius="{TemplateBinding CornerRadius}">
+                        <Rectangle
+                            x:Name="Fill"
+                            Fill="{ThemeResource FillHover}"
+                            Opacity="0"
+                            RadiusX="6"
+                            RadiusY="6" />
+                        <ContentPresenter
+                            x:Name="Presenter"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Content="{TemplateBinding Content}"
+                            Foreground="{TemplateBinding Foreground}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextPrimary}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                        <Setter Target="Fill.Fill" Value="{ThemeResource FillPressed}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextTertiary}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--  Text button used across the shell's footers and the preview pane.  -->
+    <Style x:Key="ShellButtonStyle" TargetType="Button">
+        <Setter Property="Height" Value="32" />
+        <Setter Property="Padding" Value="14,0" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceOverlay}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource StrokeDefault}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource RadiusControl}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border
+                        x:Name="Root"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}">
+                        <ContentPresenter
+                            x:Name="Presenter"
+                            Padding="{TemplateBinding Padding}"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Content="{TemplateBinding Content}"
+                            Foreground="{TemplateBinding Foreground}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.BorderBrush" Value="{ThemeResource StrokeStrong}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Background" Value="{ThemeResource FillPressed}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Presenter.Foreground" Value="{ThemeResource TextTertiary}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--  Primary variant of the same geometry.  -->
+    <Style
+        x:Key="ShellAccentButtonStyle"
+        BasedOn="{StaticResource ShellButtonStyle}"
+        TargetType="Button">
+        <Setter Property="Background" Value="{ThemeResource Accent}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource Accent}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border
+                        x:Name="Root"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}">
+                        <ContentPresenter
+                            x:Name="Presenter"
+                            Padding="{TemplateBinding Padding}"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Content="{TemplateBinding Content}"
+                            Foreground="{TemplateBinding Foreground}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.9" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <!-- Keep primary actions accent-coloured while pressed. -->
+                                        <Setter Target="Root.Opacity" Value="0.75" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Disabled">
+                                    <VisualState.Setters>
+                                        <Setter Target="Root.Opacity" Value="0.45" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--  Sidebar capture action: a wide, left-aligned row with an icon and a shortcut hint.  -->
+    <Style x:Key="CaptureActionStyle" TargetType="Button">
+        <Setter Property="Height" Value="38" />
+        <Setter Property="Padding" Value="10,0" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="{StaticResource RadiusControl}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid Background="Transparent" CornerRadius="{TemplateBinding CornerRadius}">
+                        <Rectangle
+                            x:Name="Fill"
+                            Fill="{ThemeResource FillHover}"
+                            Opacity="0"
+                            RadiusX="6"
+                            RadiusY="6" />
+                        <ContentPresenter
+                            Padding="{TemplateBinding Padding}"
+                            HorizontalContentAlignment="Stretch"
+                            VerticalContentAlignment="Center"
+                            Content="{TemplateBinding Content}" />
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="Fill.Opacity" Value="1" />
+                                        <Setter Target="Fill.Fill" Value="{ThemeResource FillPressed}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--  Sidebar capture-list row. The selected state is an accent bar plus a raised fill.  -->
+    <Style x:Key="CaptureRowStyle" TargetType="ListViewItem">
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Margin" Value="0,0,0,6" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListViewItem">
+                    <Grid Background="Transparent" CornerRadius="{StaticResource RadiusControl}">
+                        <!--
+                            Every interactive state paints a single fill *behind* the row rather than a
+                            scrim over it. A scrim over the opaque thumbnail either vanishes
+                            (dark-on-dark) or washes the image out; a fill behind frames the row and its
+                            thumbnail (which carries its own border) instead of covering them. Each state
+                            just swaps this one rectangle's brush.
+                        -->
+                        <Rectangle
+                            x:Name="RowFill"
+                            IsHitTestVisible="False"
+                            Opacity="0"
+                            RadiusX="6"
+                            RadiusY="6"
+                            StrokeThickness="1" />
+
+                        <ContentPresenter Padding="{TemplateBinding Padding}" HorizontalContentAlignment="Stretch" />
+
+                        <VisualStateManager.VisualStateGroups>
+                            <VisualStateGroup x:Name="CommonStates">
+                                <VisualState x:Name="Normal" />
+                                <VisualState x:Name="PointerOver">
+                                    <VisualState.Setters>
+                                        <Setter Target="RowFill.Opacity" Value="1" />
+                                        <Setter Target="RowFill.Fill" Value="{ThemeResource RowHoverFill}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Pressed">
+                                    <VisualState.Setters>
+                                        <Setter Target="RowFill.Opacity" Value="1" />
+                                        <Setter Target="RowFill.Fill" Value="{ThemeResource RowPressedFill}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="Selected">
+                                    <VisualState.Setters>
+                                        <Setter Target="RowFill.Opacity" Value="1" />
+                                        <Setter Target="RowFill.Fill" Value="{ThemeResource RowSelectFill}" />
+                                        <Setter Target="RowFill.Stroke" Value="{ThemeResource RowSelectStroke}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                                <VisualState x:Name="PointerOverSelected">
+                                    <VisualState.Setters>
+                                        <Setter Target="RowFill.Opacity" Value="1" />
+                                        <Setter Target="RowFill.Fill" Value="{ThemeResource RowSelectFillHover}" />
+                                        <Setter Target="RowFill.Stroke" Value="{ThemeResource RowSelectStroke}" />
+                                    </VisualState.Setters>
+                                </VisualState>
+                            </VisualStateGroup>
+                        </VisualStateManager.VisualStateGroups>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>
