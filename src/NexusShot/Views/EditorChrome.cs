@@ -21,10 +21,13 @@ public sealed class EditorChrome(Ui ui)
     /// physical pixel rather than one DIP.</summary>
     public static double Scale { get; set; } = 1;
 
-    public static double TitleBarHeight => 36 * Scale;
-    public static double ToolbarHeight => 52 * Scale;
+    /// <summary>The caption strip. Only tall enough to be a drag region and clear the caption
+    /// buttons - a full titlebar plus a toolbar was 88px of chrome before any image showed.</summary>
+    public static double TitleBarHeight => 30 * Scale;
+
+    public static double ToolbarHeight => 46 * Scale;
     public static double ChromeTop => TitleBarHeight + ToolbarHeight;
-    public static double FooterHeight => 44 * Scale;
+    public static double FooterHeight => 40 * Scale;
 
     private static double TileSize => 32 * Scale;
 
@@ -69,6 +72,7 @@ public sealed class EditorChrome(Ui ui)
         SavePressed = SaveAsPressed = CopyPressed = false;
         FitPicked = null;
 
+        ui.Scale = Scale;
         DrawTitleBar(width, title);
         DrawToolbar(document, width);
         DrawFooter(document, width, height, fit, toast);
@@ -150,11 +154,20 @@ public sealed class EditorChrome(Ui ui)
         var swatch = S(26);
         var swatchSpan = Palette.Swatches.Length * (swatch + S(2));
         var chip = S(104);
-        var sliderSpan = S(46) + S(120) + S(30);
+        var slider = S(120);
 
-        var content = swatchSpan + S(12) + chip + S(18) + sliderSpan;
+        var content = swatchSpan + S(12) + chip + S(18) + S(46) + slider + S(30);
         var available = right - left;
-        if (available < content) return;   // too narrow: the toolbar drops the centre group
+
+        // Narrow window: drop the slider's label and shrink its track rather than dropping the whole
+        // group. Losing the swatches entirely because the window is 100px short is worse than a
+        // tighter slider.
+        if (available < content)
+        {
+            slider = Math.Max(S(60), slider - (content - available));
+            content = swatchSpan + S(12) + chip + S(18) + S(46) + slider + S(30);
+            if (available < content) return;
+        }
 
         var x = left + (available - content) / 2;
 
@@ -209,9 +222,9 @@ public sealed class EditorChrome(Ui ui)
             ui.Theme.TextTertiary, (float)S(Metrics.FontCaption));
         x += S(46);
 
-        if (ui.Slider(9001, new Rect(x, y, S(120), tile), 1, isPaint ? 300 : 20, ref thickness))
+        if (ui.Slider(9001, new Rect(x, y, slider, tile), 1, isPaint ? 300 : 20, ref thickness))
             document.SetStrokeThickness(thickness, isAdjusting: true);
-        x += S(126);
+        x += slider + S(6);
 
         ui.Text(((int)Math.Round(thickness)).ToString(), new Rect(x, y, S(24), tile),
             ui.Theme.TextSecondary, (float)S(Metrics.FontCaption));

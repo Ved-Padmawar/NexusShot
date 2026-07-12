@@ -147,6 +147,7 @@ public sealed class MainWindow : D2DRenderWindow
         _ui.Theme = SystemTheme.Resolve(_settings.Theme);
 
         _scale = Functions.GetDpiForWindow(Handle) / 96.0;
+        _ui.Scale = _scale;
         
 
         var client = ClientRect;
@@ -419,12 +420,18 @@ public sealed class MainWindow : D2DRenderWindow
             glyph: Icons.Copy, glyphSize: glyph, fontSize: font))
             ClipboardImage.Copy(item.FilePath);
 
-        right -= S(40);
-        if (ui.Tile(21, new Rect(right, y, S(32), S(32)), false, Icons.Delete, glyph, "Remove"))
+        // The icon-only actions sit in a taller box with a larger glyph: at 14px they read as
+        // afterthoughts next to the labelled buttons they share a row with.
+        var icon = S(36);
+        var iconGlyph = S(17);
+        var iconY = bounds.Y + (bounds.Height - icon) / 2;
+
+        right -= icon + S(6);
+        if (ui.Tile(21, new Rect(right, iconY, icon, icon), false, Icons.Delete, iconGlyph, "Remove"))
             Delete(item);
 
-        right -= S(40);
-        if (ui.Tile(20, new Rect(right, y, S(32), S(32)), false, Icons.Reveal, glyph,
+        right -= icon + S(4);
+        if (ui.Tile(20, new Rect(right, iconY, icon, icon), false, Icons.Reveal, iconGlyph,
             "Show in Explorer"))
             Reveal(item.FilePath);
     }

@@ -352,14 +352,24 @@ public sealed class Ui(D2DResources resources)
     public void Separator(double x, double top, double height) =>
         FillRect(new Rect(x, top, 1, height), Theme.StrokeSubtle);
 
-    /// <summary>A label above the pointer. Drawn last by the caller so it is never occluded.</summary>
+    /// <summary>The display scale, so tooltips are legible on a scaled monitor. Callers that draw
+    /// chrome set it once per frame.</summary>
+    public double Scale { get; set; } = 1;
+
+    /// <summary>A label under the anchor, sized to its text rather than a character-count guess.</summary>
     private void Tooltip(Rect anchor, string text)
     {
-        var width = Math.Max(40, text.Length * 7 + 16);
-        var bounds = new Rect(anchor.Center.X - width / 2, anchor.Bottom + 6, width, 24);
-        FillRounded(bounds, 4, Theme.SurfaceOverlay);
-        StrokeRounded(bounds, 4, Theme.StrokeDefault);
-        Text(text, bounds, Theme.TextSecondary, Metrics.FontCaption, align: TextAlign.Center);
+        var font = Metrics.FontBody * Scale;
+        var padding = 10 * Scale;
+        var height = 26 * Scale;
+
+        var width = MeasureText(text, font) + padding * 2;
+        var x = anchor.Center.X - width / 2;
+        var bounds = new Rect(x, anchor.Bottom + 6 * Scale, width, height);
+
+        FillRounded(bounds, (float)(4 * Scale), Theme.SurfaceOverlay);
+        StrokeRounded(bounds, (float)(4 * Scale), Theme.StrokeDefault);
+        Text(text, bounds, Theme.TextPrimary, (float)font, align: TextAlign.Center);
     }
 
     private static D2D1_ROUNDED_RECT Rounded(Rect rect, float radius) => new()
