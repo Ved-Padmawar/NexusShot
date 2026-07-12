@@ -138,14 +138,21 @@ public sealed class EditorWindow : D2DRenderWindow
     {
         if (_image is null) return;
         var well = CanvasWell();
-        const int margin = 24;
+        var margin = 24 * EditorChrome.Scale;
 
         var available = new Size(
             Math.Max(1, well.Width - margin * 2),
             Math.Max(1, well.Height - margin * 2));
 
+        // Fit means fit, in both directions. Clamping to 1 leaves a small capture stranded at its
+        // native size in the middle of a large window, which is not a fit - it is a refusal to
+        // scale. "100%" is the mode that guarantees one image pixel to one physical pixel; Fit's
+        // job is to use the space.
+        //
+        // Upscaling costs nothing in fidelity here because the GPU samples the real bitmap every
+        // frame. It is a pre-scaled *copy* that goes soft, and there is no copy.
         _scale = _fitToViewport
-            ? Math.Min(1, Math.Min(available.Width / _image.Width, available.Height / _image.Height))
+            ? Math.Min(available.Width / _image.Width, available.Height / _image.Height)
             : 1;
 
         _offsetX = Math.Round(well.X + (well.Width - _image.Width * _scale) / 2);

@@ -101,6 +101,22 @@ public sealed class Ui(D2DResources resources)
             _target, text, format, AnnotationRenderer.ToRect(bounds), resources.Brush(color));
     }
 
+    /// <summary>
+    /// An icon glyph, centred in its box.
+    ///
+    /// <paramref name="size"/> is the glyph's em size, not the box: an icon font draws its glyphs to
+    /// fill their em square, so the box is the tap target and this is the mark inside it.
+    /// </summary>
+    public void Icon(string glyph, Rect bounds, Rgba color, double size)
+    {
+        var format = resources.TextFormat(Icons.Family, (float)size, bold: false, italic: false);
+        format.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER);
+        format.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        ID2D1RenderTargetExtensions.DrawText(
+            _target, glyph, format, AnnotationRenderer.ToRect(bounds), resources.Brush(color));
+    }
+
     // ============================  WIDGETS  ============================
 
     /// <summary>
@@ -124,8 +140,10 @@ public sealed class Ui(D2DResources resources)
     public bool IsHot(int id) => Hot == id;
     public bool IsActive(int id) => Active == id;
 
-    /// <summary>A tool tile: an icon on a rounded fill that reads selected, hot or idle.</summary>
-    public bool Tile(int id, Rect bounds, bool selected, Action<Ui, Rect, Rgba> icon, string? tooltip = null)
+    /// <summary>A tool tile: an icon glyph on a rounded fill that reads selected, hot or idle.</summary>
+    public bool Tile(
+        int id, Rect bounds, bool selected, string glyph, double glyphSize,
+        string? tooltip = null, Rgba? tint = null)
     {
         var clicked = Interact(id, bounds);
 
@@ -137,8 +155,7 @@ public sealed class Ui(D2DResources resources)
 
         if (fill.A > 0) FillRounded(bounds, Metrics.RadiusControl, fill);
 
-        var tint = selected ? Theme.TextPrimary : Theme.TextSecondary;
-        icon(this, bounds, tint);
+        Icon(glyph, bounds, tint ?? (selected ? Theme.TextPrimary : Theme.TextSecondary), glyphSize);
 
         if (tooltip is not null && IsHot(id)) Tooltip(bounds, tooltip);
         return clicked;
@@ -198,20 +215,20 @@ public sealed class Ui(D2DResources resources)
         return true;
     }
 
-    /// <summary>A text button with an optional accent (primary) treatment.</summary>
-    public bool Button(int id, Rect bounds, string label, bool primary = false, bool enabled = true)
+    /// <summary>A text button, optionally with a leading glyph and an accent (primary) treatment.</summary>
+    public bool Button(
+        int id, Rect bounds, string label,
+        bool primary = false, bool enabled = true,
+        string? glyph = null, double glyphSize = 14, double fontSize = Metrics.FontBody)
     {
+        Rgba fill, text;
+
         if (!enabled)
         {
-            FillRounded(bounds, Metrics.RadiusControl, Theme.FillPressed);
-            Text(label, bounds, Theme.TextTertiary, align: TextAlign.Center);
-            return false;
+            fill = Theme.FillPressed;
+            text = Theme.TextTertiary;
         }
-
-        var clicked = Interact(id, bounds);
-
-        Rgba fill, text;
-        if (primary)
+        else if (primary)
         {
             fill = IsActive(id) ? Theme.AccentPressed : IsHot(id) ? Theme.AccentHover : Theme.Accent;
             text = Theme.TextOnAccent;
@@ -222,9 +239,28 @@ public sealed class Ui(D2DResources resources)
             text = Theme.TextPrimary;
         }
 
+        var clicked = enabled && Interact(id, bounds);
+
         FillRounded(bounds, Metrics.RadiusControl, fill);
         if (!primary) StrokeRounded(bounds, Metrics.RadiusControl, Theme.StrokeSubtle);
-        Text(label, bounds, text, align: TextAlign.Center);
+
+        if (glyph is null)
+        {
+            Text(label, bounds, text, (float)fontSize, align: TextAlign.Center);
+            return clicked;
+        }
+
+        // Glyph and label as one centred cluster: the glyph sits left of the text, and the pair is
+        // centred together rather than each being centred in its own half.
+        var gap = glyphSize * 0.45;
+        var labelWidth = label.Length * fontSize * 0.58;
+        var content = glyphSize + gap + labelWidth;
+        var x = bounds.X + (bounds.Width - content) / 2;
+
+        Icon(glyph, new Rect(x, bounds.Y, glyphSize, bounds.Height), text, glyphSize);
+        Text(label, new Rect(x + glyphSize + gap, bounds.Y, labelWidth, bounds.Height),
+            text, (float)fontSize);
+
         return clicked;
     }
 

@@ -70,10 +70,11 @@ public sealed class EditorChrome(Ui ui)
         var x = S(8);
 
         // Tools. The id is derived from the tool, so it is stable however the bar is laid out.
+        var glyphSize = S(16);
         foreach (var tool in Tools)
         {
             if (ui.Tile((int)tool + 100, new Rect(x, y, tile, tile),
-                document.ActiveTool == tool, ToolIcons.For(tool), Label(tool)))
+                document.ActiveTool == tool, Glyph(tool), glyphSize, Label(tool)))
                 ToolPicked = tool;
             x += tile + TileGap;
         }
@@ -120,22 +121,46 @@ public sealed class EditorChrome(Ui ui)
         // Right-aligned actions.
         var right = width - S(8);
 
-        right -= S(74);
-        if (ui.Button(9020, new Rect(right, y + S(6), S(74), S(24)), "Save", primary: true))
+        right -= S(88);
+        if (ui.Button(9020, new Rect(right, y + S(4), S(88), S(28)), "Save",
+            primary: true, glyph: Icons.Save, glyphSize: S(13)))
             SavePressed = true;
 
-        right -= S(70);
-        if (ui.Button(9021, new Rect(right, y + S(6), S(62), S(24)), "Copy"))
+        right -= S(96);
+        if (ui.Button(9021, new Rect(right, y + S(4), S(88), S(28)), "Copy",
+            glyph: Icons.Copy, glyphSize: S(13)))
             CopyPressed = true;
 
         right -= tile + S(6);
-        if (ui.Tile(9023, new Rect(right, y, tile, tile), false, ToolIcons.Redo, "Redo") && document.CanRedo)
+        if (ui.Tile(9023, new Rect(right, y, tile, tile), false, Icons.Redo, glyphSize, "Redo")
+            && document.CanRedo)
             RedoPressed = true;
 
         right -= tile + S(2);
-        if (ui.Tile(9022, new Rect(right, y, tile, tile), false, ToolIcons.Undo, "Undo") && document.CanUndo)
+        if (ui.Tile(9022, new Rect(right, y, tile, tile), false, Icons.Undo, glyphSize, "Undo")
+            && document.CanUndo)
             UndoPressed = true;
     }
+
+    private static string Glyph(EditorTool tool) => tool switch
+    {
+        EditorTool.Select => Icons.Select,
+        EditorTool.Rectangle => Icons.Rectangle,
+        EditorTool.Ellipse => Icons.Ellipse,
+        EditorTool.Line => Icons.Line,
+        EditorTool.Arrow => Icons.Arrow,
+        EditorTool.Pen => Icons.Pen,
+        EditorTool.Brush => Icons.Brush,
+        EditorTool.Eraser => Icons.Eraser,
+        EditorTool.Text => Icons.Text,
+        EditorTool.Highlight => Icons.Highlight,
+        EditorTool.Blur => Icons.Blur,
+        EditorTool.Pixelate => Icons.Pixelate,
+        EditorTool.Counter => Icons.Counter,
+        EditorTool.Spotlight => Icons.Spotlight,
+        EditorTool.Crop => Icons.Crop,
+        _ => string.Empty,
+    };
 
     private void DrawTextFormat(EditorDocument document, Annotation? target, ref double x, double y, double tile)
     {

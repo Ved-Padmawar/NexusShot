@@ -148,11 +148,11 @@ public sealed class MainWindow : D2DRenderWindow
         y += S(38);
 
         // Capture actions: icon, label, shortcut - the sidebar's primary content.
-        y = DrawCaptureAction(ui, bounds, y, 1, ToolIcons.CaptureRegion, "Region", "Ctrl+Shift+S",
+        y = DrawCaptureAction(ui, bounds, y, 1, Icons.CaptureRegion, "Region", "Ctrl+Shift+S",
             CaptureMode.Region);
-        y = DrawCaptureAction(ui, bounds, y, 2, ToolIcons.CaptureScreen, "Full screen", "Ctrl+Shift+F",
+        y = DrawCaptureAction(ui, bounds, y, 2, Icons.CaptureScreen, "Full screen", "Ctrl+Shift+F",
             CaptureMode.FullScreen);
-        y = DrawCaptureAction(ui, bounds, y, 3, ToolIcons.CaptureWindow, "Active window", "Ctrl+Shift+W",
+        y = DrawCaptureAction(ui, bounds, y, 3, Icons.CaptureWindow, "Active window", "Ctrl+Shift+W",
             CaptureMode.ActiveWindow);
 
         y += S(14);
@@ -191,7 +191,7 @@ public sealed class MainWindow : D2DRenderWindow
 
     private double DrawCaptureAction(
         Ui ui, Rect sidebar, double y, int id,
-        Action<Ui, Rect, Rgba> icon, string label, string shortcut, CaptureMode mode)
+        string glyph, string label, string shortcut, CaptureMode mode)
     {
         var theme = ui.Theme;
         var row = new Rect(sidebar.X + S(10), y, sidebar.Width - S(20), S(38));
@@ -202,7 +202,7 @@ public sealed class MainWindow : D2DRenderWindow
         if (fill.A > 0) ui.FillRounded(row, (float)S(Metrics.RadiusControl), fill);
 
         // The icon carries the accent: it is the only colour in an otherwise neutral row.
-        icon(ui, new Rect(row.X + S(9), row.Y + S(10), S(18), S(18)), theme.Accent);
+        ui.Icon(glyph, new Rect(row.X + S(8), row.Y, S(20), row.Height), theme.Accent, S(15));
 
         ui.Text(label, new Rect(row.X + S(38), row.Y, row.Width - S(48), row.Height),
             theme.TextPrimary, (float)S(Metrics.FontBody));
@@ -284,14 +284,14 @@ public sealed class MainWindow : D2DRenderWindow
         var y = bounds.Y + (bounds.Height - size) / 2;
 
         if (ui.Tile(30, new Rect(bounds.X + S(12), y, size, size), false,
-            ToolIcons.ThemeToggle, "Switch theme"))
+            Icons.Theme, S(15), "Switch theme"))
         {
             _settings.Theme = _settings.Theme == AppTheme.Light ? AppTheme.Dark : AppTheme.Light;
             _storage.SaveSettings(_settings);
         }
 
         if (ui.Tile(31, new Rect(bounds.Right - S(12) - size, y, size, size), _settingsOpen,
-            ToolIcons.Settings, "Settings"))
+            Icons.Settings, S(15), "Settings"))
         {
             _settingsOpen = !_settingsOpen;
         }
@@ -358,20 +358,23 @@ public sealed class MainWindow : D2DRenderWindow
         var y = bounds.Y + (bounds.Height - S(32)) / 2;
         var right = bounds.Right - S(24);
 
-        right -= S(86);
-        if (ui.Button(23, new Rect(right, y, S(86), S(32)), "Edit", primary: true))
+        right -= S(92);
+        if (ui.Button(23, new Rect(right, y, S(92), S(32)), "Edit",
+            primary: true, glyph: Icons.Edit, glyphSize: S(14)))
             EditRequested?.Invoke(item);
 
-        right -= S(94);
-        if (ui.Button(22, new Rect(right, y, S(86), S(32)), "Copy"))
+        right -= S(100);
+        if (ui.Button(22, new Rect(right, y, S(92), S(32)), "Copy",
+            glyph: Icons.Copy, glyphSize: S(14)))
             ClipboardImage.Copy(item.FilePath);
 
         right -= S(40);
-        if (ui.Tile(21, new Rect(right, y, S(32), S(32)), false, ToolIcons.Delete, "Remove"))
+        if (ui.Tile(21, new Rect(right, y, S(32), S(32)), false, Icons.Delete, S(14), "Remove"))
             Delete(item);
 
         right -= S(40);
-        if (ui.Tile(20, new Rect(right, y, S(32), S(32)), false, ToolIcons.Reveal, "Show in Explorer"))
+        if (ui.Tile(20, new Rect(right, y, S(32), S(32)), false, Icons.Reveal, S(14),
+            "Show in Explorer"))
             Reveal(item.FilePath);
     }
 
@@ -380,8 +383,9 @@ public sealed class MainWindow : D2DRenderWindow
         var theme = ui.Theme;
         var centre = bounds.Center;
 
-        ToolIcons.EmptyState(
-            ui, new Rect(centre.X - S(24), centre.Y - S(58), S(48), S(48)), theme.TextTertiary);
+        ui.Icon(Icons.EmptyState,
+            new Rect(bounds.X, centre.Y - S(66), bounds.Width, S(48)),
+            theme.TextTertiary, S(38));
 
         ui.Text("No captures yet",
             new Rect(bounds.X, centre.Y - S(6), bounds.Width, S(24)),
