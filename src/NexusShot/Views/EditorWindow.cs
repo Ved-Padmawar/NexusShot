@@ -63,10 +63,35 @@ public sealed class EditorWindow : D2DRenderWindow
         _document.Changed += (_, _) => Invalidate();
     }
 
+    /// <summary>
+    /// Releases the device resources when the window goes away.
+    ///
+    /// Destroying the HWND does not release the D2D device, the full-resolution bitmap or the
+    /// effects - they are COM objects this class owns, not window state. Waiting for Dispose leaves
+    /// them alive for as long as the host holds a reference, so opening and closing a few captures
+    /// walks the process into the hundreds of megabytes.
+    /// </summary>
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
+        ReleaseResources();
         Closed?.Invoke();
         base.OnDestroyed(sender, e);
+    }
+
+    private void ReleaseResources()
+    {
+        _textEditor?.Dispose();
+        _effects?.Dispose();
+        _image?.Dispose();
+        _resources?.Dispose();
+
+        _textEditor = null;
+        _effects = null;
+        _image = null;
+        _resources = null;
+        _renderer = null;
+        _ui = null;
+        _chrome = null;
     }
 
     /// <summary>
@@ -91,7 +116,7 @@ public sealed class EditorWindow : D2DRenderWindow
         using var context = target.AsDeviceContext();
         if (context is null) return;
 
-        _image = ImageSurface.Load(_path, context);
+        _image = ImageSurface.Load(_path, context, keepPixels: true);
         _document.SetImageSize(_image.Width, _image.Height);
         _effects = new PixelEffectSource(_image, _resources);
     }
@@ -269,7 +294,7 @@ public sealed class EditorWindow : D2DRenderWindow
         _effects?.Dispose();
         _image?.Dispose();
 
-        _image = ImageSurface.Load(_path, context);
+        _image = ImageSurface.Load(_path, context, keepPixels: true);
         _effects = new PixelEffectSource(_image, _resources);
         _document.SetImageSize(_image.Width, _image.Height);
         Invalidate();
@@ -492,14 +517,15 @@ public sealed class EditorWindow : D2DRenderWindow
     /// </summary>
     private Rgba BackdropUnderText(TextEditor editor)
     {
-        if (_image is null) return Rgba.White;
+        // The editor loads with keepPixels, so this is present; white is a safe fallback if a future
+        // caller ever loads without them.
+        if (_image?.Pixels is not { } pixels) return Rgba.White;
 
         var bounds = editor.Annotation.Bounds;
         var x = (int)Math.Clamp(bounds.X + 2, 0, _image.Width - 1);
         var y = (int)Math.Clamp(bounds.Y + 2, 0, _image.Height - 1);
 
         var offset = y * _image.Stride + x * 4;
-        var pixels = _image.Pixels;
         if (offset + 3 >= pixels.Length) return Rgba.White;
 
         // Premultiplied BGRA over white, since the box is opaque.
@@ -623,10 +649,8 @@ public sealed class EditorWindow : D2DRenderWindow
 
     protected override void Dispose(bool disposing)
     {
-        _textEditor?.Dispose();
-        _effects?.Dispose();
-        _image?.Dispose();
-        _resources?.Dispose();
+        // Idempotent: OnDestroyed already released these if the window was closed normally.
+        ReleaseResources();
         base.Dispose(disposing);
     }
 }

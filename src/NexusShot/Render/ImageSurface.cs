@@ -18,13 +18,24 @@ public sealed class ImageSurface : IDisposable
     public required int Width { get; init; }
     public required int Height { get; init; }
 
-    /// <summary>Premultiplied BGRA, top-down. The same bytes that were uploaded.</summary>
-    public required byte[] Pixels { get; init; }
+    /// <summary>
+    /// Premultiplied BGRA, top-down - or null when the caller did not ask for it.
+    ///
+    /// Holding the decoded pixels doubles the cost of an image: a 4K screenshot is ~33 MB on the CPU
+    /// on top of the same again on the GPU. Only the editor reads them back (to sample the colour
+    /// under a text box), so everything else - the history grid especially, which caches one surface
+    /// per capture - loads without them.
+    /// </summary>
+    public byte[]? Pixels { get; init; }
 
     public int Stride => Width * 4;
 
-    /// <summary>Decodes a file to premultiplied BGRA and uploads it.</summary>
-    public static unsafe ImageSurface Load(string path, IComObject<ID2D1DeviceContext> context)
+    /// <summary>
+    /// Decodes a file and uploads it. <paramref name="keepPixels"/> retains the CPU copy, which is
+    /// only worth doing for a surface something will read back.
+    /// </summary>
+    public static unsafe ImageSurface Load(
+        string path, IComObject<ID2D1DeviceContext> context, bool keepPixels = false)
     {
         var (pixels, width, height) = Decode(path);
 
@@ -52,9 +63,18 @@ public sealed class ImageSurface : IDisposable
                 Bitmap = bitmap,
                 Width = width,
                 Height = height,
-                Pixels = pixels,
+                Pixels = keepPixels ? pixels : null,
             };
         }
+    }
+
+    /// <summary>The image's dimensions, without decoding it. WIC reads the header only.</summary>
+    public static (int Width, int Height) ReadSize(string path)
+    {
+        using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
+        using var frame = decoder.GetFrame(0);
+        frame.Object.GetSize(out var width, out var height).ThrowOnError();
+        return ((int)width, (int)height);
     }
 
     /// <summary>

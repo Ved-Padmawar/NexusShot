@@ -5,14 +5,20 @@ using NexusShot.Render;
 namespace NexusShot.Views;
 
 /// <summary>
-/// The shell: capture actions, the history of what has been captured, and a detail preview.
+/// The shell: a sidebar that browses, a pane that previews and acts.
 ///
-/// The XAML build's blurry preview was structural. A XAML Image scales whatever bitmap it is given,
-/// so the detail view either showed a pre-scaled thumbnail (soft) or decoded the full image into
-/// the visual tree (heavy). Here there is one bitmap per capture, uploaded once at full resolution,
-/// and the GPU rescales it per frame - so the grid and the preview draw from the same pixels and
-/// the preview is exact at any size. The thumbnail optimisation that worked in the old build (cache
-/// the decode, not the display) survives as the bitmap cache.
+/// The layout is the XAML build's, because that layout was right: a 248px sunken sidebar holding the
+/// brand, the capture actions as a labelled list with their shortcuts, then the recent captures; and
+/// a detail pane whose preview sits in a rounded sunken well so the capture reads as inset from the
+/// chrome. Annotating opens the editor as its own window rather than docking it here - a docked
+/// editor would permanently surrender the sidebar's width from the image, on every edit, to a list
+/// the user has stopped looking at.
+///
+/// What is different is underneath. A XAML Image scales whatever bitmap it is handed, so the old
+/// detail view either showed a pre-scaled thumbnail (soft - the bug that cost a release) or decoded
+/// the full image into the visual tree (heavy). Here one bitmap per capture is uploaded at full
+/// resolution and the GPU rescales it per frame, so the row and the preview draw from the same
+/// pixels and the preview is exact at any size.
 /// </summary>
 public sealed class MainWindow : D2DRenderWindow
 {
@@ -30,17 +36,20 @@ public sealed class MainWindow : D2DRenderWindow
     private D2DResources? _resources;
     private Ui? _ui;
 
-    /// <summary>Decoded captures, by path. A capture is decoded once and drawn many times, at
-    /// whatever size - which is what makes both the grid and the preview sharp.</summary>
+    /// <summary>Decoded captures, by path. One bitmap serves both the row and the full-size preview,
+    /// which is what makes the preview exact rather than a scaled-up thumbnail.</summary>
     private readonly Dictionary<string, ImageSurface> _bitmaps = [];
+
+    /// <summary>The frame each cached bitmap was last drawn on, so the cache can evict the coldest.</summary>
+    private readonly Dictionary<string, long> _lastDrawn = [];
+    private long _frame;
 
     private ScreenshotHistoryItem? _selected;
     private Point _pointer;
     private bool _pointerDown;
     private double _scroll;
+    private bool _settingsOpen;
 
-    /// <summary>Raised when the user asks for a capture. The host owns the capture pipeline; the
-    /// window only reports intent.</summary>
     public event Action<CaptureMode>? CaptureRequested;
     public event Action<ScreenshotHistoryItem>? EditRequested;
 
@@ -60,17 +69,30 @@ public sealed class MainWindow : D2DRenderWindow
         _selected = history.FirstOrDefault();
     }
 
-    private double Scale => Functions.GetDpiForWindow(Handle) / 96.0;
-    private static double S(double units, double scale) => units * scale;
+    private double _scale = 1;
 
-    /// <summary>Adds a capture to the top of the history and selects it.</summary>
+    /// <summary>Design units to physical pixels. Every metric goes through here.</summary>
+    private double S(double units) => units * _scale;
+
     public void AddCapture(ScreenshotHistoryItem item)
     {
         _history.Insert(0, item);
         _selected = item;
+        _settingsOpen = false;
+        _scroll = 0;
         _storage.SaveHistory(_history);
         Invalidate();
     }
+
+    /// <summary>Forgets a cached bitmap, so the next frame re-decodes it. Used after an editor saves
+    /// over a capture: the file has changed, and the cached pixels are the old ones.</summary>
+    public void DropCache(string path)
+    {
+        if (_bitmaps.Remove(path, out var bitmap)) bitmap.Dispose();
+        _lastDrawn.Remove(path);
+    }
+
+    // ============================  RENDER  ============================
 
     protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)
     {
@@ -81,221 +103,404 @@ public sealed class MainWindow : D2DRenderWindow
         _ui ??= new Ui(_resources);
         _ui.Theme = _settings.Theme == AppTheme.Light ? Theme.Light : Theme.Dark;
 
-        var theme = _ui.Theme;
-        var scale = Scale;
+        _scale = Functions.GetDpiForWindow(Handle) / 96.0;
+        _frame++;
+
         var client = ClientRect;
         var width = (double)client.Width;
         var height = (double)client.Height;
 
-        renderTarget.Clear(D2DResources.ToD3D(theme.SurfaceBase));
+        renderTarget.Clear(D2DResources.ToD3D(_ui.Theme.SurfaceBase));
         _ui.BeginFrame(target, _pointer, _pointerDown);
 
-        DrawToolbar(_ui, width, scale);
+        var sidebar = new Rect(0, 0, S(248), height);
+        var pane = new Rect(sidebar.Right, 0, width - sidebar.Width, height);
 
-        var sidebarWidth = S(300, scale);
-        var top = S(64, scale);
+        DrawSidebar(_ui, target, sidebar);
 
-        DrawHistory(_ui, target, new Rect(0, top, sidebarWidth, height - top), scale);
-        DrawPreview(_ui, target,
-            new Rect(sidebarWidth, top, width - sidebarWidth, height - top), scale);
+        if (_settingsOpen) DrawSettings(_ui, pane);
+        else DrawDetail(_ui, target, pane);
 
         _ui.EndFrame();
     }
 
-    private void DrawToolbar(Ui ui, double width, double scale)
+    // ============================  SIDEBAR  ============================
+
+    private void DrawSidebar(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds)
     {
-        var height = S(64, scale);
-        ui.FillRect(new Rect(0, 0, width, height), ui.Theme.SurfaceRaised);
-        ui.FillRect(new Rect(0, height - 1, width, 1), ui.Theme.StrokeSubtle);
+        var theme = ui.Theme;
+        ui.FillRect(bounds, theme.SurfaceSunken);
 
-        var y = (height - S(32, scale)) / 2;
-        var x = S(16, scale);
+        var y = bounds.Y + S(20);
 
-        ui.Text("NexusShot", new Rect(x, 0, S(120, scale), height),
-            ui.Theme.TextPrimary, (float)S(Metrics.FontSubtitle, scale), bold: true);
-        x += S(130, scale);
+        // Brand: the mark, the name, and a version pill.
+        DrawBrandMark(ui, new Rect(bounds.X + S(18), y, S(22), S(22)));
+        ui.Text("NexusShot", new Rect(bounds.X + S(50), y, S(110), S(22)),
+            theme.TextPrimary, (float)S(Metrics.FontSubtitle), bold: true);
 
-        if (ui.Button(1, new Rect(x, y, S(110, scale), S(32, scale)), "Region", primary: true))
-            CaptureRequested?.Invoke(CaptureMode.Region);
-        x += S(118, scale);
+        var pill = new Rect(bounds.X + S(158), y + S(2), S(44), S(18));
+        ui.FillRounded(pill, (float)S(9), theme.SurfaceOverlay);
+        ui.Text("2.0.0", pill, theme.TextTertiary, (float)S(10), align: TextAlign.Center);
 
-        if (ui.Button(2, new Rect(x, y, S(120, scale), S(32, scale)), "Full screen"))
-            CaptureRequested?.Invoke(CaptureMode.FullScreen);
-        x += S(128, scale);
+        y += S(38);
 
-        if (ui.Button(3, new Rect(x, y, S(120, scale), S(32, scale)), "Window"))
-            CaptureRequested?.Invoke(CaptureMode.ActiveWindow);
+        // Capture actions: icon, label, shortcut - the sidebar's primary content.
+        y = DrawCaptureAction(ui, bounds, y, 1, ToolIcons.CaptureRegion, "Region", "Ctrl+Shift+S",
+            CaptureMode.Region);
+        y = DrawCaptureAction(ui, bounds, y, 2, ToolIcons.CaptureScreen, "Full screen", "Ctrl+Shift+F",
+            CaptureMode.FullScreen);
+        y = DrawCaptureAction(ui, bounds, y, 3, ToolIcons.CaptureWindow, "Active window", "Ctrl+Shift+W",
+            CaptureMode.ActiveWindow);
 
-        // Theme toggle, right-aligned.
-        var right = width - S(16, scale) - S(90, scale);
-        if (ui.Button(4, new Rect(right, y, S(90, scale), S(32, scale)),
-            _settings.Theme == AppTheme.Light ? "Dark" : "Light"))
+        y += S(14);
+
+        // "RECENT" header, over a hairline.
+        ui.FillRect(new Rect(bounds.X, y, bounds.Width, 1), theme.StrokeSubtle);
+        ui.Text("RECENT", new Rect(bounds.X + S(20), y + S(10), bounds.Width, S(18)),
+            theme.TextTertiary, (float)S(Metrics.FontCaption), bold: true);
+
+        y += S(34);
+
+        var footer = S(48);
+        var list = new Rect(bounds.X, y, bounds.Width, bounds.Bottom - y - footer);
+        DrawHistory(ui, target, list);
+
+        DrawSidebarFooter(ui, new Rect(bounds.X, bounds.Bottom - footer, bounds.Width, footer));
+    }
+
+    /// <summary>The app mark: the Nexus tile, a rounded square split on the diagonal.</summary>
+    private void DrawBrandMark(Ui ui, Rect bounds)
+    {
+        ui.FillRounded(bounds, (float)S(5), new Rgba(0x3A, 0x46, 0x52));
+
+        // The cyan half, as a stack of horizontal spans under the diagonal.
+        var steps = Math.Max(1, (int)bounds.Height);
+        for (var i = 0; i < steps; i++)
         {
-            _settings.Theme = _settings.Theme == AppTheme.Light ? AppTheme.Dark : AppTheme.Light;
-            _storage.SaveSettings(_settings);
+            var t = i / (double)steps;
+            var rowY = bounds.Y + t * bounds.Height;
+            var span = bounds.Width * (1 - t);
+            if (span <= 0) continue;
+            ui.FillRect(new Rect(bounds.X, rowY, span, bounds.Height / steps + 0.5),
+                new Rgba(0x4F, 0xC3, 0xE8));
         }
     }
 
-    /// <summary>The capture list. Each row draws its own thumbnail from the cached full bitmap.</summary>
-    private void DrawHistory(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds, double scale)
+    private double DrawCaptureAction(
+        Ui ui, Rect sidebar, double y, int id,
+        Action<Ui, Rect, Rgba> icon, string label, string shortcut, CaptureMode mode)
     {
-        ui.FillRect(bounds, ui.Theme.SurfaceBase);
-        ui.FillRect(new Rect(bounds.Right - 1, bounds.Y, 1, bounds.Height), ui.Theme.StrokeSubtle);
+        var theme = ui.Theme;
+        var row = new Rect(sidebar.X + S(10), y, sidebar.Width - S(20), S(38));
+
+        if (ui.Interact(id, row)) CaptureRequested?.Invoke(mode);
+
+        var fill = ui.IsActive(id) ? theme.FillPressed : ui.IsHot(id) ? theme.FillHover : default;
+        if (fill.A > 0) ui.FillRounded(row, (float)S(Metrics.RadiusControl), fill);
+
+        // The icon carries the accent: it is the only colour in an otherwise neutral row.
+        icon(ui, new Rect(row.X + S(9), row.Y + S(10), S(18), S(18)), theme.Accent);
+
+        ui.Text(label, new Rect(row.X + S(38), row.Y, row.Width - S(48), row.Height),
+            theme.TextPrimary, (float)S(Metrics.FontBody));
+
+        ui.Text(shortcut, new Rect(row.X, row.Y, row.Width - S(10), row.Height),
+            theme.TextTertiary, (float)S(Metrics.FontCaption), align: TextAlign.Right);
+
+        return y + S(39);
+    }
+
+    private void DrawHistory(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds)
+    {
+        var theme = ui.Theme;
 
         if (_history.Count == 0)
         {
-            ui.Text("No captures yet", bounds, ui.Theme.TextTertiary,
-                (float)S(Metrics.FontBody, scale), align: TextAlign.Center);
+            ui.Text("Nothing captured yet", bounds, theme.TextTertiary,
+                (float)S(Metrics.FontCaption), align: TextAlign.Center);
             return;
         }
 
-        var rowHeight = S(76, scale);
-        var padding = S(10, scale);
-        var y = bounds.Y + padding - _scroll;
+        var rowHeight = S(48);
+        var gap = S(2);
+        var y = bounds.Y - _scroll;
 
         for (var i = 0; i < _history.Count; i++)
         {
             var item = _history[i];
-            var row = new Rect(bounds.X + padding, y, bounds.Width - padding * 2, rowHeight);
-            y += rowHeight + S(6, scale);
+            var row = new Rect(bounds.X + S(10), y, bounds.Width - S(20), rowHeight);
+            y += rowHeight + gap;
 
-            // Cull: a long history must not cost anything for the rows nobody can see.
+            // Cull, and clip to the list: a long history must not paint over the footer.
             if (row.Bottom < bounds.Y || row.Y > bounds.Bottom) continue;
 
             var id = 1000 + i;
             var selected = ReferenceEquals(item, _selected);
-            var clicked = ui.Interact(id, row);
+            if (ui.Interact(id, row))
+            {
+                _selected = item;
+                _settingsOpen = false;
+            }
 
-            // Selection is an elevated neutral pill, not a tint - it sits behind the thumbnail, so a
+            // Selection is an elevated neutral pill, not a tint: it sits behind the thumbnail, so a
             // coloured fill would cast onto the capture.
             if (selected)
             {
-                ui.FillRounded(row, (float)S(Metrics.RadiusContainer, scale), ui.Theme.RowSelectFill);
-                ui.StrokeRounded(row, (float)S(Metrics.RadiusContainer, scale), ui.Theme.RowSelectStroke);
+                ui.FillRounded(row, (float)S(Metrics.RadiusControl), theme.RowSelectFill);
+                ui.StrokeRounded(row, (float)S(Metrics.RadiusControl), theme.RowSelectStroke);
             }
             else if (ui.IsActive(id))
-                ui.FillRounded(row, (float)S(Metrics.RadiusContainer, scale), ui.Theme.RowPressedFill);
+                ui.FillRounded(row, (float)S(Metrics.RadiusControl), theme.RowPressedFill);
             else if (ui.IsHot(id))
-                ui.FillRounded(row, (float)S(Metrics.RadiusContainer, scale), ui.Theme.RowHoverFill);
+                ui.FillRounded(row, (float)S(Metrics.RadiusControl), theme.RowHoverFill);
 
-            DrawThumbnail(ui, target, item,
-                new Rect(row.X + S(8, scale), row.Y + S(8, scale), S(96, scale), rowHeight - S(16, scale)));
+            // Thumbnail: 52x34, filling its slot, on an overlay backing so a transparent PNG reads.
+            var slot = new Rect(row.X + S(8), row.Y + S(7), S(52), S(34));
+            ui.FillRounded(slot, (float)S(4), theme.SurfaceOverlay);
+            DrawThumbnail(ui, target, item, slot);
 
-            var textX = row.X + S(114, scale);
-            var textWidth = row.Right - textX - S(10, scale);
+            var textX = slot.Right + S(10);
+            var textWidth = row.Right - textX - S(8);
 
-            ui.Text(item.FileName, new Rect(textX, row.Y + S(14, scale), textWidth, S(20, scale)),
-                ui.Theme.TextPrimary, (float)S(Metrics.FontBody, scale));
+            ui.Text(Truncate(item.FileName, 22),
+                new Rect(textX, row.Y + S(7), textWidth, S(18)),
+                theme.TextPrimary, (float)S(Metrics.FontBody), middle: false);
 
-            ui.Text($"{item.Width}×{item.Height}   ·   {Ago(item.CapturedAt)}",
-                new Rect(textX, row.Y + S(38, scale), textWidth, S(18, scale)),
-                ui.Theme.TextTertiary, (float)S(Metrics.FontCaption, scale));
-
-            if (clicked)
-            {
-                _selected = item;
-                Invalidate();
-            }
+            ui.Text($"{item.Width}×{item.Height}  ·  {Ago(item.CapturedAt)}",
+                new Rect(textX, row.Y + S(26), textWidth, S(16)),
+                theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
         }
     }
 
-    private void DrawThumbnail(
-        Ui ui, IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect bounds)
+    private void DrawSidebarFooter(Ui ui, Rect bounds)
     {
-        var bitmap = GetBitmap(target, item);
-        if (bitmap is null)
+        var theme = ui.Theme;
+        ui.FillRect(new Rect(bounds.X, bounds.Y, bounds.Width, 1), theme.StrokeSubtle);
+
+        var size = S(32);
+        var y = bounds.Y + (bounds.Height - size) / 2;
+
+        if (ui.Tile(30, new Rect(bounds.X + S(12), y, size, size), false,
+            ToolIcons.ThemeToggle, "Switch theme"))
         {
-            ui.FillRounded(bounds, (float)S(4, Scale), ui.Theme.SurfaceSunken);
-            return;
+            _settings.Theme = _settings.Theme == AppTheme.Light ? AppTheme.Dark : AppTheme.Light;
+            _storage.SaveSettings(_settings);
         }
 
-        // Aspect-fit inside the cell: a stretched thumbnail misrepresents what was captured.
-        var fit = Fit(bitmap.Width, bitmap.Height, bounds);
-
-        target.DrawBitmap(
-            bitmap.Bitmap, 1f,
-            D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-            AnnotationRenderer.ToRect(fit));
-
-        ui.StrokeRounded(fit, 2, ui.Theme.StrokeSubtle);
+        if (ui.Tile(31, new Rect(bounds.Right - S(12) - size, y, size, size), _settingsOpen,
+            ToolIcons.Settings, "Settings"))
+        {
+            _settingsOpen = !_settingsOpen;
+        }
     }
 
-    /// <summary>
-    /// The full-resolution detail view.
-    ///
-    /// It draws the same cached bitmap the thumbnail does, scaled by the GPU to whatever size the
-    /// pane happens to be. There is no second, smaller copy to go soft - which is the bug the last
-    /// release of the XAML build was spent on.
-    /// </summary>
-    private void DrawPreview(
-        Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds, double scale)
+    // ============================  DETAIL PANE  ============================
+
+    private void DrawDetail(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds)
     {
-        ui.FillRect(bounds, ui.Theme.SurfaceSunken);
+        var theme = ui.Theme;
 
         if (_selected is not { } item)
         {
-            ui.Text("Select a capture", bounds, ui.Theme.TextTertiary,
-                (float)S(Metrics.FontBody, scale), align: TextAlign.Center);
+            DrawEmptyState(ui, bounds);
             return;
         }
+
+        var bar = S(64);
+
+        // The preview well: sunken and rounded, so the capture reads as inset from the chrome.
+        // The top margin clears the caption buttons floating over this pane's top-right.
+        var well = new Rect(
+            bounds.X + S(24),
+            bounds.Y + S(48),
+            bounds.Width - S(48),
+            bounds.Height - S(48) - bar - S(12));
+
+        ui.FillRounded(well, (float)S(Metrics.RadiusContainer), theme.SurfaceSunken);
+        ui.StrokeRounded(well, (float)S(Metrics.RadiusContainer), theme.StrokeSubtle);
 
         var bitmap = GetBitmap(target, item);
         if (bitmap is null)
         {
-            ui.Text("Could not open this capture", bounds, ui.Theme.TextTertiary,
-                (float)S(Metrics.FontBody, scale), align: TextAlign.Center);
-            return;
+            ui.Text("Could not open this capture", well, theme.TextTertiary,
+                (float)S(Metrics.FontBody), align: TextAlign.Center);
+        }
+        else
+        {
+            // Inset from the well, then fill it: the image floats inside the frame rather than
+            // touching it, but a small capture still uses the space it was given.
+            var fit = Fit(bitmap.Width, bitmap.Height, well.Deflate(S(20)), enlarge: true);
+            target.DrawBitmap(
+                bitmap.Bitmap, 1f,
+                D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                AnnotationRenderer.ToRect(fit));
         }
 
-        var actions = S(56, scale);
-        var well = new Rect(
-            bounds.X + S(24, scale),
-            bounds.Y + S(24, scale),
-            bounds.Width - S(48, scale),
-            bounds.Height - S(48, scale) - actions);
+        DrawDetailBar(ui, item, new Rect(bounds.X, well.Bottom, bounds.Width, bar));
+    }
 
-        var fit = Fit(bitmap.Width, bitmap.Height, well);
+    private void DrawDetailBar(Ui ui, ScreenshotHistoryItem item, Rect bounds)
+    {
+        var theme = ui.Theme;
+
+        ui.Text(Truncate(item.FileName, 42),
+            new Rect(bounds.X + S(24), bounds.Y + S(12), bounds.Width * 0.5, S(20)),
+            theme.TextPrimary, (float)S(Metrics.FontSubtitle), bold: true, middle: false);
+
+        ui.Text($"{item.Width} × {item.Height}   ·   {item.CapturedAt.LocalDateTime:d MMM yyyy, HH:mm}",
+            new Rect(bounds.X + S(24), bounds.Y + S(34), bounds.Width * 0.5, S(16)),
+            theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
+
+        // Actions, right-aligned. Edit is the accent: it is what this pane is for.
+        var y = bounds.Y + (bounds.Height - S(32)) / 2;
+        var right = bounds.Right - S(24);
+
+        right -= S(86);
+        if (ui.Button(23, new Rect(right, y, S(86), S(32)), "Edit", primary: true))
+            EditRequested?.Invoke(item);
+
+        right -= S(94);
+        if (ui.Button(22, new Rect(right, y, S(86), S(32)), "Copy"))
+            ClipboardImage.Copy(item.FilePath);
+
+        right -= S(40);
+        if (ui.Tile(21, new Rect(right, y, S(32), S(32)), false, ToolIcons.Delete, "Remove"))
+            Delete(item);
+
+        right -= S(40);
+        if (ui.Tile(20, new Rect(right, y, S(32), S(32)), false, ToolIcons.Reveal, "Show in Explorer"))
+            Reveal(item.FilePath);
+    }
+
+    private void DrawEmptyState(Ui ui, Rect bounds)
+    {
+        var theme = ui.Theme;
+        var centre = bounds.Center;
+
+        ToolIcons.EmptyState(
+            ui, new Rect(centre.X - S(24), centre.Y - S(58), S(48), S(48)), theme.TextTertiary);
+
+        ui.Text("No captures yet",
+            new Rect(bounds.X, centre.Y - S(6), bounds.Width, S(24)),
+            theme.TextSecondary, (float)S(Metrics.FontSubtitle), align: TextAlign.Center);
+
+        ui.Text("Press Ctrl + Shift + S to capture a region",
+            new Rect(bounds.X, centre.Y + S(20), bounds.Width, S(20)),
+            theme.TextTertiary, (float)S(Metrics.FontBody), align: TextAlign.Center);
+    }
+
+    // ============================  SETTINGS  ============================
+
+    /// <summary>
+    /// Settings replace the detail pane in place rather than opening a dialog: every change applies
+    /// immediately, so there is nothing to confirm or cancel.
+    /// </summary>
+    private void DrawSettings(Ui ui, Rect bounds)
+    {
+        var theme = ui.Theme;
+
+        // Header, over a hairline. The right inset clears the caption buttons.
+        var header = new Rect(bounds.X, bounds.Y, bounds.Width, S(64));
+        ui.Text("Settings", new Rect(header.X + S(28), header.Y, header.Width, header.Height),
+            theme.TextPrimary, (float)S(Metrics.FontTitle), bold: true);
+        ui.FillRect(new Rect(bounds.X, header.Bottom, bounds.Width, 1), theme.StrokeSubtle);
+
+        // A capped, centred column: rows fill it, and it centres itself in the pane.
+        var columnWidth = Math.Min(S(600), bounds.Width - S(64));
+        var x = bounds.X + (bounds.Width - columnWidth) / 2;
+        var y = header.Bottom + S(24);
+
+        y = Section(ui, "CAPTURE", x, y, columnWidth);
+
+        y = Toggle(ui, 40, "Copy to clipboard automatically",
+            "Every capture lands on the clipboard as well as on disk.",
+            x, y, columnWidth, _settings.CopyToClipboardAutomatically,
+            value => _settings.CopyToClipboardAutomatically = value);
+
+        y = Toggle(ui, 41, "Save automatically",
+            $"Captures are written to {_settings.ScreenshotFolder}.",
+            x, y, columnWidth, _settings.SaveAutomatically,
+            value => _settings.SaveAutomatically = value);
+
+        y = Section(ui, "GENERAL", x, y, columnWidth);
+
+        y = Toggle(ui, 42, "Start with Windows",
+            "NexusShot launches into the notification area at sign-in.",
+            x, y, columnWidth, _settings.StartWithWindows,
+            value =>
+            {
+                _settings.StartWithWindows = value;
+                Startup.Set(value);
+            });
+
+        _ = y;
+    }
+
+    private double Section(Ui ui, string title, double x, double y, double width)
+    {
+        ui.Text(title, new Rect(x, y, width, S(20)),
+            ui.Theme.TextTertiary, (float)S(Metrics.FontCaption), bold: true, middle: false);
+        return y + S(26);
+    }
+
+    /// <summary>A settings row: title, caption, and a switch, over a hairline.</summary>
+    private double Toggle(
+        Ui ui, int id, string title, string caption,
+        double x, double y, double width, bool value, Action<bool> set)
+    {
+        var theme = ui.Theme;
+        var height = S(56);
+        var row = new Rect(x, y, width, height);
+
+        if (ui.Interact(id, row)) { set(!value); _storage.SaveSettings(_settings); }
+
+        ui.Text(title, new Rect(x, y + S(9), width - S(60), S(18)),
+            theme.TextPrimary, (float)S(Metrics.FontBody), middle: false);
+
+        ui.Text(caption, new Rect(x, y + S(28), width - S(60), S(16)),
+            theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
+
+        // The switch: a track with a knob that slides, filled with the accent when on.
+        var track = new Rect(row.Right - S(40), row.Center.Y - S(10), S(40), S(20));
+        ui.FillRounded(track, (float)S(10), value ? theme.Accent : theme.StrokeDefault);
+
+        var knob = new Point(
+            value ? track.Right - S(10) : track.X + S(10),
+            track.Center.Y);
+        ui.FillCircle(knob, (float)S(8), Rgba.White);
+
+        ui.FillRect(new Rect(x, row.Bottom, width, 1), theme.StrokeSubtle);
+        return row.Bottom + S(1);
+    }
+
+    // ============================  DATA  ============================
+
+    private void DrawThumbnail(
+        Ui ui, IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect slot)
+    {
+        var bitmap = GetBitmap(target, item);
+        if (bitmap is null) return;
+
+        // Aspect-fill, clipped to the chip. A letterboxed thumbnail in a 52x34 cell is mostly empty
+        // background; filling it makes the row scannable, which is the whole job of a thumbnail.
+        var fit = Cover(bitmap.Width, bitmap.Height, slot);
+
+        target.Object.PushAxisAlignedClip(
+            AnnotationRenderer.ToRect(slot), D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_ALIASED);
         target.DrawBitmap(
             bitmap.Bitmap, 1f,
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
             AnnotationRenderer.ToRect(fit));
-        ui.StrokeRounded(fit, 2, ui.Theme.StrokeSubtle);
-
-        // Actions under the preview.
-        var y = well.Bottom + S(14, scale);
-        var x = bounds.Center.X - S(180, scale);
-
-        if (ui.Button(20, new Rect(x, y, S(110, scale), S(32, scale)), "Edit", primary: true))
-            EditRequested?.Invoke(item);
-        x += S(120, scale);
-
-        if (ui.Button(21, new Rect(x, y, S(110, scale), S(32, scale)), "Copy"))
-            ClipboardImage.Copy(item.FilePath);
-        x += S(120, scale);
-
-        if (ui.Button(22, new Rect(x, y, S(110, scale), S(32, scale)), "Delete"))
-            Delete(item);
+        target.Object.PopAxisAlignedClip();
     }
 
-    private void Delete(ScreenshotHistoryItem item)
-    {
-        _history.Remove(item);
-        if (ReferenceEquals(_selected, item)) _selected = _history.FirstOrDefault();
-
-        if (_bitmaps.Remove(item.FilePath, out var bitmap)) bitmap.Dispose();
-
-        try { File.Delete(item.FilePath); }
-        catch (IOException) { /* the file may be open elsewhere; the history entry still goes */ }
-
-        _storage.SaveHistory(_history);
-        Invalidate();
-    }
-
-    /// <summary>Decodes a capture once and keeps it. This is the thumbnail optimisation from the
-    /// XAML build, except that here one bitmap serves both the grid and the full-size preview.</summary>
     private ImageSurface? GetBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
     {
-        if (_bitmaps.TryGetValue(item.FilePath, out var cached)) return cached;
+        if (_bitmaps.TryGetValue(item.FilePath, out var cached))
+        {
+            _lastDrawn[item.FilePath] = _frame;
+            return cached;
+        }
 
         using var context = target.AsDeviceContext();
         if (context is null || !File.Exists(item.FilePath)) return null;
@@ -304,6 +509,8 @@ public sealed class MainWindow : D2DRenderWindow
         {
             var surface = ImageSurface.Load(item.FilePath, context);
             _bitmaps[item.FilePath] = surface;
+            _lastDrawn[item.FilePath] = _frame;
+            Evict();
             return surface;
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException)
@@ -312,21 +519,105 @@ public sealed class MainWindow : D2DRenderWindow
         }
     }
 
-    /// <summary>Aspect-preserving fit, centred, never enlarged past 1:1.</summary>
-    private static Rect Fit(double imageWidth, double imageHeight, Rect bounds)
+    /// <summary>
+    /// Drops the bitmaps that have gone longest without being drawn.
+    ///
+    /// A GPU bitmap for a 4K capture is ~33 MB. An unbounded cache would pin one per capture for the
+    /// life of the process, which is a leak that only shows up after a long session.
+    /// </summary>
+    private void Evict()
+    {
+        const int limit = 12;
+        while (_bitmaps.Count > limit)
+        {
+            var coldest = _lastDrawn
+                .Where(entry => _selected is null || entry.Key != _selected.FilePath)
+                .OrderBy(entry => entry.Value)
+                .Select(entry => entry.Key)
+                .FirstOrDefault();
+
+            if (coldest is null) break;
+            if (_bitmaps.Remove(coldest, out var surface)) surface.Dispose();
+            _lastDrawn.Remove(coldest);
+        }
+    }
+
+    private void Delete(ScreenshotHistoryItem item)
+    {
+        _history.Remove(item);
+        if (ReferenceEquals(_selected, item)) _selected = _history.FirstOrDefault();
+
+        DropCache(item.FilePath);
+
+        try { File.Delete(item.FilePath); }
+        catch (IOException) { /* the file may be open elsewhere; the history entry still goes */ }
+
+        _storage.SaveHistory(_history);
+        Invalidate();
+    }
+
+    private static void Reveal(string path)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{path}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception exception) when (exception is IOException
+            or System.ComponentModel.Win32Exception)
+        {
+            // Explorer not opening is not worth taking the app down for.
+        }
+    }
+
+    /// <summary>
+    /// Aspect-preserving fit, centred.
+    ///
+    /// <paramref name="enlarge"/> lets a small capture grow to fill its container. The preview well
+    /// wants that - a 600x350 capture pinned at 1:1 in a 1400px pane is a postage stamp adrift in
+    /// empty space. It costs nothing in sharpness here because the GPU is upscaling the real bitmap,
+    /// not a pre-scaled thumbnail; the editor is where 1:1 actually matters, and it opts out.
+    /// </summary>
+    private static Rect Fit(double imageWidth, double imageHeight, Rect bounds, bool enlarge = false)
     {
         if (imageWidth <= 0 || imageHeight <= 0 || bounds.IsEmpty) return bounds;
 
-        var scale = Math.Min(1, Math.Min(bounds.Width / imageWidth, bounds.Height / imageHeight));
+        var scale = Math.Min(bounds.Width / imageWidth, bounds.Height / imageHeight);
+        if (!enlarge) scale = Math.Min(1, scale);
+
         var width = imageWidth * scale;
         var height = imageHeight * scale;
 
         return new Rect(
             Math.Round(bounds.X + (bounds.Width - width) / 2),
             Math.Round(bounds.Y + (bounds.Height - height) / 2),
+            Math.Round(width),
+            Math.Round(height));
+    }
+
+    /// <summary>Aspect-preserving *fill*: covers the bounds entirely, overflowing on one axis. The
+    /// caller clips. This is `Stretch="UniformToFill"`.</summary>
+    private static Rect Cover(double imageWidth, double imageHeight, Rect bounds)
+    {
+        if (imageWidth <= 0 || imageHeight <= 0 || bounds.IsEmpty) return bounds;
+
+        var scale = Math.Max(bounds.Width / imageWidth, bounds.Height / imageHeight);
+        var width = imageWidth * scale;
+        var height = imageHeight * scale;
+
+        return new Rect(
+            bounds.X + (bounds.Width - width) / 2,
+            bounds.Y + (bounds.Height - height) / 2,
             width,
             height);
     }
+
+    private static string Truncate(string text, int limit) =>
+        text.Length <= limit ? text : text[..(limit - 1)] + "…";
 
     private static string Ago(DateTimeOffset when)
     {
@@ -338,10 +629,10 @@ public sealed class MainWindow : D2DRenderWindow
         return when.LocalDateTime.ToString("d MMM");
     }
 
+    // ============================  INPUT  ============================
+
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
     {
-        // The app sees tray and hotkey messages first; they arrive here because this window's handle
-        // is what they were registered against.
         if (MessageIntercept is { } intercept
             && intercept(msg, (long)wParam.Value, lParam.Value.ToInt64()))
             return new LRESULT { Value = 0 };
@@ -368,7 +659,11 @@ public sealed class MainWindow : D2DRenderWindow
             case WmMouseWheel:
             {
                 var delta = (short)((wParam.Value.ToUInt64() >> 16) & 0xFFFF);
-                _scroll = Math.Max(0, _scroll - delta / 120.0 * 60 * Scale);
+                var content = _history.Count * S(50);
+                var viewport = Math.Max(1, ClientRect.Height - S(300));
+                var maximum = Math.Max(0, content - viewport);
+
+                _scroll = Math.Clamp(_scroll - delta / 120.0 * S(50), 0, maximum);
                 Invalidate();
                 return new LRESULT { Value = 0 };
             }
@@ -376,7 +671,8 @@ public sealed class MainWindow : D2DRenderWindow
             case WmKeyDown:
                 if ((VIRTUAL_KEY)(ulong)wParam.Value == VIRTUAL_KEY.VK_ESCAPE)
                 {
-                    Hide();
+                    if (_settingsOpen) { _settingsOpen = false; Invalidate(); }
+                    else Hide();
                     return new LRESULT { Value = 0 };
                 }
                 break;
@@ -400,6 +696,7 @@ public sealed class MainWindow : D2DRenderWindow
     {
         foreach (var bitmap in _bitmaps.Values) bitmap.Dispose();
         _bitmaps.Clear();
+        _lastDrawn.Clear();
         _resources?.Dispose();
         base.Dispose(disposing);
     }

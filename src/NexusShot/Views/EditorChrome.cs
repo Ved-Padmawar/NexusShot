@@ -60,7 +60,9 @@ public sealed class EditorChrome(Ui ui)
 
     private void DrawToolbar(EditorDocument document, double width)
     {
-        ui.FillRect(new Rect(0, 0, width, ToolbarHeight), ui.Theme.SurfaceBase);
+        // Raised, not base: the toolbar is chrome sitting above the sunken canvas well, and reads as
+        // lifted rather than flush - the same elevation the XAML build gave it.
+        ui.FillRect(new Rect(0, 0, width, ToolbarHeight), ui.Theme.SurfaceRaised);
         ui.FillRect(new Rect(0, ToolbarHeight - S(1), width, S(1)), ui.Theme.StrokeSubtle);
 
         var tile = TileSize;
@@ -194,7 +196,7 @@ public sealed class EditorChrome(Ui ui)
     private void DrawFooter(EditorDocument document, double width, double height, string title)
     {
         var bar = new Rect(0, height - FooterHeight, width, FooterHeight);
-        ui.FillRect(bar, ui.Theme.SurfaceBase);
+        ui.FillRect(bar, ui.Theme.SurfaceRaised);
         ui.FillRect(new Rect(0, bar.Y, width, S(1)), ui.Theme.StrokeSubtle);
 
         var crop = (document.PendingCrop ?? document.CropBounds) is { } c

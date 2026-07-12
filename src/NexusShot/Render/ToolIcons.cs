@@ -192,7 +192,167 @@ public static class ToolIcons
                 new Point(b.Right - b.Width * 0.26, b.Bottom), tint, 1.6f);
     }
 
-    // ============================  CHROME ICONS  ============================
+    // ============================  SHELL ICONS  ============================
+
+    /// <summary>Region capture: a dashed marquee around a solid corner.</summary>
+    public static void CaptureRegion(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 5);
+        // Four corner brackets, the visual grammar of a selection marquee.
+        var arm = b.Width * 0.30;
+        ui.Line(new Point(b.Left, b.Top + arm), new Point(b.Left, b.Top), tint, 1.6f);
+        ui.Line(new Point(b.Left, b.Top), new Point(b.Left + arm, b.Top), tint, 1.6f);
+
+        ui.Line(new Point(b.Right - arm, b.Top), new Point(b.Right, b.Top), tint, 1.6f);
+        ui.Line(new Point(b.Right, b.Top), new Point(b.Right, b.Top + arm), tint, 1.6f);
+
+        ui.Line(new Point(b.Left, b.Bottom - arm), new Point(b.Left, b.Bottom), tint, 1.6f);
+        ui.Line(new Point(b.Left, b.Bottom), new Point(b.Left + arm, b.Bottom), tint, 1.6f);
+
+        ui.Line(new Point(b.Right - arm, b.Bottom), new Point(b.Right, b.Bottom), tint, 1.6f);
+        ui.Line(new Point(b.Right, b.Bottom), new Point(b.Right, b.Bottom - arm), tint, 1.6f);
+    }
+
+    /// <summary>Full screen: a monitor.</summary>
+    public static void CaptureScreen(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 5);
+        var screen = new Rect(b.X, b.Y, b.Width, b.Height * 0.72);
+        ui.StrokeRounded(screen, 2f, tint, 1.6f);
+        ui.Line(new Point(b.Center.X - b.Width * 0.20, b.Bottom),
+                new Point(b.Center.X + b.Width * 0.20, b.Bottom), tint, 1.6f);
+        ui.Line(new Point(b.Center.X, screen.Bottom), new Point(b.Center.X, b.Bottom), tint, 1.6f);
+    }
+
+    /// <summary>Active window: a window with a title bar.</summary>
+    public static void CaptureWindow(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 5);
+        ui.StrokeRounded(b, 2f, tint, 1.6f);
+        ui.Line(new Point(b.Left, b.Top + b.Height * 0.28),
+                new Point(b.Right, b.Top + b.Height * 0.28), tint, 1.6f);
+    }
+
+    /// <summary>
+    /// Settings: a cog.
+    ///
+    /// The teeth are stubby blocks around the rim, not radial spokes. Spokes from a small ring read
+    /// as a sun or an asterisk - the tooth has to be as wide as it is long to say "gear".
+    /// </summary>
+    public static void Settings(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 5);
+        var centre = b.Center;
+        var rim = b.Width * 0.30;
+        var tooth = b.Width * 0.12;
+
+        // The rim, thick enough to read as a body rather than a hoop.
+        ui.StrokeCircle(centre, (float)rim, tint, 2.2f);
+
+        // Six teeth, each a short thick stub straddling the rim.
+        for (var i = 0; i < 6; i++)
+        {
+            var angle = i * Math.PI / 3;
+            var cos = Math.Cos(angle);
+            var sin = Math.Sin(angle);
+
+            ui.Line(
+                new Point(centre.X + cos * (rim - tooth * 0.3), centre.Y + sin * (rim - tooth * 0.3)),
+                new Point(centre.X + cos * (rim + tooth), centre.Y + sin * (rim + tooth)),
+                tint, 3f);
+        }
+
+        // The hub, so the centre is not an empty hole.
+        ui.FillCircle(centre, (float)(b.Width * 0.10), tint);
+    }
+
+    /// <summary>Theme: a half-filled circle - the universal light/dark switch.</summary>
+    public static void ThemeToggle(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 6);
+        var radius = (float)(b.Width / 2);
+        ui.StrokeCircle(b.Center, radius, tint, 1.6f);
+
+        // Fill the right half by stacking short horizontal lines: a filled semicircle without
+        // needing a path for a 20px glyph.
+        for (var y = -radius + 1; y < radius; y += 1f)
+        {
+            var half = Math.Sqrt(Math.Max(0, radius * radius - y * y));
+            ui.Line(new Point(b.Center.X, b.Center.Y + y),
+                    new Point(b.Center.X + half, b.Center.Y + y), tint, 1.2f);
+        }
+    }
+
+    /// <summary>Copy: two offset sheets.</summary>
+    public static void Copy(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 5);
+        var back = new Rect(b.X, b.Y, b.Width * 0.72, b.Height * 0.72);
+        var front = new Rect(b.X + b.Width * 0.28, b.Y + b.Height * 0.28, b.Width * 0.72, b.Height * 0.72);
+        ui.StrokeRounded(back, 2f, tint.WithAlpha(140), 1.5f);
+        ui.StrokeRounded(front, 2f, tint, 1.6f);
+    }
+
+    /// <summary>Edit: a pencil over a baseline.</summary>
+    public static void Edit(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 5);
+        ui.Line(new Point(b.Left + b.Width * 0.10, b.Bottom - b.Height * 0.10),
+                new Point(b.Right - b.Width * 0.06, b.Top + b.Height * 0.06), tint, 2f);
+        ui.Line(new Point(b.Left + b.Width * 0.10, b.Bottom - b.Height * 0.10),
+                new Point(b.Left + b.Width * 0.26, b.Bottom - b.Height * 0.30), tint, 1.5f);
+        ui.Line(new Point(b.Left + b.Width * 0.10, b.Bottom - b.Height * 0.10),
+                new Point(b.Left + b.Width * 0.30, b.Bottom - b.Height * 0.14), tint, 1.5f);
+    }
+
+    /// <summary>Delete: a bin.</summary>
+    public static void Delete(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 5);
+        ui.Line(new Point(b.Left, b.Top + b.Height * 0.20),
+                new Point(b.Right, b.Top + b.Height * 0.20), tint, 1.6f);
+        ui.Line(new Point(b.Center.X - b.Width * 0.14, b.Top + b.Height * 0.20),
+                new Point(b.Center.X - b.Width * 0.14, b.Top), tint, 1.6f);
+        ui.Line(new Point(b.Center.X + b.Width * 0.14, b.Top + b.Height * 0.20),
+                new Point(b.Center.X + b.Width * 0.14, b.Top), tint, 1.6f);
+
+        var body = new Rect(b.X + b.Width * 0.14, b.Top + b.Height * 0.20,
+            b.Width * 0.72, b.Height * 0.80);
+        ui.StrokeRounded(body, 2f, tint, 1.6f);
+    }
+
+    /// <summary>Reveal in Explorer: a folder.</summary>
+    public static void Reveal(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 5);
+        var body = new Rect(b.X, b.Y + b.Height * 0.22, b.Width, b.Height * 0.62);
+        ui.StrokeRounded(body, 2f, tint, 1.6f);
+        // The tab.
+        ui.Line(new Point(b.Left, b.Y + b.Height * 0.22),
+                new Point(b.Left + b.Width * 0.14, b.Y + b.Height * 0.08), tint, 1.6f);
+        ui.Line(new Point(b.Left + b.Width * 0.14, b.Y + b.Height * 0.08),
+                new Point(b.Left + b.Width * 0.44, b.Y + b.Height * 0.08), tint, 1.6f);
+        ui.Line(new Point(b.Left + b.Width * 0.44, b.Y + b.Height * 0.08),
+                new Point(b.Left + b.Width * 0.52, b.Y + b.Height * 0.22), tint, 1.6f);
+    }
+
+    /// <summary>The empty-state glyph: a picture in a frame.</summary>
+    public static void EmptyState(Ui ui, Rect tile, Rgba tint)
+    {
+        var b = Box(tile, 4);
+        ui.StrokeRounded(b, 3f, tint, 1.8f);
+        ui.FillCircle(new Point(b.X + b.Width * 0.30, b.Y + b.Height * 0.30),
+            (float)(b.Width * 0.09), tint);
+        // A mountain horizon.
+        ui.Line(new Point(b.Left + b.Width * 0.10, b.Bottom - b.Height * 0.14),
+                new Point(b.Left + b.Width * 0.42, b.Center.Y), tint, 1.8f);
+        ui.Line(new Point(b.Left + b.Width * 0.42, b.Center.Y),
+                new Point(b.Left + b.Width * 0.62, b.Bottom - b.Height * 0.30), tint, 1.8f);
+        ui.Line(new Point(b.Left + b.Width * 0.62, b.Bottom - b.Height * 0.30),
+                new Point(b.Right - b.Width * 0.10, b.Bottom - b.Height * 0.14), tint, 1.8f);
+    }
+
+    // ============================  EDITOR CHROME  ============================
 
     public static void Undo(Ui ui, Rect tile, Rgba tint) => Curve(ui, tile, tint, mirrored: false);
     public static void Redo(Ui ui, Rect tile, Rgba tint) => Curve(ui, tile, tint, mirrored: true);

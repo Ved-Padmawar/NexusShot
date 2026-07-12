@@ -125,9 +125,12 @@ public sealed class App : IDisposable
             var item = Store(path);
             if (_settings.CopyToClipboardAutomatically) ClipboardImage.Copy(item.FilePath);
 
+            // The capture is filed and on the clipboard; that is usually the whole job. Opening an
+            // editor for every capture would force a heavyweight window (its own D2D device and a
+            // full-resolution bitmap) on someone who only wanted to paste - and three captures in a
+            // row would leave three of them open. Editing is a click away in the shell.
             _main.AddCapture(item);
             ShowMain();
-            Edit(item);
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException
             or ArgumentOutOfRangeException)
@@ -146,7 +149,8 @@ public sealed class App : IDisposable
     /// <summary>Moves the temp capture into the screenshot folder and records it.</summary>
     private ScreenshotHistoryItem Store(string temporaryPath)
     {
-        var (_, width, height) = ImageSurface.Decode(temporaryPath);
+        // The header, not the pixels: this only needs the dimensions for the history row.
+        var (width, height) = ImageSurface.ReadSize(temporaryPath);
 
         Directory.CreateDirectory(_settings.ScreenshotFolder);
         var name = $"NexusShot {DateTime.Now:yyyy-MM-dd HH.mm.ss}.png";
@@ -183,8 +187,12 @@ public sealed class App : IDisposable
         _editors[item.FilePath] = editor;
         editor.Closed += () =>
         {
+            // The editor releases its own device resources on destroy; this just drops our handle.
             _editors.Remove(item.FilePath);
-            _main.Invalidate();   // the capture may have been re-saved: redraw its thumbnail
+
+            // The capture may have just been re-saved, so its cached bitmap is the old pixels.
+            _main.DropCache(item.FilePath);
+            _main.Invalidate();
         };
 
         var scale = Functions.GetDpiForWindow(editor.Handle) / 96.0;
