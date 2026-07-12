@@ -217,10 +217,31 @@ public sealed class RegionOverlay : D2DRenderWindow
         return new Point((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
     }
 
-    protected override void Dispose(bool disposing)
+    /// <summary>
+    /// Releases the snapshot as soon as the window is destroyed.
+    ///
+    /// A virtual-desktop snapshot is the largest bitmap the app ever makes - on a multi-monitor
+    /// setup it is tens of megabytes on the GPU. Holding it until Dispose runs means it survives
+    /// every frame of the editor that opens next, so it goes here instead.
+    /// </summary>
+    protected override void OnDestroyed(object? sender, EventArgs e)
+    {
+        ReleaseResources();
+        base.OnDestroyed(sender, e);
+    }
+
+    private void ReleaseResources()
     {
         _snapshot?.Dispose();
         _resources?.Dispose();
+        _snapshot = null;
+        _resources = null;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        // Idempotent: OnDestroyed already ran if the window closed normally.
+        ReleaseResources();
         base.Dispose(disposing);
     }
 

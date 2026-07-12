@@ -68,6 +68,73 @@ public sealed class ImageSurface : IDisposable
         }
     }
 
+    /// <summary>
+    /// Decodes an image down to fit a box, for thumbnails.
+    ///
+    /// WIC scales as part of the decode, so the full-resolution bitmap is never allocated - which is
+    /// the whole point. A history of 4K captures each cached at full size is hundreds of megabytes
+    /// for images that end up in a 52x34 chip.
+    /// </summary>
+    public static unsafe ImageSurface LoadScaled(
+        string path, IComObject<ID2D1DeviceContext> context, int maxWidth, int maxHeight)
+    {
+        using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
+        using var frame = decoder.GetFrame(0);
+        frame.Object.GetSize(out var sourceWidth, out var sourceHeight).ThrowOnError();
+
+        var scale = Math.Min(
+            maxWidth / (double)sourceWidth,
+            maxHeight / (double)sourceHeight);
+        scale = Math.Min(1, scale);
+
+        var width = Math.Max(1, (int)Math.Round(sourceWidth * scale));
+        var height = Math.Max(1, (int)Math.Round(sourceHeight * scale));
+
+        using var scaler = WicImagingFactory.CreateBitmapScaler();
+        scaler.Object.Initialize(
+            frame.Object, (uint)width, (uint)height,
+            WICBitmapInterpolationMode.WICBitmapInterpolationModeFant).ThrowOnError();
+
+        using var converter = WicImagingFactory.CreateFormatConverter();
+        converter.Object.Initialize(
+            scaler.Object,
+            Constants.GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherType.WICBitmapDitherTypeNone,
+            null!,
+            0,
+            WICBitmapPaletteType.WICBitmapPaletteTypeCustom).ThrowOnError();
+
+        var stride = width * 4;
+        var pixels = new byte[stride * height];
+        fixed (byte* buffer = pixels)
+        {
+            converter.Object.CopyPixels(0, (uint)stride, (uint)pixels.Length, (nint)buffer).ThrowOnError();
+
+            var bitmap = context.CreateBitmap(
+                new D2D_SIZE_U { width = (uint)width, height = (uint)height },
+                (nint)buffer,
+                (uint)stride,
+                new D2D1_BITMAP_PROPERTIES1
+                {
+                    pixelFormat = new D2D1_PIXEL_FORMAT
+                    {
+                        format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode = D2D1_ALPHA_MODE.D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    dpiX = 96,
+                    dpiY = 96,
+                });
+
+            return new ImageSurface
+            {
+                Bitmap = bitmap,
+                Width = width,
+                Height = height,
+                Pixels = null,
+            };
+        }
+    }
+
     /// <summary>The image's dimensions, without decoding it. WIC reads the header only.</summary>
     public static (int Width, int Height) ReadSize(string path)
     {

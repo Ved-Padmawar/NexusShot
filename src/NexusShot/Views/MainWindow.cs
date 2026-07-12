@@ -36,13 +36,12 @@ public sealed class MainWindow : D2DRenderWindow
     private D2DResources? _resources;
     private Ui? _ui;
 
-    /// <summary>Decoded captures, by path. One bitmap serves both the row and the full-size preview,
-    /// which is what makes the preview exact rather than a scaled-up thumbnail.</summary>
-    private readonly Dictionary<string, ImageSurface> _bitmaps = [];
+    /// <summary>Thumbnail-sized decodes, one per row. Small enough to keep for the whole history.</summary>
+    private readonly Dictionary<string, ImageSurface> _thumbnails = [];
 
-    /// <summary>The frame each cached bitmap was last drawn on, so the cache can evict the coldest.</summary>
-    private readonly Dictionary<string, long> _lastDrawn = [];
-    private long _frame;
+    /// <summary>The full-resolution bitmap for the selected capture, and only that one.</summary>
+    private ImageSurface? _preview;
+    private string? _previewPath;
 
     private ScreenshotHistoryItem? _selected;
     private Point _pointer;
@@ -84,12 +83,16 @@ public sealed class MainWindow : D2DRenderWindow
         Invalidate();
     }
 
-    /// <summary>Forgets a cached bitmap, so the next frame re-decodes it. Used after an editor saves
-    /// over a capture: the file has changed, and the cached pixels are the old ones.</summary>
+    /// <summary>Forgets a capture's cached bitmaps, so the next frame re-decodes them. Used after an
+    /// editor saves over a capture: the file has changed, and the cached pixels are the old ones.</summary>
     public void DropCache(string path)
     {
-        if (_bitmaps.Remove(path, out var bitmap)) bitmap.Dispose();
-        _lastDrawn.Remove(path);
+        if (_thumbnails.Remove(path, out var thumbnail)) thumbnail.Dispose();
+
+        if (_previewPath != path) return;
+        _preview?.Dispose();
+        _preview = null;
+        _previewPath = null;
     }
 
     // ============================  RENDER  ============================
@@ -104,7 +107,7 @@ public sealed class MainWindow : D2DRenderWindow
         _ui.Theme = _settings.Theme == AppTheme.Light ? Theme.Light : Theme.Dark;
 
         _scale = Functions.GetDpiForWindow(Handle) / 96.0;
-        _frame++;
+        
 
         var client = ClientRect;
         var width = (double)client.Width;
@@ -319,7 +322,7 @@ public sealed class MainWindow : D2DRenderWindow
         ui.FillRounded(well, (float)S(Metrics.RadiusContainer), theme.SurfaceSunken);
         ui.StrokeRounded(well, (float)S(Metrics.RadiusContainer), theme.StrokeSubtle);
 
-        var bitmap = GetBitmap(target, item);
+        var bitmap = GetFullBitmap(target, item);
         if (bitmap is null)
         {
             ui.Text("Could not open this capture", well, theme.TextTertiary,
@@ -478,7 +481,7 @@ public sealed class MainWindow : D2DRenderWindow
     private void DrawThumbnail(
         Ui ui, IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect slot)
     {
-        var bitmap = GetBitmap(target, item);
+        var bitmap = GetThumbnail(target, item);
         if (bitmap is null) return;
 
         // Aspect-fill, clipped to the chip. A letterboxed thumbnail in a 52x34 cell is mostly empty
@@ -494,23 +497,26 @@ public sealed class MainWindow : D2DRenderWindow
         target.Object.PopAxisAlignedClip();
     }
 
-    private ImageSurface? GetBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
+    /// <summary>
+    /// The bitmap for a row's thumbnail: decoded down to thumbnail size, not full resolution.
+    ///
+    /// A full-resolution GPU bitmap is ~33 MB for a 4K capture, and a history of them adds up fast
+    /// for something that ends up in a 52x34 chip. WIC scales during the decode, so the big bitmap
+    /// never exists. This is the thumbnail optimisation the XAML build had, and the reason it was
+    /// worth keeping.
+    /// </summary>
+    private ImageSurface? GetThumbnail(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
     {
-        if (_bitmaps.TryGetValue(item.FilePath, out var cached))
-        {
-            _lastDrawn[item.FilePath] = _frame;
-            return cached;
-        }
+        if (_thumbnails.TryGetValue(item.FilePath, out var cached)) return cached;
 
         using var context = target.AsDeviceContext();
         if (context is null || !File.Exists(item.FilePath)) return null;
 
         try
         {
-            var surface = ImageSurface.Load(item.FilePath, context);
-            _bitmaps[item.FilePath] = surface;
-            _lastDrawn[item.FilePath] = _frame;
-            Evict();
+            // 2x the chip, so it stays crisp on a scaled display.
+            var surface = ImageSurface.LoadScaled(item.FilePath, context, maxWidth: 160, maxHeight: 160);
+            _thumbnails[item.FilePath] = surface;
             return surface;
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException)
@@ -520,25 +526,32 @@ public sealed class MainWindow : D2DRenderWindow
     }
 
     /// <summary>
-    /// Drops the bitmaps that have gone longest without being drawn.
+    /// The full-resolution bitmap, for the detail preview only.
     ///
-    /// A GPU bitmap for a 4K capture is ~33 MB. An unbounded cache would pin one per capture for the
-    /// life of the process, which is a leak that only shows up after a long session.
+    /// Exactly one is held: the preview shows one capture at a time, so caching more would pin
+    /// tens of megabytes each for images nothing is drawing. This is what makes the preview exact
+    /// rather than an upscaled thumbnail - the bug that cost the XAML build a release.
     /// </summary>
-    private void Evict()
+    private ImageSurface? GetFullBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
     {
-        const int limit = 12;
-        while (_bitmaps.Count > limit)
-        {
-            var coldest = _lastDrawn
-                .Where(entry => _selected is null || entry.Key != _selected.FilePath)
-                .OrderBy(entry => entry.Value)
-                .Select(entry => entry.Key)
-                .FirstOrDefault();
+        if (_previewPath == item.FilePath && _preview is not null) return _preview;
 
-            if (coldest is null) break;
-            if (_bitmaps.Remove(coldest, out var surface)) surface.Dispose();
-            _lastDrawn.Remove(coldest);
+        using var context = target.AsDeviceContext();
+        if (context is null || !File.Exists(item.FilePath)) return null;
+
+        _preview?.Dispose();
+        _preview = null;
+        _previewPath = null;
+
+        try
+        {
+            _preview = ImageSurface.Load(item.FilePath, context);
+            _previewPath = item.FilePath;
+            return _preview;
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException)
+        {
+            return null;
         }
     }
 
@@ -694,9 +707,12 @@ public sealed class MainWindow : D2DRenderWindow
 
     protected override void Dispose(bool disposing)
     {
-        foreach (var bitmap in _bitmaps.Values) bitmap.Dispose();
-        _bitmaps.Clear();
-        _lastDrawn.Clear();
+        foreach (var thumbnail in _thumbnails.Values) thumbnail.Dispose();
+        _thumbnails.Clear();
+
+        _preview?.Dispose();
+        _preview = null;
+
         _resources?.Dispose();
         base.Dispose(disposing);
     }
