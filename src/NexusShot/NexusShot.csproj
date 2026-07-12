@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>NexusShot</RootNamespace>
+    <AssemblyName>NexusShot</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\icons\nexus-shot.ico</ApplicationIcon>
+
+    <!-- The whole point of the rewrite: a single native exe with no runtime payload.
+         DirectNAot is built for this - source-generated LibraryImport and ComWrappers,
+         no classic COM interop, so nothing here needs a reflection fallback. -->
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <StackTraceSupport>false</StackTraceSupport>
+    <OptimizationPreference>Speed</OptimizationPreference>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DirectNAot" Version="1.6.4" />
+    <!-- Ships Window / D2DRenderWindow / Application: the Win32 host and message loop,
+         maintained by the interop author. We inherit rather than hand-roll a WndProc. -->
+    <PackageReference Include="DirectNAot.Extensions" Version="1.6.4" />
+  </ItemGroup>
+
+  <!-- DirectN's own projects declare these globally; its API is written assuming they are in
+       scope (COM wrappers, D2D structs, the Win32 host types). -->
+  <ItemGroup>
+    <Using Include="DirectN" />
+    <Using Include="DirectN.Extensions" />
+    <Using Include="DirectN.Extensions.Com" />
+    <Using Include="DirectN.Extensions.Utilities" />
+  </ItemGroup>
+
+</Project>
