@@ -174,8 +174,8 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // The already-decoded sidebar thumbnail stands in until the full preview is ready.
-        PreviewImage.Source = tile.Preview ?? tile.Thumbnail;
+        // Never the 220px sidebar thumbnail: stretched across the well it reads as a blurry image.
+        PreviewImage.Source = tile.Preview;
         TitleText.Text = tile.FileName;
         MetaText.Text = $"{tile.Dimensions}  ·  {tile.FileSize}  ·  {tile.CapturedAt}";
     }
@@ -183,9 +183,8 @@ public sealed partial class MainWindow : Window
     private void DetailTile_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (!ReferenceEquals(sender, _detailTile) || _detailTile is null) return;
-        if (SettingsPane.Visibility == Visibility.Visible) return;
-        if (e.PropertyName is not (nameof(ScreenshotTile.Preview) or nameof(ScreenshotTile.Thumbnail))) return;
-        PreviewImage.Source = _detailTile.Preview ?? _detailTile.Thumbnail;
+        if (e.PropertyName is not nameof(ScreenshotTile.Preview)) return;
+        PreviewImage.Source = _detailTile.Preview;
     }
 
     /// <summary>Reflects the theme actually in effect, and names the theme a click would switch to.</summary>

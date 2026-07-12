@@ -99,7 +99,7 @@ public sealed class ScreenshotTile(ScreenshotHistoryItem item) : ObservableObjec
     private async Task LoadPreviewAsync()
     {
         _isLoadingPreview = true;
-        var generation = ++_previewGeneration;
+        var generation = _previewGeneration;
         try
         {
             if (File.Exists(Item.FilePath))
@@ -108,6 +108,7 @@ public sealed class ScreenshotTile(ScreenshotHistoryItem item) : ObservableObjec
                 // real resolution. A fixed 1400px cap was enlarged on wide/high-DPI windows and
                 // was the direct cause of the visibly soft main-window image.
                 var preview = await ImageLoader.LoadAsync(Item.FilePath);
+                // A release during the decode reassigns this tile's pane, so the result is stale.
                 if (generation == _previewGeneration) Preview = preview;
             }
         }
