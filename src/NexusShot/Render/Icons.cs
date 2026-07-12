@@ -37,6 +37,10 @@ public static class Icons
     public const string EmptyState = "\uEB9F";
     public const string Pin = "\uE718";
     public const string ChevronDown = "\uE70D";
+    public const string CaptionMinimise = "\uE921";
+    public const string CaptionMaximise = "\uE922";
+    public const string CaptionRestore = "\uE923";
+    public const string CaptionClose = "\uE8BB";
 
     /// <summary>Present on Windows 10 1809 and later, which is this app's floor anyway. These
     /// codepoints exist in Segoe MDL2 Assets too, so a substituted font still resolves them.</summary>

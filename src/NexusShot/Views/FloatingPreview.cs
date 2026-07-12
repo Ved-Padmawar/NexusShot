@@ -32,7 +32,6 @@ public sealed class FloatingPreview : D2DRenderWindow
     private const double MaxCardHeight = 240;
     private const double StackGap = 10;
     private const double EdgeMargin = 18;
-    private const double ActionBar = 34;
 
     private readonly ScreenshotHistoryItem _item;
     private readonly int _dismissSeconds;
@@ -144,51 +143,100 @@ public sealed class FloatingPreview : D2DRenderWindow
         _ui.StrokeRounded(card, (float)S(6), _ui.Theme.StrokeStrong);
 
         if (IsPinned && !_hovered) DrawPin(_ui, card);
-        if (_hovered) DrawActions(_ui, card);
+
+        if (_hovered)
+        {
+            DrawActions(_ui, card);
+            DrawClose(_ui, card);
+        }
 
         _ui.EndFrame();
     }
 
-    /// <summary>The hover actions, on a scrim over the bottom of the card.</summary>
+    // OverlayActionStyle / CloseButton colours, lifted verbatim from the old XAML.
+    private static readonly Rgba ActionBackground = new(0x20, 0x20, 0x24, 0xE6);
+    private static readonly Rgba ActionBorder = new(0xFF, 0xFF, 0xFF, 0x26);
+    private static readonly Rgba CloseBackground = new(0x32, 0x32, 0x36, 0xF2);
+    private static readonly Rgba CloseBorder = new(0xFF, 0xFF, 0xFF, 0x59);
+
+    /// <summary>Dismisses the card without acting on the capture. 18x18, inset 4 from the top, 4 from
+    /// the right, radius 10 (circular).</summary>
+    private void DrawClose(Ui ui, Rect card)
+    {
+        var size = S(18);
+        var bounds = new Rect(card.Right - size - S(4), S(4), size, size);
+
+        if (ui.Interact(5, bounds)) Dismiss();
+
+        var center = bounds.Center;
+        var radius = (float)(size / 2);
+        ui.FillCircle(center, radius, CloseBackground);
+        ui.StrokeCircle(center, radius, CloseBorder);
+        ui.Icon(Icons.Close, bounds, Rgba.White, S(8));
+    }
+
+    /// <summary>The hover actions: a full-card scrim behind a centred row of circular buttons,
+    /// 26x26 with 5px spacing, matching OverlayActionStyle.</summary>
     private void DrawActions(Ui ui, Rect card)
     {
-        var bar = new Rect(0, card.Bottom - S(ActionBar), card.Width, S(ActionBar));
-        ui.FillRect(bar, ui.Theme.HoverScrim);
+        ui.FillRect(card, ui.Theme.HoverScrim);
 
-        var size = S(28);
-        var gap = (bar.Width - size * 4) / 5;
-        var x = gap;
-        var y = bar.Y + (bar.Height - size) / 2;
-        var glyph = S(13);
+        const int count = 4;
+        var size = S(26);
+        var spacing = S(5);
+        var totalWidth = size * count + spacing * (count - 1);
+        var x = card.Center.X - totalWidth / 2;
+        var y = card.Center.Y - size / 2;
+        var glyph = S(12);
 
-        if (ui.Tile(1, new Rect(x, y, size, size), false, Icons.Copy, glyph, tint: Rgba.White))
+        if (ActionButton(ui, 1, new Rect(x, y, size, size), Icons.Copy, glyph, false))
         {
             ClipboardImage.Copy(_item.FilePath);
             Dismiss();
         }
-        x += size + gap;
+        x += size + spacing;
 
-        if (ui.Tile(2, new Rect(x, y, size, size), false, Icons.Reveal, glyph, tint: Rgba.White))
+        if (ActionButton(ui, 2, new Rect(x, y, size, size), Icons.Reveal, glyph, false))
         {
             Reveal();
         }
-        x += size + gap;
+        x += size + spacing;
 
-        if (ui.Tile(3, new Rect(x, y, size, size), false, Icons.Edit, glyph, tint: Rgba.White))
+        if (ActionButton(ui, 3, new Rect(x, y, size, size), Icons.Edit, glyph, false))
         {
             EditRequested?.Invoke(_item);
             Dismiss();
         }
-        x += size + gap;
+        x += size + spacing;
 
         // Pin: the accent when engaged, so its state is legible without a label.
-        if (ui.Tile(4, new Rect(x, y, size, size), IsPinned, Icons.Pin, glyph,
-            tint: IsPinned ? ui.Theme.Accent : Rgba.White))
+        if (ActionButton(ui, 4, new Rect(x, y, size, size), Icons.Pin, glyph, IsPinned))
         {
             IsPinned = !IsPinned;
             _remaining = _dismissSeconds;
             PinnedChanged?.Invoke();
         }
+    }
+
+    /// <summary>A circular overlay action button: OverlayActionStyle's background/border, plus a
+    /// hover/pressed brighten since the old style relied on the default WinUI Button template for that.</summary>
+    private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected)
+    {
+        var clicked = ui.Interact(id, bounds);
+
+        var center = bounds.Center;
+        var radius = (float)(bounds.Width / 2);
+
+        var background = selected ? ui.Theme.Accent
+            : ui.IsActive(id) ? ActionBackground.WithAlpha(0xFF)
+            : ui.IsHot(id) ? ActionBackground.WithAlpha(0xF2)
+            : ActionBackground;
+
+        ui.FillCircle(center, radius, background);
+        ui.StrokeCircle(center, radius, ActionBorder);
+        ui.Icon(glyph, bounds, Rgba.White, glyphSize);
+
+        return clicked;
     }
 
     /// <summary>A pinned card that is not hovered still says so, quietly, in the corner.</summary>

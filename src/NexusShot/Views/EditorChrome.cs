@@ -4,13 +4,9 @@ using NexusShot.Render;
 namespace NexusShot.Views;
 
 /// <summary>
-/// The editor's chrome: a titlebar strip, the toolbar, and a status footer.
-///
-/// Tools are grouped by what they do - select, shapes, freehand,
-/// redaction, framing - with hairline separators, so fifteen tiles read as five short groups rather
-/// than one undifferentiated row. Colour and thickness sit in the centre. Undo/redo/delete sit at
-/// the right of the toolbar; Copy and Save live in the *footer*, next to the zoom controls, because
-/// they act on the document rather than on the drawing.
+/// The editor's toolbar and status footer. Tools are grouped with hairline separators; colour and
+/// thickness sit in the centre; Copy and Save live in the footer because they act on the document
+/// rather than on the drawing.
 ///
 /// There is no state here: each control reads the document when it draws, so it cannot be stale.
 /// </summary>
@@ -21,12 +17,8 @@ public sealed class EditorChrome(Ui ui)
     /// physical pixel rather than one DIP.</summary>
     public static double Scale { get; set; } = 1;
 
-    /// <summary>The caption strip. Only tall enough to be a drag region and clear the caption
-    /// buttons - a full titlebar plus a toolbar was 88px of chrome before any image showed.</summary>
-    public static double TitleBarHeight => 30 * Scale;
-
     public static double ToolbarHeight => 46 * Scale;
-    public static double ChromeTop => TitleBarHeight + ToolbarHeight;
+    public static double ChromeTop => ToolbarHeight;
     public static double FooterHeight => 40 * Scale;
 
     private static double TileSize => 32 * Scale;
@@ -73,7 +65,6 @@ public sealed class EditorChrome(Ui ui)
         FitPicked = null;
 
         ui.Scale = Scale;
-        DrawTitleBar(width, title);
         DrawToolbar(document, width);
         DrawFooter(document, width, height, fit, toast);
 
@@ -82,17 +73,9 @@ public sealed class EditorChrome(Ui ui)
             document.SetColor(colour.ToHex());
     }
 
-    /// <summary>The titlebar strip: the window's drag region, with the file name as its title.</summary>
-    private void DrawTitleBar(double width, string title)
-    {
-        var bar = new Rect(0, 0, width, TitleBarHeight);
-        ui.FillRect(bar, ui.Theme.SurfaceRaised);
-        ui.Text(title, bar, ui.Theme.TextTertiary, (float)S(Metrics.FontCaption), align: TextAlign.Center);
-    }
-
     private void DrawToolbar(EditorDocument document, double width)
     {
-        var top = TitleBarHeight;
+        const double top = 0;
         var bar = new Rect(0, top, width, ToolbarHeight);
 
         ui.FillRect(bar, ui.Theme.SurfaceRaised);

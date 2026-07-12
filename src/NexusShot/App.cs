@@ -112,11 +112,14 @@ public sealed class App : IDisposable
     /// The main window hides first for a full-screen or window capture - otherwise NexusShot itself
     /// would be in the screenshot, which is the sort of thing that is obvious only after you ship it.
     /// </summary>
+    /// <summary>
+    /// Takes a capture, files it, and shows a quick-access card.
+    ///
+    /// The shell is deliberately *not* hidden first: NexusShot's own window is a legitimate thing to
+    /// capture, and a tool that ducks out of the way cannot screenshot itself.
+    /// </summary>
     private void Capture(CaptureMode mode)
     {
-        var wasVisible = _main.IsVisible;
-        if (wasVisible) _main.Hide();
-
         try
         {
             var path = mode switch
@@ -126,33 +129,21 @@ public sealed class App : IDisposable
                 CaptureMode.ActiveWindow => ScreenCapture.CaptureActiveWindow(),
                 _ => null,
             };
-            if (path is null)
-            {
-                if (wasVisible) ShowMain();
-                return;
-            }
+            if (path is null) return;
 
             var item = Store(path);
             Log.Info("capture", $"{mode} {item.Width}x{item.Height}");
 
             if (_settings.CopyToClipboardAutomatically) ClipboardImage.Copy(item.FilePath);
 
-            // The capture is filed and on the clipboard, and a quick-access card appears with it.
-            // Opening a full editor for every capture would force a heavyweight window (its own D2D
-            // device, a full-resolution bitmap) on someone who only wanted to paste - and three
-            // captures in a row would leave three of them open. The card is where you act on it.
             _main.AddCapture(item);
             ShowPreview(item);
-
-            // The shell is *not* raised: a capture should not steal focus from what you were doing.
-            // The card is non-activating for the same reason.
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException
             or ArgumentOutOfRangeException)
         {
-            // A failed capture must not take the app with it: the tray and hotkeys stay alive.
+            // A failed capture must not take the tray and hotkeys with it.
             Log.Error("capture.failed", exception, mode.ToString());
-            if (wasVisible) ShowMain();
         }
     }
 

@@ -18,8 +18,20 @@ public static class SystemTheme
     private const string PersonalizeKey =
         @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
 
-    /// <summary>True when the OS is using a dark app theme.</summary>
-    public static bool IsDark()
+    /// <summary>
+    /// Whether the OS is in dark mode, cached.
+    ///
+    /// Resolve() runs at the top of every frame, and a registry read per frame is what made the
+    /// theme feel sluggish. The value only changes on WM_SETTINGCHANGE, which invalidates this.
+    /// </summary>
+    private static bool? _isDark;
+
+    public static bool IsDark() => _isDark ??= ReadIsDark();
+
+    /// <summary>Re-reads the OS theme. Called when WM_SETTINGCHANGE says it moved.</summary>
+    public static void Invalidate() => _isDark = null;
+
+    private static bool ReadIsDark()
     {
         try
         {
@@ -44,7 +56,10 @@ public static class SystemTheme
     public static bool IsColorSetChange(uint message, IntPtr lParam)
     {
         if (message != WM_SETTINGCHANGE || lParam == IntPtr.Zero) return false;
-        return Marshal.PtrToStringUni(lParam) == "ImmersiveColorSet";
+        if (Marshal.PtrToStringUni(lParam) != "ImmersiveColorSet") return false;
+
+        Invalidate();
+        return true;
     }
 
     /// <summary>Matches the window's titlebar to the theme. XAML did not own it either.</summary>
