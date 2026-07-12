@@ -473,12 +473,12 @@ public sealed class MainWindow : D2DRenderWindow
     {
         var theme = ui.Theme;
 
-        // Header, over a hairline.
-        var header = new Rect(bounds.X, bounds.Y, bounds.Width, S(64));
+        // Header: Padding="28,18", over a hairline.
+        var header = new Rect(bounds.X, bounds.Y, bounds.Width, S(18) * 2 + S(Metrics.FontTitle) + S(4));
         ui.Text("Settings", new Rect(header.X + S(28), header.Y, header.Width, header.Height),
             theme.TextPrimary, (float)S(Metrics.FontTitle), bold: true);
 
-        if (ui.Tile(60, new Rect(header.Right - S(56), header.Center.Y - S(18), S(36), S(36)),
+        if (ui.Tile(60, new Rect(header.Right - S(28) - S(36), header.Center.Y - S(18), S(36), S(36)),
             false, Icons.Close, S(14), "Close settings"))
         {
             _settingsOpen = false;
@@ -489,10 +489,10 @@ public sealed class MainWindow : D2DRenderWindow
         var body = new Rect(bounds.X, header.Bottom, bounds.Width, bounds.Bottom - header.Bottom);
         ui.PushClip(body);
 
-        // A capped, centred column: rows fill it, and it centres itself in the pane.
-        var width = Math.Min(S(600), body.Width - S(64));
+        // Centred column: MaxWidth=640, Margin="32,0,32,24".
+        var width = Math.Min(S(640), body.Width - S(64));
         var x = body.X + (body.Width - width) / 2;
-        var y = body.Y + S(20) - _settingsScroll;
+        var y = body.Y - _settingsScroll;
 
         y = Section(ui, "CAPTURE", x, y, width);
 
@@ -600,39 +600,42 @@ public sealed class MainWindow : D2DRenderWindow
         _settingsHeight = y + _settingsScroll - body.Y + S(24);
     }
 
-    /// <summary>A section header: a caption-sized label with room above it.</summary>
+    /// <summary>SectionHeaderStyle: caption, SemiBold, TextTertiary, Margin="0,20,0,2".</summary>
     private double Section(Ui ui, string title, double x, double y, double width)
     {
-        ui.Text(title, new Rect(x, y + S(16), width, S(20)),
+        y += S(20);
+        ui.Text(title, new Rect(x, y, width, S(16)),
             ui.Theme.TextTertiary, (float)S(Metrics.FontCaption), bold: true, middle: false);
-        return y + S(42);
+        return y + S(16) + S(2);
     }
 
     /// <summary>
-    /// A settings row: a title, an optional caption, and a control on the right, over a hairline.
-    /// The control draws itself into the slot the row hands it.
+    /// SettingRowStyle: Padding="0,9", bottom border StrokeSubtle, ColumnSpacing=24.
+    /// A title, an optional caption, and a control on the right. The control draws itself into
+    /// the slot the row hands it.
     /// </summary>
     private double Row(
         Ui ui, double x, double y, double width,
         string title, string? caption, Action<Rect> control)
     {
         var theme = ui.Theme;
-        var height = caption is null ? S(48) : S(60);
+        var textHeight = caption is null ? S(18) : S(18) * 2 + S(2);
+        var height = S(9) * 2 + textHeight;
         var row = new Rect(x, y, width, height);
 
-        var textWidth = width - S(260);
+        var textWidth = width - S(260) - S(24);
 
         if (caption is null)
         {
-            ui.Text(title, new Rect(x, row.Y, textWidth, row.Height),
+            ui.Text(title, new Rect(x, row.Y, textWidth, height),
                 theme.TextPrimary, (float)S(Metrics.FontBody));
         }
         else
         {
-            ui.Text(title, new Rect(x, row.Y + S(11), textWidth, S(18)),
+            ui.Text(title, new Rect(x, row.Y + S(9), textWidth, S(18)),
                 theme.TextPrimary, (float)S(Metrics.FontBody), middle: false);
-            ui.Text(caption, new Rect(x, row.Y + S(31), textWidth, S(18)),
-                theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
+            ui.Text(caption, new Rect(x, row.Y + S(9) + S(18) + S(2), textWidth, S(18)),
+                theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false, wrap: true);
         }
 
         control(row);
@@ -641,7 +644,7 @@ public sealed class MainWindow : D2DRenderWindow
         return row.Bottom + 1;
     }
 
-    /// <summary>The right-aligned slot a row's control sits in.</summary>
+    /// <summary>The right-aligned slot a row's control sits in. ColumnSpacing=24 clears the text.</summary>
     private static Rect ActionSlot(Rect row, double width) =>
         new(row.Right - width, row.Center.Y - 14, width, 28);
 
