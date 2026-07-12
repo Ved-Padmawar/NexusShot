@@ -91,14 +91,30 @@ public sealed class MainWindow : D2DRenderWindow
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
-        AppIcon.Apply(Handle);
+
+        // Alt+Tab and the taskbar still get the big icon; the caption gets neither an icon nor a
+        // title, because the sidebar already carries the brand.
+        AppIcon.ApplyLargeOnly(Handle);
+        AppIcon.ClearCaption(Handle);
         ApplyTheme();
     }
 
-    /// <summary>The titlebar is not ours to draw, so DWM has to be told separately - a dark app with
-    /// a light titlebar looks broken however well the client area is themed.</summary>
-    private void ApplyTheme() =>
-        SystemTheme.ApplyTitleBar(Handle, SystemTheme.Resolve(_settings.Theme).IsDark);
+    /// <summary>DWM owns the titlebar and repaints it itself; the client area only repaints when
+    /// something invalidates it. Without the Invalidate the titlebar flips instantly and the app
+    /// keeps its old colours until an unrelated event triggers a frame.</summary>
+    private void ApplyTheme()
+    {
+        var theme = SystemTheme.Resolve(_settings.Theme);
+        // The old extended titlebar let the sidebar run behind the caption controls. A raw Win32
+        // caption remains non-client, so tint it with the sidebar surface: without a colour break
+        // at the top edge, the rail reads as continuing all the way to the window frame.
+        SystemTheme.ApplyTitleBar(Handle, theme, theme.SurfaceSunken);
+        Invalidate();
+        ThemeChanged?.Invoke();
+    }
+
+    /// <summary>Raised when the theme moves, so open editors retheme with the shell.</summary>
+    public event Action? ThemeChanged;
 
     /// <summary>The single write-back for settings: persist, retheme, and tell the app.</summary>
     private void SaveSettings()
@@ -177,8 +193,8 @@ public sealed class MainWindow : D2DRenderWindow
 
         var y = bounds.Y + S(20);
 
-        // Brand: the mark, the name, and a version pill.
-        DrawBrandMark(ui, new Rect(bounds.X + S(18), y, S(22), S(22)));
+        // Brand: the app icon, the name, and a version pill.
+        DrawBrandMark(ui, target, new Rect(bounds.X + S(18), y, S(22), S(22)));
         ui.Text("NexusShot", new Rect(bounds.X + S(50), y, S(110), S(22)),
             theme.TextPrimary, (float)S(Metrics.FontSubtitle), bold: true);
 
@@ -212,23 +228,28 @@ public sealed class MainWindow : D2DRenderWindow
         DrawSidebarFooter(ui, new Rect(bounds.X, bounds.Bottom - footer, bounds.Width, footer));
     }
 
-    /// <summary>The app mark: the Nexus tile, a rounded square split on the diagonal.</summary>
-    private void DrawBrandMark(Ui ui, Rect bounds)
+    /// <summary>The app mark: the real icon, decoded once and rescaled by the GPU per frame.</summary>
+    private void DrawBrandMark(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds)
     {
-        ui.FillRounded(bounds, (float)S(5), new Rgba(0x3A, 0x46, 0x52));
-
-        // The cyan half, as a stack of horizontal spans under the diagonal.
-        var steps = Math.Max(1, (int)bounds.Height);
-        for (var i = 0; i < steps; i++)
+        if (_brand is null && !_brandFailed)
         {
-            var t = i / (double)steps;
-            var rowY = bounds.Y + t * bounds.Height;
-            var span = bounds.Width * (1 - t);
-            if (span <= 0) continue;
-            ui.FillRect(new Rect(bounds.X, rowY, span, bounds.Height / steps + 0.5),
-                new Rgba(0x4F, 0xC3, 0xE8));
+            using var context = target.AsDeviceContext();
+            var path = Path.Combine(AppContext.BaseDirectory, "nexus-shot-128.png");
+
+            if (context is not null && File.Exists(path)) _brand = ImageSurface.Load(path, context);
+            _brandFailed = _brand is null;
         }
+
+        if (_brand is null) return;
+
+        target.DrawBitmap(
+            _brand.Bitmap, 1f,
+            D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+            AnnotationRenderer.ToRect(bounds));
     }
+
+    private ImageSurface? _brand;
+    private bool _brandFailed;
 
     private double DrawCaptureAction(
         Ui ui, Rect sidebar, double y, int id,
@@ -473,8 +494,8 @@ public sealed class MainWindow : D2DRenderWindow
     {
         var theme = ui.Theme;
 
-        // Header: Padding="28,18", over a hairline.
-        var header = new Rect(bounds.X, bounds.Y, bounds.Width, S(18) * 2 + S(Metrics.FontTitle) + S(4));
+        // Header: Padding="28,14", over a hairline.
+        var header = new Rect(bounds.X, bounds.Y, bounds.Width, S(14) * 2 + S(Metrics.FontTitle) + S(4));
         ui.Text("Settings", new Rect(header.X + S(28), header.Y, header.Width, header.Height),
             theme.TextPrimary, (float)S(Metrics.FontTitle), bold: true);
 
@@ -482,6 +503,7 @@ public sealed class MainWindow : D2DRenderWindow
             false, Icons.Close, S(14), "Close settings"))
         {
             _settingsOpen = false;
+            CloseDropdowns();
         }
         ui.FillRect(new Rect(bounds.X, header.Bottom, bounds.Width, 1), theme.StrokeSubtle);
 
@@ -489,7 +511,9 @@ public sealed class MainWindow : D2DRenderWindow
         var body = new Rect(bounds.X, header.Bottom, bounds.Width, bounds.Bottom - header.Bottom);
         ui.PushClip(body);
 
-        // Centred column: MaxWidth=640, Margin="32,0,32,24".
+        // Centred column: MaxWidth=640, Margin="32,0,32,32". Sections and rows provide their
+        // own vertical rhythm; keeping it here instead of at each call site makes the whole pane
+        // feel like one system rather than a stack of individually nudged controls.
         var width = Math.Min(S(640), body.Width - S(64));
         var x = body.X + (body.Width - width) / 2;
         var y = body.Y - _settingsScroll;
@@ -510,7 +534,7 @@ public sealed class MainWindow : D2DRenderWindow
             });
 
         y = Row(ui, x, y, width, "Default capture mode", null,
-            row => Choice(ui, 41, ActionSlot(row, S(240)),
+            row => _captureModeBox.Field(ui, 41, ActionSlot(row, S(148)),
                 ["Region", "Full screen", "Active window"],
                 (int)_settings.DefaultCaptureMode,
                 index =>
@@ -542,11 +566,10 @@ public sealed class MainWindow : D2DRenderWindow
         y = Section(ui, "SHORTCUTS", x, y, width);
 
         ui.Text(
-            "Click a shortcut, then press the new keys. A single key such as F9 or PrtScn works too. "
-            + "Backspace restores the default, Esc cancels.",
-            new Rect(x, y, width, S(32)),
-            theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false, wrap: true);
-        y += S(38);
+            "Click a shortcut, then press the new keys. Backspace restores the default, Esc cancels.",
+            new Rect(x, y, width, S(16)),
+            theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
+        y += S(30);
 
         y = Hotkey(ui, 44, x, y, width, "Capture region", _settings.CaptureRegionHotkey);
         y = Hotkey(ui, 45, x, y, width, "Capture full screen", _settings.CaptureFullScreenHotkey);
@@ -575,7 +598,7 @@ public sealed class MainWindow : D2DRenderWindow
         y = Section(ui, "GENERAL", x, y, width);
 
         y = Row(ui, x, y, width, "Theme", null,
-            row => Choice(ui, 49, ActionSlot(row, S(210)),
+            row => _themeBox.Field(ui, 49, ActionSlot(row, S(148)),
                 ["System", "Light", "Dark"],
                 (int)_settings.Theme,
                 index =>
@@ -596,31 +619,54 @@ public sealed class MainWindow : D2DRenderWindow
 
         ui.PopClip();
 
+        // Open lists paint after the clip is popped: a list is allowed to overhang the rows below it
+        // and the body's own edge, which is the point of a dropdown.
+        _captureModeBox.DrawOpen(ui);
+        _themeBox.DrawOpen(ui);
+
         // The scroll extent, so the wheel handler knows where the bottom is.
-        _settingsHeight = y + _settingsScroll - body.Y + S(24);
+        _settingsHeight = y + _settingsScroll - body.Y + S(32);
     }
 
-    /// <summary>SectionHeaderStyle: caption, SemiBold, TextTertiary, Margin="0,20,0,2".</summary>
+    private readonly Dropdown _captureModeBox = new();
+    private readonly Dropdown _themeBox = new();
+
+    /// <summary>An open list is anchored to a row, so anything that moves or hides that row - a
+    /// scroll, Escape, leaving settings - has to take the list with it.</summary>
+    private void CloseDropdowns()
+    {
+        _captureModeBox.Close();
+        _themeBox.Close();
+    }
+
+    private bool DropdownOpen => _captureModeBox.IsOpen || _themeBox.IsOpen;
+
+    /// <summary>SectionHeaderStyle: caption, SemiBold, TextTertiary. A generous leading gap and a
+    /// smaller trailing gap make the heading belong to the rows below it, while keeping adjacent
+    /// groups visually distinct.</summary>
     private double Section(Ui ui, string title, double x, double y, double width)
     {
-        y += S(20);
+        y += S(28);
         ui.Text(title, new Rect(x, y, width, S(16)),
             ui.Theme.TextTertiary, (float)S(Metrics.FontCaption), bold: true, middle: false);
-        return y + S(16) + S(2);
+        return y + S(16) + S(10);
     }
 
     /// <summary>
-    /// SettingRowStyle: Padding="0,9", bottom border StrokeSubtle, ColumnSpacing=24.
+    /// SettingRowStyle: at least 48 high, bottom border StrokeSubtle, ColumnSpacing=24.
     /// A title, an optional caption, and a control on the right. The control draws itself into
-    /// the slot the row hands it.
+    /// the slot the row hands it. The minimum height deliberately leaves eight pixels above and
+    /// below a 32-pixel control, so consecutive buttons never read as one clumped control stack.
     /// </summary>
     private double Row(
         Ui ui, double x, double y, double width,
         string title, string? caption, Action<Rect> control)
     {
         var theme = ui.Theme;
-        var textHeight = caption is null ? S(18) : S(18) * 2 + S(2);
-        var height = S(9) * 2 + textHeight;
+        var pad = S(10);
+
+        var textHeight = caption is null ? S(18) : S(18) + S(4) + S(18);
+        var height = Math.Max(S(48), pad * 2 + textHeight);
         var row = new Rect(x, y, width, height);
 
         var textWidth = width - S(260) - S(24);
@@ -632,9 +678,9 @@ public sealed class MainWindow : D2DRenderWindow
         }
         else
         {
-            ui.Text(title, new Rect(x, row.Y + S(9), textWidth, S(18)),
+            ui.Text(title, new Rect(x, row.Y + pad, textWidth, S(18)),
                 theme.TextPrimary, (float)S(Metrics.FontBody), middle: false);
-            ui.Text(caption, new Rect(x, row.Y + S(9) + S(18) + S(2), textWidth, S(18)),
+            ui.Text(caption, new Rect(x, row.Y + pad + S(18) + S(4), textWidth, S(18)),
                 theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false, wrap: true);
         }
 
@@ -644,9 +690,9 @@ public sealed class MainWindow : D2DRenderWindow
         return row.Bottom + 1;
     }
 
-    /// <summary>The right-aligned slot a row's control sits in. ColumnSpacing=24 clears the text.</summary>
-    private static Rect ActionSlot(Rect row, double width) =>
-        new(row.Right - width, row.Center.Y - 14, width, 28);
+    /// <summary>The right-aligned slot a row's control sits in. ShellButtonStyle is 32 tall.</summary>
+    private Rect ActionSlot(Rect row, double width) =>
+        new(row.Right - width, row.Center.Y - S(16), width, S(32));
 
     /// <summary>A toggle switch: a track with a knob that slides.</summary>
     private void Switch(Ui ui, int id, Rect slot, bool value, Action<bool> set)
@@ -661,36 +707,6 @@ public sealed class MainWindow : D2DRenderWindow
 
         var knob = new Point(value ? track.Right - S(10) : track.X + S(10), track.Center.Y);
         ui.FillCircle(knob, (float)S(7), Rgba.White);
-    }
-
-    /// <summary>
-    /// A segmented choice. A dropdown would need a popup layer and a hit-test that outlives the
-    /// frame; for three mutually exclusive options, segments say the same thing in one pass and
-    /// show the alternatives without a click.
-    /// </summary>
-    private void Choice(Ui ui, int id, Rect slot, string[] options, int selected, Action<int> set)
-    {
-        var segment = slot.Width / options.Length;
-
-        ui.FillRounded(slot, (float)S(Metrics.RadiusControl), ui.Theme.SurfaceSunken);
-        ui.StrokeRounded(slot, (float)S(Metrics.RadiusControl), ui.Theme.StrokeSubtle);
-
-        for (var i = 0; i < options.Length; i++)
-        {
-            var bounds = new Rect(slot.X + i * segment, slot.Y, segment, slot.Height);
-            var isSelected = i == selected;
-
-            if (ui.Interact(id * 10 + i, bounds) && !isSelected) set(i);
-
-            if (isSelected)
-                ui.FillRounded(bounds.Deflate(S(2)), (float)S(4), ui.Theme.Accent);
-            else if (ui.IsHot(id * 10 + i))
-                ui.FillRounded(bounds.Deflate(S(2)), (float)S(4), ui.Theme.FillHover);
-
-            ui.Text(options[i], bounds,
-                isSelected ? ui.Theme.TextOnAccent : ui.Theme.TextSecondary,
-                (float)S(Metrics.FontCaption), align: TextAlign.Center);
-        }
     }
 
     /// <summary>A number stepper: minus, value, plus.</summary>
@@ -722,8 +738,13 @@ public sealed class MainWindow : D2DRenderWindow
     {
         return Row(ui, x, y, width, title, null, row =>
         {
-            var slot = ActionSlot(row, S(180));
             var recording = _recordingHotkey == id;
+            var label = recording ? "Press keys…" : Describe(binding);
+
+            // ShellButtonStyle: Height 32, Padding 14,0. The button hugs its label rather than being
+            // stretched to a fixed width, which is what made these read as squashed bars.
+            var slot = ActionSlot(row,
+                Math.Max(S(96), ui.MeasureText(label, S(Metrics.FontCaption)) + S(28)));
 
             if (ui.Interact(id, slot))
             {
@@ -740,7 +761,7 @@ public sealed class MainWindow : D2DRenderWindow
                 recording ? ui.Theme.Accent : ui.Theme.StrokeSubtle,
                 recording ? 1.5f : 1f);
 
-            ui.Text(recording ? "Press keys…" : Describe(binding), slot,
+            ui.Text(label, slot,
                 recording ? ui.Theme.Accent : ui.Theme.TextSecondary,
                 (float)S(Metrics.FontCaption), align: TextAlign.Center);
         });
@@ -975,10 +996,7 @@ public sealed class MainWindow : D2DRenderWindow
                 // The only signal an unpackaged app gets that the user flipped the system theme.
                 if (SystemTheme.IsColorSetChange(msg, (IntPtr)lParam.Value.ToInt64())
                     && _settings.Theme == AppTheme.System)
-                {
                     ApplyTheme();
-                    Invalidate();
-                }
                 break;
 
             case WmLButtonDown:
@@ -1006,6 +1024,7 @@ public sealed class MainWindow : D2DRenderWindow
                 // Whichever pane the pointer is over gets the wheel.
                 if (_settingsOpen && _pointer.X > S(248))
                 {
+                    CloseDropdowns();
                     var viewport = Math.Max(1, ClientRect.Height - S(64));
                     var maximum = Math.Max(0, _settingsHeight - viewport);
                     _settingsScroll = Math.Clamp(_settingsScroll - step, 0, maximum);
@@ -1033,8 +1052,12 @@ public sealed class MainWindow : D2DRenderWindow
 
                 if (key == VIRTUAL_KEY.VK_ESCAPE)
                 {
-                    if (_settingsOpen) { _settingsOpen = false; Invalidate(); }
-                    else Hide();
+                    // Escape peels one layer: the open list, then settings, then the window.
+                    if (DropdownOpen) CloseDropdowns();
+                    else if (_settingsOpen) _settingsOpen = false;
+                    else { Hide(); return new LRESULT { Value = 0 }; }
+
+                    Invalidate();
                     return new LRESULT { Value = 0 };
                 }
                 break;

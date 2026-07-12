@@ -75,16 +75,16 @@ public static class AdornerGeometry
     }
 
     /// <summary>
-    /// Where a selected annotation's grips sit. Rectangles and ellipses draw their own stroke, so
-    /// grips ride that stroke's rendered centreline (one half-stroke inset in) and no extra
-    /// dashed frame is drawn. Everything else has no outline of its own, so it gets a dashed frame
-    /// and its grips ride that.
+    /// Where a selected annotation's grips sit. Shapes that draw their own outline get no extra
+    /// frame - the counter's filled disc is as much an outline as a rectangle's stroke, and a box
+    /// around it just adds noise. Everything else has no outline of its own, so it gets a dashed
+    /// frame and its grips ride that.
     /// </summary>
     public static SelectionAdorner Selection(Annotation annotation, double adornerScale)
     {
         var bounds = annotation.Bounds;
 
-        if (annotation.Tool is EditorTool.Rectangle or EditorTool.Ellipse)
+        if (annotation.Tool is EditorTool.Rectangle or EditorTool.Ellipse or EditorTool.Counter)
         {
             // Grips ride the shape's own painted stroke centreline, not a second inset past it.
             return new SelectionAdorner(

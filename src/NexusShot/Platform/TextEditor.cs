@@ -23,6 +23,24 @@ internal sealed class TextEditor : IDisposable
     private const int ES_AUTOVSCROLL = 0x0040;
     private const int ES_WANTRETURN = 0x1000;
 
+    private const int GWL_STYLE = -16;
+    private const int WS_CLIPCHILDREN = 0x02000000;
+
+    /// <summary>
+    /// Stops the parent painting underneath the child.
+    ///
+    /// The parent is a D2D HwndRenderTarget: it fills the entire client area every frame, including
+    /// the rectangle the EDIT occupies, and the EDIT then repaints itself on top. The two race, and
+    /// the image under the box strobes. WS_CLIPCHILDREN excludes the child's rectangle from the
+    /// parent's paint, so only the EDIT draws there.
+    /// </summary>
+    public static void ClipChildren(IntPtr parent)
+    {
+        var style = GetWindowLongW(parent, GWL_STYLE);
+        if ((style & WS_CLIPCHILDREN) != 0) return;
+        SetWindowLongW(parent, GWL_STYLE, style | WS_CLIPCHILDREN);
+    }
+
     private const uint WM_SETFONT = 0x0030;
     private const uint WM_SETTEXT = 0x000C;
     private const uint WM_GETTEXT = 0x000D;
@@ -143,6 +161,12 @@ internal sealed class TextEditor : IDisposable
         if (_font != IntPtr.Zero) DeleteObject(_font);
         if (_background != IntPtr.Zero) DeleteObject(_background);
     }
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern nint GetWindowLongW(IntPtr window, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern nint SetWindowLongW(IntPtr window, int index, nint value);
 
     [DllImport("gdi32.dll")]
     private static extern int SetTextColor(IntPtr deviceContext, int color);

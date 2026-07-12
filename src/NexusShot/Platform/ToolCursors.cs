@@ -12,6 +12,7 @@ public static class ToolCursors
 {
     private const int IDC_ARROW = 32512;
     private const int IDC_CROSS = 32515;
+    private const int IDC_PEN = 32631;
     private const int IDC_SIZEALL = 32646;
     private const int IDC_SIZENWSE = 32642;
     private const int IDC_SIZENESW = 32643;
@@ -20,7 +21,6 @@ public static class ToolCursors
 
     private static readonly Dictionary<int, IntPtr> System = [];
     private static readonly Dictionary<(int Size, uint Colour), IntPtr> Circles = [];
-    private static IntPtr _pencil;
 
     public static IntPtr Arrow => Standard(IDC_ARROW);
     public static IntPtr Cross => Standard(IDC_CROSS);
@@ -43,12 +43,10 @@ public static class ToolCursors
     }
 
     /// <summary>
-    /// The brush/eraser cursor: a ring of the stroke's true on-screen diameter, so what you see is
-    /// exactly what you will paint.
+    /// The brush/eraser cursor: a ring of the stroke's true on-screen diameter.
     ///
-    /// Windows caps a cursor at the system metric (typically 32px), so a large brush would silently
-    /// be drawn small and lie about its size. Past that, it falls back to a crosshair - honest,
-    /// where a wrong-sized ring is not.
+    /// Windows caps a cursor at the system metric (typically 32px). Past that it falls back to a
+    /// crosshair, which is honest, where a ring drawn at the wrong size is not.
     /// </summary>
     public static IntPtr Circle(double diameter, Rgba fill)
     {
@@ -67,13 +65,9 @@ public static class ToolCursors
         return cursor;
     }
 
-    /// <summary>A pencil, for the pen tool.</summary>
-    public static IntPtr Pencil()
-    {
-        if (_pencil != IntPtr.Zero) return _pencil;
-        _pencil = BuildPencil();
-        return _pencil == IntPtr.Zero ? Cross : _pencil;
-    }
+    /// <summary>The pen tool's cursor. Windows ships a pencil; a hand-drawn DIB only ever looked
+    /// like an approximation of one.</summary>
+    public static IntPtr Pencil() => Standard(IDC_PEN);
 
     /// <summary>A ring: dark outer stroke, white inner, so it reads on any content. Hotspot centred.</summary>
     private static unsafe IntPtr BuildCircle(int size, Rgba fill)
@@ -99,40 +93,6 @@ public static class ToolCursors
         }
 
         return FromPixels(pixels, size, size, size / 2, size / 2);
-    }
-
-    /// <summary>A pencil glyph, drawn as a diagonal nib with its point at the hotspot.</summary>
-    private static IntPtr BuildPencil()
-    {
-        const int size = 32;
-        var pixels = new uint[size * size];
-
-        var ink = Pack(Rgba.White.WithAlpha(255));
-        var edge = Pack(Rgba.Black.WithAlpha(220));
-
-        // The body: a thick diagonal from the tip (bottom-left) up to the top-right.
-        for (var i = 0; i < 22; i++)
-        {
-            var x = 3 + i;
-            var y = 28 - i;
-
-            for (var w = -3; w <= 3; w++)
-            {
-                var px = x + w;
-                var py = y + w;
-                if (px < 0 || px >= size || py < 0 || py >= size) continue;
-
-                // Outline the body so it reads on white content too.
-                pixels[py * size + px] = Math.Abs(w) >= 3 ? edge : ink;
-            }
-        }
-
-        // The tip: a small solid wedge at the hotspot.
-        for (var y = 26; y < 31; y++)
-        for (var x = 1; x < 6 - (y - 26); x++)
-            pixels[y * size + x] = x <= 1 || y >= 30 ? edge : ink;
-
-        return FromPixels(pixels, size, size, 2, 29);
     }
 
     /// <summary>Builds an HCURSOR from premultiplied BGRA pixels.</summary>

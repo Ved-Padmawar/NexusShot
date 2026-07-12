@@ -226,19 +226,22 @@ public sealed class Ui(D2DResources resources)
     {
         Interact(id, bounds);
 
-        var track = new Rect(bounds.X, bounds.Center.Y - 2, bounds.Width, 4);
-        FillRounded(track, 2, Theme.StrokeDefault);
+        var thickness = 6 * Scale;
+        var radius = 9 * Scale;
+
+        var track = new Rect(bounds.X, bounds.Center.Y - thickness / 2, bounds.Width, thickness);
+        FillRounded(track, (float)(thickness / 2), Theme.StrokeDefault);
 
         var range = Math.Max(0.0001, max - min);
         var t = Math.Clamp((value - min) / range, 0, 1);
 
         var filled = new Rect(track.X, track.Y, track.Width * t, track.Height);
-        if (filled.Width > 0) FillRounded(filled, 2, Theme.Accent);
+        if (filled.Width > 0) FillRounded(filled, (float)(thickness / 2), Theme.Accent);
 
-        var knobX = bounds.X + bounds.Width * t;
-        var knob = new Point(knobX, bounds.Center.Y);
-        FillCircle(knob, 7, Theme.SurfaceRaised);
-        StrokeCircle(knob, 7, IsActive(id) || IsHot(id) ? Theme.Accent : Theme.StrokeStrong, 1.5f);
+        var knob = new Point(bounds.X + bounds.Width * t, bounds.Center.Y);
+        FillCircle(knob, (float)radius, Theme.SurfaceRaised);
+        StrokeCircle(knob, (float)radius,
+            IsActive(id) || IsHot(id) ? Theme.Accent : Theme.StrokeStrong, (float)(2 * Scale));
 
         if (!IsActive(id)) return false;
 
@@ -316,11 +319,12 @@ public sealed class Ui(D2DResources resources)
     }
 
     /// <summary>The rendered width of a string, so a caller can centre or size against it.</summary>
-    public double MeasureText(string text, double size, bool bold = false)
+    public double MeasureText(string text, double size, bool bold = false, bool monospace = false)
     {
         if (string.IsNullOrEmpty(text)) return 0;
 
-        var format = resources.TextFormat(Metrics.FontFamily, (float)size, bold, italic: false);
+        var family = monospace ? Metrics.MonoFamily : Metrics.FontFamily;
+        var format = resources.TextFormat(family, (float)size, bold, italic: false);
         using var layout = resources.DWrite.CreateTextLayout(format, text);
 
         layout.Object.GetMetrics(out var metrics);

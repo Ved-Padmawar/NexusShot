@@ -110,7 +110,6 @@ public sealed class RegionOverlay : D2DRenderWindow
         if (!_hasSelection || selection.IsEmpty)
         {
             ui.FillRect(full, Rgba.Black.WithAlpha(110));
-            DrawHint(ui, full);
             ui.EndFrame();
             return;
         }
@@ -124,29 +123,25 @@ public sealed class RegionOverlay : D2DRenderWindow
         ui.EndFrame();
     }
 
-    private void DrawHint(Ui ui, Rect full)
-    {
-        const string hint = "Drag to select an area    •    Esc to cancel";
-        var box = new Rect(full.Center.X - 200, full.Center.Y - 22, 400, 44);
-        ui.FillRounded(box, 8, Rgba.Black.WithAlpha(190));
-        ui.Text(hint, box, Rgba.White.WithAlpha(220), Metrics.FontBody, align: TextAlign.Center);
-    }
-
     /// <summary>The live pixel dimensions, pinned just outside the selection so it never covers the
-    /// content being selected.</summary>
+    /// content being selected. This mirrors main's compact accent badge rather than introducing a
+    /// second black surface over the screen being captured.</summary>
     private void DrawSizeBadge(Ui ui, Rect selection)
     {
         var label = $"{(int)selection.Width} × {(int)selection.Height}";
-        var width = 110.0;
-        var height = 26.0;
+        const float font = 12;
+        var width = Math.Ceiling(ui.MeasureText(label, font, bold: true, monospace: true)) + 16;
+        const double height = 26;
 
         // Below the selection normally; above it when there is no room below.
         var y = selection.Bottom + 8;
         if (y + height > _desktop.Height) y = Math.Max(0, selection.Top - height - 8);
 
-        var box = new Rect(selection.X, y, width, height);
-        ui.FillRounded(box, 4, Rgba.Black.WithAlpha(200));
-        ui.Text(label, box, Rgba.White, Metrics.FontCaption, align: TextAlign.Center);
+        var x = Math.Clamp(selection.X, 0, Math.Max(0, _desktop.Width - width));
+        var box = new Rect(x, y, width, height);
+        ui.FillRect(box, Theme.Dark.Accent.WithAlpha(242));
+        ui.Text(label, box, Rgba.White, font, bold: true,
+            align: TextAlign.Center, monospace: true);
     }
 
     private Rect CurrentSelection() => Rect.FromEdges(_origin.X, _origin.Y, _cursor.X, _cursor.Y);

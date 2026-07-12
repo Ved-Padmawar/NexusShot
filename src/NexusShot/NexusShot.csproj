@@ -36,6 +36,14 @@
     <PackageReference Include="DirectNAot.Extensions" Version="1.6.4" />
   </ItemGroup>
 
+  <!-- The sidebar draws the real mark. The .ico is linked into the exe as a resource and so has no
+       path to decode; everything here decodes through WIC from a file, so the PNG ships beside it. -->
+  <ItemGroup>
+    <Content Include="..\..\assets\icons\nexus-shot-128.png"
+             Link="nexus-shot-128.png"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- DirectN's own projects declare these globally; its API is written assuming they are in
        scope (COM wrappers, D2D structs, the Win32 host types). -->
   <ItemGroup>

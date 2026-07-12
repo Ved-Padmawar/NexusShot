@@ -53,6 +53,7 @@ public sealed class App : IDisposable
         ApplyHotkeys();
 
         _main.SettingsChanged += OnSettingsChanged;
+        _main.ThemeChanged += RethemeEditors;
         WatchSaveFolder();
 
         Log.Info("app.started", $"{_history.Count} captures");
@@ -288,6 +289,12 @@ public sealed class App : IDisposable
 
     /// <summary>The save folder may have moved, so the watcher follows it.</summary>
     private void OnSettingsChanged() => WatchSaveFolder();
+
+    /// <summary>Open editors follow the shell's theme rather than the one they were opened with.</summary>
+    private void RethemeEditors()
+    {
+        foreach (var editor in _editors.Values) editor.SetTheme(_settings.Theme);
+    }
 
     private void WatchSaveFolder()
     {

@@ -14,6 +14,8 @@ public static class SystemTheme
     public const uint WM_SETTINGCHANGE = 0x001A;
 
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    private const int DWMWA_CAPTION_COLOR = 35;
+    private const int DWMWA_TEXT_COLOR = 36;
 
     private const string PersonalizeKey =
         @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
@@ -62,14 +64,26 @@ public static class SystemTheme
         return true;
     }
 
-    /// <summary>Matches the window's titlebar to the theme. XAML did not own it either.</summary>
-    public static void ApplyTitleBar(IntPtr window, bool dark)
+    /// <summary>Matches the DWM-owned titlebar to the app surface directly beneath it.</summary>
+    public static void ApplyTitleBar(IntPtr window, Theme theme, Rgba? surface = null)
     {
         if (window == IntPtr.Zero) return;
 
-        var value = dark ? 1 : 0;
+        var value = theme.IsDark ? 1 : 0;
         DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, ref value, sizeof(int));
+
+        // Immersive dark mode only asks Windows for its standard dark caption, whose colour does
+        // not match our #141417 base. Windows 11 lets an app provide the exact caption and text
+        // colours; older Windows versions simply ignore these attributes and keep the fallback.
+        value = ColorRef(surface ?? theme.SurfaceBase);
+        DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR, ref value, sizeof(int));
+
+        value = ColorRef(theme.TextPrimary);
+        DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR, ref value, sizeof(int));
     }
+
+    /// <summary>DWM expects COLORREF (00BBGGRR), rather than the RGB order used by the renderer.</summary>
+    private static int ColorRef(Rgba color) => color.R | color.G << 8 | color.B << 16;
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(

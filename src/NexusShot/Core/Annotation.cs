@@ -60,8 +60,10 @@ public sealed class Annotation
     public bool IsStrokeTool => Tool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser
         or EditorTool.Blur or EditorTool.Pixelate;
 
-    /// <summary>The diameter of a counter badge, shared by hit testing and rendering.</summary>
-    public double CounterDiameter => Math.Max(28, StrokeThickness * 8);
+    /// <summary>The diameter of a counter badge, shared by hit testing and rendering. The width
+    /// slider scales it, but gently: at x8 a mid-range width produced a badge that swamped the
+    /// screenshot it was meant to annotate.</summary>
+    public double CounterDiameter => Math.Max(20, 14 + StrokeThickness * 2.5);
 
     /// <summary>Bounding box in image pixels, normalised so width and height are non-negative.</summary>
     public Rect Bounds

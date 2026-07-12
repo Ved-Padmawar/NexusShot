@@ -286,8 +286,33 @@ public sealed class AnnotationRenderer(D2DResources resources)
     public void DrawAdorners(
         IComObject<ID2D1RenderTarget> target, EditorDocument document, double adornerScale)
     {
+        DrawEmptyTextFrames(target, document, adornerScale);
         if (document.Selected is { } selected) DrawSelectionAdorner(target, selected, adornerScale);
         DrawCropAdorner(target, document, adornerScale);
+    }
+
+    /// <summary>
+    /// The outline of a text box that has no text yet.
+    ///
+    /// Text draws nothing until it has content, so dragging one out showed no feedback at all until
+    /// the pointer came up. This is an adorner rather than part of the annotation so it stays out of
+    /// the exported file, where an empty box would be a visible artefact.
+    /// </summary>
+    private void DrawEmptyTextFrames(
+        IComObject<ID2D1RenderTarget> target, EditorDocument document, double adornerScale)
+    {
+        foreach (var annotation in document.Annotations)
+        {
+            if (annotation.Tool != EditorTool.Text || annotation.Text.Length > 0) continue;
+
+            var thickness = 1.5 * adornerScale;
+            var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, thickness);
+            if (bounds.IsEmpty) continue;
+
+            target.DrawRectangle(
+                ToRect(bounds), resources.Brush(Palette.Parse(annotation.ColorHex).WithAlpha(180)),
+                (float)thickness, resources.DashStroke(3, 3));
+        }
     }
 
     private void DrawSelectionAdorner(

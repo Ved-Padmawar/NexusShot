@@ -46,12 +46,23 @@ public sealed class EditorWindow : D2DRenderWindow
     /// <summary>The inline text box, while one is open.</summary>
     private TextEditor? _textEditor;
 
-    private readonly AppTheme _theme;
+    private AppTheme _theme;
 
     public EditorWindow(string path, AppTheme theme = AppTheme.System) : base("NexusShot")
     {
         _path = path;
         _theme = theme;
+    }
+
+    /// <summary>Follows the shell's theme. The Ui's theme is read per frame, so this only has to
+    /// retint the titlebar DWM owns and ask for a repaint.</summary>
+    public void SetTheme(AppTheme theme)
+    {
+        _theme = theme;
+        var resolved = SystemTheme.Resolve(theme);
+        SystemTheme.ApplyTitleBar(Handle, resolved, resolved.SurfaceRaised);
+        if (_ui is not null) _ui.Theme = resolved;
+        Invalidate();
     }
 
     /// <summary>Raised when the window goes away, so the host can drop its reference and refresh a
@@ -65,7 +76,13 @@ public sealed class EditorWindow : D2DRenderWindow
     {
         base.OnCreated(sender, e);
         AppIcon.Apply(Handle);
-        SystemTheme.ApplyTitleBar(Handle, SystemTheme.Resolve(_theme).IsDark);
+        var theme = SystemTheme.Resolve(_theme);
+        SystemTheme.ApplyTitleBar(Handle, theme, theme.SurfaceRaised);
+
+        // The inline text box is a child HWND over the D2D surface; without this the surface paints
+        // under it every frame and the image beneath the box strobes.
+        TextEditor.ClipChildren(Handle);
+
         _document.Changed += (_, _) => Invalidate();
     }
 
@@ -191,6 +208,9 @@ public sealed class EditorWindow : D2DRenderWindow
 
         EnsureResources(target);
         if (_ui is null || _chrome is null || _renderer is null) return;
+
+        // Read per frame, so a theme change can never leave the canvas painted in the old colours.
+        _ui.Theme = SystemTheme.Resolve(_theme);
 
         var client = ClientRect;
         renderTarget.Clear(D2DResources.ToD3D(_ui.Theme.SurfaceSunken));
@@ -413,6 +433,12 @@ public sealed class EditorWindow : D2DRenderWindow
             case WmKeyDown:
                 if (OnKeyDown((VIRTUAL_KEY)(ulong)wParam.Value)) return Handled;
                 break;
+
+            case SystemTheme.WM_SETTINGCHANGE:
+                if (SystemTheme.IsColorSetChange(msg, (IntPtr)lParam.Value.ToInt64())
+                    && _theme == AppTheme.System)
+                    SetTheme(_theme);
+                break;
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
@@ -441,11 +467,12 @@ public sealed class EditorWindow : D2DRenderWindow
             EditorTool.Select => ToolCursors.Arrow,
             EditorTool.Pen => ToolCursors.Pencil(),
 
-            // The brush and eraser show their true footprint, at its on-screen size. The eraser's is
-            // a faint fill rather than the paint colour: it removes, it does not add.
+            // The brush and eraser show their true footprint at its on-screen size. The brush is
+            // filled with the paint colour, so what you see is what the stroke will lay down; the
+            // eraser stays faint, because it removes rather than adds.
             EditorTool.Brush => ToolCursors.Circle(
                 PaintStrokeGeometry.Diameter(_document.ActiveThickness) * _scale,
-                Palette.Parse(_document.ColorHex).WithAlpha(70)),
+                Palette.Parse(_document.ColorHex)),
 
             EditorTool.Eraser => ToolCursors.Circle(
                 PaintStrokeGeometry.Diameter(_document.ActiveThickness) * _scale,
