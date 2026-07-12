@@ -191,7 +191,11 @@ public sealed partial class EditorWindow : Window
     /// <summary>Maps a pointer position on the scaled host back into image-pixel coordinates.</summary>
     private Point ToImagePoint(PointerRoutedEventArgs e)
     {
-        var position = e.GetCurrentPoint(ImageHost).Position;
+        return ToImagePoint(e.GetCurrentPoint(ImageHost).Position);
+    }
+
+    private Point ToImagePoint(Point position)
+    {
         return new Point(
             Math.Clamp(position.X, 0, _imageWidth),
             Math.Clamp(position.Y, 0, _imageHeight));
@@ -366,21 +370,21 @@ public sealed partial class EditorWindow : Window
     private void Canvas_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_isLoaded) return;
-        var point = ToImagePoint(e);
-        if (e.GetCurrentPoint(ImageHost).Properties.IsLeftButtonPressed)
+        // Cross the WinRT input boundary once for the common hover path.
+        var currentPoint = e.GetCurrentPoint(ImageHost);
+        var point = ToImagePoint(currentPoint.Position);
+        if (currentPoint.Properties.IsLeftButtonPressed)
         {
             if (_document.ActiveTool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser
                 or EditorTool.Blur or EditorTool.Pixelate)
             {
                 // PointerMoved can represent several hardware samples. Preserve them in the
                 // stroke model, but notify/render only once on the next composition frame.
+                // GetIntermediatePoints is chronological; its last item is GetCurrentPoint.
                 var samples = e.GetIntermediatePoints(ImageHost);
-                for (var i = samples.Count - 1; i >= 0; i--)
+                for (var i = 0; i < samples.Count; i++)
                 {
-                    var sample = samples[i].Position;
-                    var imagePoint = new Point(
-                        Math.Clamp(sample.X, 0, _imageWidth),
-                        Math.Clamp(sample.Y, 0, _imageHeight));
+                    var imagePoint = ToImagePoint(samples[i].Position);
                     if (_pendingGesturePoints.Count == 0 || _pendingGesturePoints[^1] != imagePoint)
                         _pendingGesturePoints.Add(imagePoint);
                 }
@@ -421,36 +425,17 @@ public sealed partial class EditorWindow : Window
 
         _brushCursorPoint = point;
         var diameter = PaintStrokeGeometry.Diameter(_document.ActiveThickness);
-        var left = point.X - diameter / 2;
-        var top = point.Y - diameter / 2;
-        var inverseScale = AdornerScale();
-
-        foreach (var outline in new[] { BrushCursorOuter, BrushCursorInner })
-        {
-            outline.Width = diameter;
-            outline.Height = diameter;
-            Canvas.SetLeft(outline, left);
-            Canvas.SetTop(outline, top);
-            outline.Visibility = Visibility.Visible;
-        }
-
-        // Keep the outline legible over both light and dark pixels without changing its diameter.
-        BrushCursorOuter.StrokeThickness = 3 * inverseScale;
-        // Brush and eraser use identical ring geometry. Their fill alone communicates the mode;
-        // omitting the eraser's inner ring made an equal-diameter outline look optically smaller.
-        BrushCursorInner.StrokeThickness = inverseScale;
-        var cursorColor = ParseColor(_document.ColorHex);
-        BrushCursorInner.Fill = _document.ActiveTool == EditorTool.Brush
-            ? new SolidColorBrush(cursorColor)
-            : new SolidColorBrush(Windows.UI.Color.FromArgb(28, 255, 255, 255));
-        ImageHost.SetHiddenCursor();
+        var rasterizationScale = Root.XamlRoot?.RasterizationScale ?? 1;
+        var physicalDiameter = diameter * DisplayScale() * rasterizationScale;
+        var fill = _document.ActiveTool == EditorTool.Brush
+            ? ParseColor(_document.ColorHex)
+            : Windows.UI.Color.FromArgb(28, 255, 255, 255);
+        ImageHost.SetBrushCursor(physicalDiameter, rasterizationScale, fill);
     }
 
     private void HideBrushCursor()
     {
         _brushCursorPoint = null;
-        BrushCursorOuter.Visibility = Visibility.Collapsed;
-        BrushCursorInner.Visibility = Visibility.Collapsed;
         ImageHost.SetCursorShape(Microsoft.UI.Input.InputSystemCursorShape.Arrow);
     }
 

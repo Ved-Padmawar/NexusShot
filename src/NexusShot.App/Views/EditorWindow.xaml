@@ -288,18 +288,9 @@
                     PointerReleased="Canvas_PointerReleased">
                     <Image x:Name="BaseImage" Stretch="Fill" />
                     <Canvas x:Name="AnnotationCanvas" IsHitTestVisible="False" />
-                    <!--  Image-space brush outline. Unlike a native HCURSOR, this is not silently
-                          rescaled by Windows, so its diameter remains the exact paint footprint.  -->
-                    <Canvas IsHitTestVisible="False">
-                        <Ellipse
-                            x:Name="BrushCursorOuter"
-                            Stroke="Black"
-                            Visibility="Collapsed" />
-                        <Ellipse
-                            x:Name="BrushCursorInner"
-                            Stroke="White"
-                            Visibility="Collapsed" />
-                    </Canvas>
+                    <!--  Brush and eraser feedback is a dynamically sized native HCURSOR. Windows
+                          moves it independently of XAML rendering while its hotspot stays on the
+                          newest physical pointer position.  -->
                     <!--  Hosts the inline TextBox while a text annotation is being typed.  -->
                     <Canvas x:Name="TextEditCanvas" />
                 </controls:CursorInteractionGrid>

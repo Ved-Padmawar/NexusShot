@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Input;
@@ -15,39 +16,88 @@ public sealed partial class CursorInteractionGrid : Grid
 {
     private static readonly Guid CursorInteropId = new("ac6f5065-90c4-46ce-beb7-05e138e54117");
     private static InputCursor? _pencilCursor;
-    private static InputCursor? _hiddenCursor;
+    private InputCursor? _brushCursor;
+    private BrushCursorKey? _brushCursorKey;
     private InputSystemCursorShape? _currentShape;
+    private bool _isPencilCursor;
+    private bool _isBrushCursor;
 
     public void SetCursorShape(InputSystemCursorShape shape)
     {
         if (_currentShape == shape) return;
         _currentShape = shape;
+        _isPencilCursor = false;
+        _isBrushCursor = false;
         ProtectedCursor = InputSystemCursor.Create(shape);
     }
 
     public void SetPencilCursor()
     {
+        if (_isPencilCursor) return;
         _currentShape = null;
+        _isPencilCursor = true;
+        _isBrushCursor = false;
         try
         {
             ProtectedCursor = _pencilCursor ??= CreatePencilCursor();
         }
         catch
         {
+            _isPencilCursor = false;
             SetCursorShape(InputSystemCursorShape.Cross);
         }
     }
 
-    /// <summary>Hides the OS pointer while an image-space brush outline supplies exact feedback.</summary>
-    public void SetHiddenCursor()
+    /// <summary>
+    /// Uses the native pointer surface for brush and eraser feedback. Windows advances an
+    /// HCURSOR from the newest physical pointer position independently of the XAML UI thread,
+    /// so a busy or frame-limited compositor cannot leave the footprint preview behind.
+    /// </summary>
+    public void SetBrushCursor(double physicalDiameter, double rasterizationScale, Windows.UI.Color fill)
     {
-        _currentShape = null;
-        if (_hiddenCursor is null)
+        var diameter = Math.Max(1, (int)Math.Round(physicalDiameter));
+        var outerStroke = Math.Max(1, (int)Math.Round(3 * rasterizationScale));
+        var innerStroke = Math.Max(1, (int)Math.Round(rasterizationScale));
+        var color = Color.FromArgb(fill.A, fill.R, fill.G, fill.B);
+        var key = new BrushCursorKey(diameter, outerStroke, innerStroke, color.ToArgb());
+        if (_isBrushCursor && _brushCursorKey == key) return;
+
+        // Leave room for the outline outside the exact paint-footprint diameter. The hotspot is
+        // the footprint centre, including for even-sized cursors.
+        var padding = outerStroke + 2;
+        var bitmapSize = diameter + padding * 2;
+        using var bitmap = new Bitmap(bitmapSize, bitmapSize, PixelFormat.Format32bppPArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
+        using (var fillBrush = new SolidBrush(color))
+        using (var outer = new Pen(Color.Black, outerStroke))
+        using (var inner = new Pen(Color.White, innerStroke))
         {
-            using var bitmap = new Bitmap(1, 1, PixelFormat.Format32bppPArgb);
-            _hiddenCursor = CreateNativeCursor(bitmap, 0, 0);
+            graphics.Clear(Color.Transparent);
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+            var inset = outerStroke / 2f;
+            var bounds = new RectangleF(
+                padding + inset,
+                padding + inset,
+                Math.Max(0.5f, diameter - outerStroke),
+                Math.Max(0.5f, diameter - outerStroke));
+            graphics.FillEllipse(fillBrush, bounds);
+            graphics.DrawEllipse(outer, bounds);
+            graphics.DrawEllipse(inner, bounds);
         }
-        ProtectedCursor = _hiddenCursor;
+
+        var hotspot = (uint)(padding + diameter / 2);
+        var cursor = CreateNativeCursor(bitmap, hotspot, hotspot);
+        var previous = _brushCursor;
+        _brushCursor = cursor;
+        _brushCursorKey = key;
+        _currentShape = null;
+        _isPencilCursor = false;
+        _isBrushCursor = true;
+        ProtectedCursor = cursor;
+        // Freed only once the replacement is live, so the active cursor is never a dead handle.
+        previous?.Dispose();
     }
 
     private static InputCursor CreatePencilCursor()
@@ -104,4 +154,10 @@ public sealed partial class CursorInteractionGrid : Grid
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int CreateFromHCursor(IntPtr instance, IntPtr cursor, out IntPtr result);
+
+    private readonly record struct BrushCursorKey(
+        int Diameter,
+        int OuterStroke,
+        int InnerStroke,
+        int Argb);
 }
