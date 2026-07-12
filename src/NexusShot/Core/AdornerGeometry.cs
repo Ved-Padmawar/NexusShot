@@ -2,8 +2,7 @@ namespace NexusShot.Core;
 
 /// <summary>
 /// The exact geometry of selection and crop adorners, as pure maths. This is the precision the
-/// XAML build accumulated over several releases; keeping it framework-free means the renderer
-/// cannot drift from it.
+/// Kept framework-free so the renderer cannot drift from it.
 ///
 /// Note on stroke alignment: XAML shapes always centre their stroke on the layout bounds, so the
 /// old renderer had to inset every rect by half a stroke to keep the paint inside the shape.

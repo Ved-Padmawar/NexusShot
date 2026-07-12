@@ -1,25 +1,20 @@
 using ToolCursor = DirectN.Extensions.Utilities.Cursor;
 using NexusShot.Core;
 using NexusShot.Render;
+using NexusShot.Platform;
 
 namespace NexusShot.Views;
 
 /// <summary>
-/// The markup editor: a Win32 window that draws the image and its annotations with Direct2D.
-///
-/// Why this is fast where the XAML build was not. There, every pointer move mutated a retained
-/// visual tree, which meant scanning children to find an annotation's elements, patching them,
-/// and letting layout re-run — work proportional to the scene, on the UI thread, per input event.
-/// The old code fought that with hand-rolled frame batching (buffer the samples, hook
-/// CompositionTarget.Rendering, flush once per frame). Here, input only mutates the document and
-/// asks for a repaint; Windows coalesces WM_PAINT to the display rate for free, and a frame is one
-/// pass over the annotation list with no allocation. A fast drag and a stationary pointer cost the
-/// same, which is the bug this rewrite exists to kill.
+/// The markup editor. Input mutates the document and invalidates; a frame is one allocation-free
+/// pass over the annotation list, and WM_PAINT is already coalesced to the display rate.
 /// </summary>
 public sealed class EditorWindow : D2DRenderWindow
 {
     private readonly EditorDocument _document = new();
-    private readonly string _path;
+
+    /// <summary>The file being edited. Save As moves it.</summary>
+    private string _path;
 
     private D2DResources? _resources;
     private AnnotationRenderer? _renderer;
@@ -51,26 +46,32 @@ public sealed class EditorWindow : D2DRenderWindow
     /// <summary>The inline text box, while one is open.</summary>
     private TextEditor? _textEditor;
 
-    public EditorWindow(string path) : base("NexusShot") => _path = path;
+    private readonly AppTheme _theme;
+
+    public EditorWindow(string path, AppTheme theme = AppTheme.System) : base("NexusShot")
+    {
+        _path = path;
+        _theme = theme;
+    }
 
     /// <summary>Raised when the window goes away, so the host can drop its reference and refresh a
     /// thumbnail whose file may have just been re-saved.</summary>
     public event Action? Closed;
 
+    /// <summary>Raised when Save As writes a new file, so the shell can add it to the history.</summary>
+    public event Action<string>? SavedAs;
+
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
+        AppIcon.Apply(Handle);
+        SystemTheme.ApplyTitleBar(Handle, SystemTheme.Resolve(_theme).IsDark);
         _document.Changed += (_, _) => Invalidate();
     }
 
-    /// <summary>
-    /// Releases the device resources when the window goes away.
-    ///
-    /// Destroying the HWND does not release the D2D device, the full-resolution bitmap or the
-    /// effects - they are COM objects this class owns, not window state. Waiting for Dispose leaves
-    /// them alive for as long as the host holds a reference, so opening and closing a few captures
-    /// walks the process into the hundreds of megabytes.
-    /// </summary>
+    /// <summary>Destroying the HWND does not release the D2D device or the bitmap - they are COM
+    /// objects this class owns, not window state - so they go here rather than waiting for a
+    /// Dispose the host may never call.</summary>
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
         ReleaseResources();
@@ -94,25 +95,18 @@ public sealed class EditorWindow : D2DRenderWindow
         _chrome = null;
     }
 
-    /// <summary>
-    /// Uploads the image and builds the device resources.
-    ///
-    /// Everything here belongs to the window's render target: D2D refuses to use resources from one
-    /// factory with a target from another, and the bitmap is a device resource besides. So the
-    /// target is the single source of both, and this reruns whenever the target is recreated.
-    /// </summary>
+    /// <summary>Everything here belongs to the render target: D2D refuses to use resources from one
+    /// factory with a target from another.</summary>
     private void EnsureResources(IComObject<ID2D1RenderTarget> target)
     {
         if (_resources is not null) return;
 
         _resources = new D2DResources(target);
         _renderer = new AnnotationRenderer(_resources);
-        _ui = new Ui(_resources) { Theme = Theme.Dark };
+        _ui = new Ui(_resources) { Theme = SystemTheme.Resolve(_theme) };
         _chrome = new EditorChrome(_ui);
 
-        // Effects (blur, pixelate) need a device context. An ID2D1HwndRenderTarget exposes one only
-        // if it QIs across; when it does not, the renderer falls back to its frosted placeholder
-        // rather than failing, so the editor still works.
+        // Effects need a device context; without one the renderer falls back to its placeholder.
         using var context = target.AsDeviceContext();
         if (context is null) return;
 
@@ -124,15 +118,10 @@ public sealed class EditorWindow : D2DRenderWindow
     // ============================  VIEW TRANSFORM  ============================
 
     /// <summary>
-    /// Fits the image to the viewport, or shows it at physical 1:1.
+    /// Fit uses the space in both directions; 100% means one image pixel to one *physical* pixel,
+    /// not one DIP - a DIP-based 1:1 would resample the image and soften it.
     ///
-    /// At 100% one image pixel maps to one *physical* display pixel, not one DIP. On a 150% display
-    /// a DIP-based 1:1 would resample the image and soften it; this is the same rule the XAML build
-    /// arrived at, and it is why the preview is sharp.
-    /// Recomputed at the top of every frame rather than cached on resize: it is a few arithmetic
-    /// operations, and deriving it from the client rect we are actually drawing into means the
-    /// transform can never lag the window (which it did when computed at creation, before the
-    /// window had been sized).
+    /// Recomputed per frame from the rect being drawn into, so the transform cannot lag the window.
     /// </summary>
     private void Layout()
     {
@@ -144,13 +133,6 @@ public sealed class EditorWindow : D2DRenderWindow
             Math.Max(1, well.Width - margin * 2),
             Math.Max(1, well.Height - margin * 2));
 
-        // Fit means fit, in both directions. Clamping to 1 leaves a small capture stranded at its
-        // native size in the middle of a large window, which is not a fit - it is a refusal to
-        // scale. "100%" is the mode that guarantees one image pixel to one physical pixel; Fit's
-        // job is to use the space.
-        //
-        // Upscaling costs nothing in fidelity here because the GPU samples the real bitmap every
-        // frame. It is a pre-scaled *copy* that goes soft, and there is no copy.
         _scale = _fitToViewport
             ? Math.Min(available.Width / _image.Width, available.Height / _image.Height)
             : 1;
@@ -159,15 +141,15 @@ public sealed class EditorWindow : D2DRenderWindow
         _offsetY = Math.Round(well.Y + (well.Height - _image.Height * _scale) / 2);
     }
 
-    /// <summary>The sunken area the image sits in: everything between the toolbar and the footer.</summary>
+    /// <summary>The sunken area the image sits in: everything between the chrome and the footer.</summary>
     private Rect CanvasWell()
     {
         var client = ClientRect;
         return new Rect(
             0,
-            EditorChrome.ToolbarHeight,
+            EditorChrome.ChromeTop,
             Math.Max(1, client.Width),
-            Math.Max(1, client.Height - EditorChrome.ToolbarHeight - EditorChrome.FooterHeight));
+            Math.Max(1, client.Height - EditorChrome.ChromeTop - EditorChrome.FooterHeight));
     }
 
     /// <summary>Inverse display scale: adorners are drawn in image space but must keep a constant
@@ -199,20 +181,10 @@ public sealed class EditorWindow : D2DRenderWindow
     {
         using var target = renderTarget.AsRenderTarget();
 
-        // Work in physical pixels.
-        //
-        // The render target defaults to the system DPI, so on a 200% display D2D would scale every
-        // coordinate by 2 - while ClientRect, WM_MOUSEMOVE and the image are all already in physical
-        // pixels. Laying out in one space and drawing through a transform in another is how you get
-        // a toolbar at double size and a pointer that lands in the wrong place.
-        //
-        // Setting the target to 96 DPI means one unit is one pixel, and the app scales its own
-        // chrome by DpiScale. That is also what makes "100% zoom" mean one image pixel to one
-        // physical pixel, which is the rule that keeps a screenshot pin-sharp.
+        // Pin the target to 96 DPI so a unit is a physical pixel: ClientRect, WM_MOUSEMOVE and the
+        // image are all already physical, and letting D2D scale on top of that double-scales
+        // everything. The chrome then scales itself; the canvas deliberately does not.
         target.Object.SetDpi(96, 96);
-
-        // The chrome sizes itself against the display; the canvas deliberately does not, so one
-        // image pixel stays one physical pixel at 100%.
         EditorChrome.Scale = Functions.GetDpiForWindow(Handle) / 96.0;
 
         EnsureResources(target);
@@ -249,14 +221,21 @@ public sealed class EditorWindow : D2DRenderWindow
         renderTarget.Object.SetTransform(D2D_MATRIX_3X2_F.Identity());
 
         // ---- chrome, in client space ----
+        var toast = DateTime.UtcNow < _toastUntil ? _toast : null;
+
         _ui.BeginFrame(target, _clientPointer, _pointerDown);
-        _chrome.Draw(_document, client.Width, client.Height, Path.GetFileName(_path));
+        _chrome.Draw(_document, client.Width, client.Height,
+            Path.GetFileName(_path), _fitToViewport, toast);
         _ui.EndFrame();
 
         ApplyChrome();
+
+        // Keep repainting while a toast is up, so it disappears on time rather than on the next
+        // stray mouse move.
+        if (toast is not null) Invalidate();
     }
 
-    /// <summary>Applies what the toolbar asked for. The chrome reports intent; the window owns the
+    /// <summary>Applies what the chrome asked for. The chrome reports intent; the window owns the
     /// document, so there is only ever one writer.</summary>
     private void ApplyChrome()
     {
@@ -265,29 +244,87 @@ public sealed class EditorWindow : D2DRenderWindow
         if (_chrome.ToolPicked is { } tool) SelectTool(tool);
         if (_chrome.UndoPressed) _document.Undo();
         if (_chrome.RedoPressed) _document.Redo();
+        if (_chrome.DeletePressed) _document.DeleteSelected();
         if (_chrome.SavePressed) Save();
+        if (_chrome.SaveAsPressed) SaveAs();
         if (_chrome.CopyPressed) CopyToClipboard();
+
+        if (_chrome.FitPicked is { } fit && fit != _fitToViewport)
+        {
+            _fitToViewport = fit;
+            Invalidate();
+        }
     }
 
+    /// <summary>Writes the flattened image over the original. A crop frame the user is still
+    /// dragging is applied too: the footer says "Save to apply", so Save applies it.</summary>
     private void Save()
     {
         if (_image is null) return;
+
+        CommitText();
+        _document.CommitCrop();
+
         Exporter.SavePng(_document, _path, _path);
 
-        // The annotations are baked into the file now, so the session starts clean over the new
-        // pixels - the same contract ResetAfterSave had in the XAML build.
+        // The annotations and the crop are baked into the file now, so the session starts clean over
+        // the new pixels.
         _document.ResetAfterSave();
         ReloadImage();
+        ShowToast("Saved");
+    }
+
+    /// <summary>Writes the flattened image somewhere new and continues editing it there.</summary>
+    private void SaveAs()
+    {
+        if (_image is null) return;
+
+        CommitText();
+        _document.CommitCrop();
+
+        var suggested = Path.GetFileName(_path);
+        if (FilePicker.SavePng(Handle, suggested, Path.GetDirectoryName(_path)) is not { } destination)
+            return;
+
+        Exporter.SavePng(_document, _path, destination);
+
+        // The editor follows the file: further edits belong to the copy, not the original.
+        _path = destination;
+        _document.ResetAfterSave();
+        ReloadImage();
+        SavedAs?.Invoke(destination);
+        ShowToast("Saved");
     }
 
     private void CopyToClipboard()
     {
         if (_image is null) return;
+
+        CommitText();
+
         var temporary = Path.Combine(Path.GetTempPath(), $"nexusshot-{Guid.NewGuid():N}.png");
-        Exporter.SavePng(_document, _path, temporary);
+
+        // The clipboard gets the crop the user is looking at, without committing it to the document -
+        // copying is not saving, and a copy must not silently discard the uncropped original.
+        Exporter.SavePng(_document, _path, temporary, _document.PendingCrop);
+
         ClipboardImage.Copy(temporary);
         try { File.Delete(temporary); } catch (IOException) { /* the clipboard may still hold it */ }
+
+        ShowToast("Copied");
     }
+
+    /// <summary>A brief confirmation in the footer, so an action that changes nothing visible still
+    /// says it happened.</summary>
+    private void ShowToast(string message)
+    {
+        _toast = message;
+        _toastUntil = DateTime.UtcNow.AddSeconds(2);
+        Invalidate();
+    }
+
+    private string? _toast;
+    private DateTime _toastUntil;
 
     /// <summary>Re-decodes the file after a save, so the editor is now working over the flattened
     /// pixels rather than the original plus a document that no longer exists.</summary>
@@ -379,7 +416,7 @@ public sealed class EditorWindow : D2DRenderWindow
 
     /// <summary>
     /// Owns the cursor for the canvas. Windows draws it, so it never lags behind the pointer the
-    /// way an app-drawn cursor does - that regression cost the XAML build two releases.
+    /// way an app-drawn cursor does.
     /// Returns false outside the image so the frame keeps its normal resize cursors.
     /// </summary>
     private bool SetToolCursor()
@@ -435,9 +472,11 @@ public sealed class EditorWindow : D2DRenderWindow
         // Clicking anywhere commits an open text box first, like every canvas editor.
         CommitText();
 
-        // The chrome gets first refusal. It reports what it wants during the frame it draws, so a
-        // press inside the toolbar must not also start a gesture on the canvas underneath.
-        if (!InCanvas(_clientPointer) || (_ui?.WantsPointer ?? false))
+        // The chrome gets first refusal - a press on the toolbar, or on a popup floating over the
+        // canvas, must not also start a gesture underneath it.
+        if (!InCanvas(_clientPointer)
+            || (_ui?.WantsPointer ?? false)
+            || (_chrome?.PopupOpen ?? false))
         {
             Invalidate();
             return;
@@ -618,26 +657,36 @@ public sealed class EditorWindow : D2DRenderWindow
                 Invalidate();
                 return true;
 
-            // Tool shortcuts, matching CleanShot X.
+            case VIRTUAL_KEY.VK_RETURN:
+                // Enter applies the crop frame without writing the file, so it can be adjusted
+                // against the cropped result before saving.
+                if (_document.IsCropSessionActive)
+                {
+                    _document.CommitCrop();
+                    SelectTool(EditorTool.Select);
+                    return true;
+                }
+                break;
+
+            // B is Blur, not Brush; P is Pixelate, not Pen.
             case VIRTUAL_KEY.VK_V: return SelectTool(EditorTool.Select);
             case VIRTUAL_KEY.VK_R: return SelectTool(EditorTool.Rectangle);
-            case VIRTUAL_KEY.VK_O: return SelectTool(EditorTool.Ellipse);
-            case VIRTUAL_KEY.VK_L: return SelectTool(EditorTool.Line);
+            case VIRTUAL_KEY.VK_E: return SelectTool(EditorTool.Ellipse);
             case VIRTUAL_KEY.VK_A: return SelectTool(EditorTool.Arrow);
-            case VIRTUAL_KEY.VK_P: return SelectTool(EditorTool.Pen);
-            case VIRTUAL_KEY.VK_B: return SelectTool(EditorTool.Brush);
-            case VIRTUAL_KEY.VK_E: return SelectTool(EditorTool.Eraser);
+            case VIRTUAL_KEY.VK_L: return SelectTool(EditorTool.Line);
+            case VIRTUAL_KEY.VK_D: return SelectTool(EditorTool.Pen);
+            case VIRTUAL_KEY.VK_M: return SelectTool(EditorTool.Brush);
+            case VIRTUAL_KEY.VK_X: return SelectTool(EditorTool.Eraser);
             case VIRTUAL_KEY.VK_T: return SelectTool(EditorTool.Text);
-            case VIRTUAL_KEY.VK_H: return SelectTool(EditorTool.Highlight);
-            case VIRTUAL_KEY.VK_U: return SelectTool(EditorTool.Blur);
-            case VIRTUAL_KEY.VK_X: return SelectTool(EditorTool.Pixelate);
             case VIRTUAL_KEY.VK_N: return SelectTool(EditorTool.Counter);
+            case VIRTUAL_KEY.VK_H: return SelectTool(EditorTool.Highlight);
+            case VIRTUAL_KEY.VK_B: return SelectTool(EditorTool.Blur);
+            case VIRTUAL_KEY.VK_P: return SelectTool(EditorTool.Pixelate);
             case VIRTUAL_KEY.VK_S: return SelectTool(EditorTool.Spotlight);
             case VIRTUAL_KEY.VK_C: return SelectTool(EditorTool.Crop);
 
             case VIRTUAL_KEY.VK_1:
                 _fitToViewport = !_fitToViewport;
-                Layout();
                 Invalidate();
                 return true;
         }

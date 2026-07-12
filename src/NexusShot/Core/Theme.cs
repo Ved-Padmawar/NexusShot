@@ -1,11 +1,7 @@
 namespace NexusShot.Core;
 
 /// <summary>
-/// The design tokens, ported from the XAML build's ThemeDictionaries.
-///
-/// In XAML these had to be brushes resolved through ThemeResource, because StaticResource snapshots
-/// a brush at load time and a control resolved under one theme keeps it forever. Here a theme is
-/// just a value: the renderer reads whichever one is current at the top of the frame, so switching
+/// The design tokens. A theme is a value the renderer reads at the top of the frame, so switching
 /// themes is a repaint and cannot half-apply.
 ///
 /// The two themes are not inverses. Dark uses lightness for elevation (a raised surface is lighter
@@ -147,4 +143,8 @@ public static class Metrics
     public const float FontTitle = 20;
 
     public const string FontFamily = "Segoe UI";
+
+    /// <summary>For readouts that are really numbers - a hex colour jitters as it changes if its
+    /// digits are proportional.</summary>
+    public const string MonoFamily = "Consolas";
 }

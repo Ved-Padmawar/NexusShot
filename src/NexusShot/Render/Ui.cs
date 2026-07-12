@@ -3,16 +3,11 @@ using NexusShot.Core;
 namespace NexusShot.Render;
 
 /// <summary>
-/// An immediate-mode UI context: widgets are function calls, not objects.
+/// An immediate-mode UI context: widgets are function calls, not objects. A widget owns no state, so
+/// there is nothing to keep in sync with the model.
 ///
-/// The XAML build needed a class per control (ToolTile, ColorSwatch, HexColorPicker, HotkeyRecorder,
-/// CursorInteractionGrid...) plus templates, plus theme dictionaries, plus binding, because a
-/// retained tree needs an object to retain. Here a button is "draw a rect, return whether it was
-/// clicked" - the widget owns no state, so there is nothing to keep in sync with the model, and no
-/// RadioButton reserving a 20px indicator column that clips your content.
-///
-/// The only retained state is what genuinely persists between frames: what the pointer is over, and
-/// what it is dragging. Both are identified by a caller-supplied id.
+/// The only retained state is what genuinely persists between frames - what the pointer is over, and
+/// what it is dragging - keyed by a caller-supplied id.
 /// </summary>
 public sealed class Ui(D2DResources resources)
 {
@@ -26,6 +21,10 @@ public sealed class Ui(D2DResources resources)
 
     private bool _pointerPressedThisFrame;
     private bool _pointerReleasedThisFrame;
+
+    /// <summary>True on the frame the pointer went down. Popups use it to dismiss on an outside
+    /// click, which they must do before any widget under them gets the event.</summary>
+    public bool PointerPressed => _pointerPressedThisFrame;
 
     /// <summary>The widget under the pointer, and the one being dragged. Ids are stable across
     /// frames because callers derive them from what the widget represents, not from draw order.</summary>
@@ -75,6 +74,33 @@ public sealed class Ui(D2DResources resources)
             AnnotationRenderer.ToPoint(a), AnnotationRenderer.ToPoint(b),
             resources.Brush(color), thickness, resources.RoundStroke);
 
+    /// <summary>
+    /// Confines drawing to a rectangle. Scrolled content must be clipped, or the rows that have run
+    /// off the top of a list paint straight over the header above it.
+    ///
+    /// The pointer is clipped too: a widget scrolled out of view must not still be clickable where
+    /// it used to be.
+    /// </summary>
+    public void PushClip(Rect bounds)
+    {
+        _clips.Push(bounds);
+        _target.Object.PushAxisAlignedClip(
+            AnnotationRenderer.ToRect(bounds), D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_ALIASED);
+    }
+
+    public void PopClip()
+    {
+        if (_clips.Count == 0) return;
+        _clips.Pop();
+        _target.Object.PopAxisAlignedClip();
+    }
+
+    private readonly Stack<Rect> _clips = new();
+
+    /// <summary>True when the pointer is inside every active clip - and so can actually see and
+    /// reach whatever is being drawn.</summary>
+    private bool PointerVisible => _clips.All(clip => clip.Contains(Pointer));
+
     /// <summary>Text in a box, with alignment. Returns nothing: chrome text is never hit-tested.</summary>
     public void Text(
         string text,
@@ -83,10 +109,19 @@ public sealed class Ui(D2DResources resources)
         float size = Metrics.FontBody,
         bool bold = false,
         TextAlign align = TextAlign.Left,
-        bool middle = true)
+        bool middle = true,
+        bool monospace = false,
+        bool wrap = false)
     {
         if (string.IsNullOrEmpty(text)) return;
-        var format = resources.TextFormat(Metrics.FontFamily, size, bold, italic: false);
+
+        // A hex readout is a number, and proportional digits make it jitter as it changes.
+        var family = monospace ? Metrics.MonoFamily : Metrics.FontFamily;
+        var format = resources.TextFormat(family, size, bold, italic: false);
+
+        format.Object.SetWordWrapping(wrap
+            ? DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_WRAP
+            : DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
         format.Object.SetTextAlignment(align switch
         {
             TextAlign.Center => DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER,
@@ -128,7 +163,8 @@ public sealed class Ui(D2DResources resources)
     /// </summary>
     public bool Interact(int id, Rect bounds)
     {
-        var inside = bounds.Contains(Pointer);
+        // A widget scrolled out of view is not clickable where it used to be.
+        var inside = bounds.Contains(Pointer) && PointerVisible;
         if (inside && Active == 0) Hot = id;
 
         if (inside && _pointerPressedThisFrame) Active = id;
@@ -161,8 +197,7 @@ public sealed class Ui(D2DResources resources)
         return clicked;
     }
 
-    /// <summary>A colour swatch. Mutual exclusion is the caller's, which is why the XAML build's
-    /// RadioButton (and its 20px indicator column that clipped the dot) is not needed.</summary>
+    /// <summary>A colour swatch. Mutual exclusion is the caller's.</summary>
     public bool Swatch(int id, Rect bounds, Rgba color, bool selected)
     {
         var clicked = Interact(id, bounds);
@@ -218,7 +253,7 @@ public sealed class Ui(D2DResources resources)
     /// <summary>A text button, optionally with a leading glyph and an accent (primary) treatment.</summary>
     public bool Button(
         int id, Rect bounds, string label,
-        bool primary = false, bool enabled = true,
+        bool primary = false, bool enabled = true, bool toggled = false,
         string? glyph = null, double glyphSize = 14, double fontSize = Metrics.FontBody)
     {
         Rgba fill, text;
@@ -233,10 +268,17 @@ public sealed class Ui(D2DResources resources)
             fill = IsActive(id) ? Theme.AccentPressed : IsHot(id) ? Theme.AccentHover : Theme.Accent;
             text = Theme.TextOnAccent;
         }
+        else if (toggled)
+        {
+            // A selected segment: the fill states which mode is active, so it must not also change
+            // on hover, or hovering the inactive one would make both look selected.
+            fill = Theme.FillSelected;
+            text = Theme.TextPrimary;
+        }
         else
         {
             fill = IsActive(id) ? Theme.FillPressed : IsHot(id) ? Theme.FillHover : Theme.SurfaceOverlay;
-            text = Theme.TextPrimary;
+            text = Theme.TextSecondary;
         }
 
         var clicked = enabled && Interact(id, bounds);

@@ -5,16 +5,6 @@ namespace NexusShot.Render;
 
 /// <summary>
 /// Blur and pixelate, rendered on the GPU.
-///
-/// The XAML build computed these in C#: a box blur and a pixelate loop over a byte[], run on the
-/// UI thread, producing a WriteableBitmap per stroke per frame. That is why painting a blur felt
-/// heavy. Direct2D ships both as device effects, so the work moves to the GPU and stops scaling
-/// with the painted area in any way the user can feel.
-///
-/// The painted path is used as a geometric mask over the effect output, so only the stroke shows
-/// the effect. Because the mask is the same widened round-capped path the renderer strokes with,
-/// the preview and the export agree by construction rather than by convention.
-/// </summary>
 public sealed class PixelEffectSource(ImageSurface image, D2DResources resources)
     : IPixelEffectSource, IDisposable
 {

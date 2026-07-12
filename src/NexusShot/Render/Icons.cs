@@ -1,15 +1,8 @@
 namespace NexusShot.Render;
 
 /// <summary>
-/// The app's icons: Segoe Fluent Icons glyphs, the same codepoints the XAML build's FontIcon used.
-///
-/// This replaces a file of hand-drawn vector approximations. An icon assembled from line segments
-/// reads as a diagram of an icon rather than an icon - off-weight, wrong joins, and not sitting on
-/// the same optical grid as everything else in the OS. The font ships with Windows, so the real
-/// glyphs cost nothing and are exactly what the old build drew.
-///
-/// Escapes rather than literal characters: these live in a private-use area, so a literal would be
-/// an unreadable box in an editor and would not survive an encoding change.
+/// Segoe Fluent Icons glyphs. Escapes rather than literals: these are private-use codepoints, so a
+/// literal would be an unreadable box in an editor and would not survive an encoding change.
 /// </summary>
 public static class Icons
 {
@@ -42,13 +35,10 @@ public static class Icons
     public const string Edit = "\uE70F";
     public const string Close = "\uE711";
     public const string EmptyState = "\uEB9F";
+    public const string Pin = "\uE718";
+    public const string ChevronDown = "\uE70D";
 
-    /// <summary>
-    /// Segoe Fluent Icons: present on Windows 10 1809 and later, which is this app's floor anyway
-    /// (Direct2D effects and per-monitor v2 DPI both need at least that).
-    ///
-    /// These codepoints exist in Segoe MDL2 Assets too, so even on a machine where DirectWrite
-    /// substitutes the older font the glyphs still resolve - which is why there is no probe here.
-    /// </summary>
+    /// <summary>Present on Windows 10 1809 and later, which is this app's floor anyway. These
+    /// codepoints exist in Segoe MDL2 Assets too, so a substituted font still resolves them.</summary>
     public const string Family = "Segoe Fluent Icons";
 }

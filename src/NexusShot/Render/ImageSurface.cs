@@ -6,11 +6,8 @@ namespace NexusShot.Render;
 /// The decoded source image: a GPU bitmap for drawing, plus the CPU pixels for anything that needs
 /// to read them back (export, colour picking).
 ///
-/// Decoding goes through WIC. The XAML build had to stream a file into a BitmapImage because a
-/// file:// URI silently never decoded in an unpackaged app - that whole class of problem does not
-/// exist here. Neither does the blurry preview: the bitmap is uploaded at full resolution and the
-/// GPU rescales it every frame, so the view always samples the real image rather than a pre-scaled
-/// copy, at any zoom.
+/// Decoded via WIC and uploaded at full resolution; the GPU rescales it every frame, so the view
+/// always samples the real image rather than a pre-scaled copy.
 /// </summary>
 public sealed class ImageSurface : IDisposable
 {

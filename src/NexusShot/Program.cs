@@ -55,6 +55,11 @@ internal static class Program
     private static void LogCrash(Exception? exception)
     {
         if (exception is null) return;
+
+        Core.Log.Error("app.crashed", exception);
+
+        // Also to a fixed temp path: a crash the log rotation happened to eat is a crash nobody can
+        // debug, and this file is where the support instructions point.
         try
         {
             var log = Path.Combine(Path.GetTempPath(), "nexusshot-crash.log");

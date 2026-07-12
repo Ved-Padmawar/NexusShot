@@ -5,20 +5,8 @@ using NexusShot.Render;
 namespace NexusShot.Views;
 
 /// <summary>
-/// The shell: a sidebar that browses, a pane that previews and acts.
-///
-/// The layout is the XAML build's, because that layout was right: a 248px sunken sidebar holding the
-/// brand, the capture actions as a labelled list with their shortcuts, then the recent captures; and
-/// a detail pane whose preview sits in a rounded sunken well so the capture reads as inset from the
-/// chrome. Annotating opens the editor as its own window rather than docking it here - a docked
-/// editor would permanently surrender the sidebar's width from the image, on every edit, to a list
-/// the user has stopped looking at.
-///
-/// What is different is underneath. A XAML Image scales whatever bitmap it is handed, so the old
-/// detail view either showed a pre-scaled thumbnail (soft - the bug that cost a release) or decoded
-/// the full image into the visual tree (heavy). Here one bitmap per capture is uploaded at full
-/// resolution and the GPU rescales it per frame, so the row and the preview draw from the same
-/// pixels and the preview is exact at any size.
+/// The shell: a sidebar that browses, a pane that previews and acts. Annotating opens the editor as
+/// its own window rather than docking it here, so the sidebar's width is never taken from the image.
 /// </summary>
 public sealed class MainWindow : D2DRenderWindow
 {
@@ -47,7 +35,39 @@ public sealed class MainWindow : D2DRenderWindow
     private Point _pointer;
     private bool _pointerDown;
     private double _scroll;
+
     private bool _settingsOpen;
+    private double _settingsScroll;
+    private double _settingsHeight;
+
+    /// <summary>The hotkey row that is armed, if any. The next key press becomes its binding.</summary>
+    private int? _recordingHotkey;
+    private string? _hotkeyWarning;
+
+    /// <summary>Raised when the bindings change, so the app can re-register them.</summary>
+    public event Action? HotkeysChanged;
+
+    /// <summary>Raised when any setting changes, so the app can react (the watcher follows the save
+    /// folder, for one).</summary>
+    public event Action? SettingsChanged;
+
+    /// <summary>
+    /// Runs work on the UI thread.
+    ///
+    /// The folder watcher fires on a thread pool thread, and mutating the history from there would
+    /// be doing it underneath a frame that is drawing it.
+    /// </summary>
+    public void Post(Action work)
+    {
+        lock (_posted) _posted.Enqueue(work);
+        PostMessageW(Handle, WmRunPosted, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    private readonly Queue<Action> _posted = new();
+    private const uint WmRunPosted = 0x0400 + 2;   // WM_APP + 2
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
     public event Action<CaptureMode>? CaptureRequested;
     public event Action<ScreenshotHistoryItem>? EditRequested;
@@ -66,6 +86,26 @@ public sealed class MainWindow : D2DRenderWindow
         _settings = settings;
         _history = history;
         _selected = history.FirstOrDefault();
+    }
+
+    protected override void OnCreated(object? sender, EventArgs e)
+    {
+        base.OnCreated(sender, e);
+        AppIcon.Apply(Handle);
+        ApplyTheme();
+    }
+
+    /// <summary>The titlebar is not ours to draw, so DWM has to be told separately - a dark app with
+    /// a light titlebar looks broken however well the client area is themed.</summary>
+    private void ApplyTheme() =>
+        SystemTheme.ApplyTitleBar(Handle, SystemTheme.Resolve(_settings.Theme).IsDark);
+
+    /// <summary>The single write-back for settings: persist, retheme, and tell the app.</summary>
+    private void SaveSettings()
+    {
+        _storage.SaveSettings(_settings);
+        ApplyTheme();
+        SettingsChanged?.Invoke();
     }
 
     private double _scale = 1;
@@ -104,7 +144,7 @@ public sealed class MainWindow : D2DRenderWindow
 
         _resources ??= new D2DResources(target);
         _ui ??= new Ui(_resources);
-        _ui.Theme = _settings.Theme == AppTheme.Light ? Theme.Light : Theme.Dark;
+        _ui.Theme = SystemTheme.Resolve(_settings.Theme);
 
         _scale = Functions.GetDpiForWindow(Handle) / 96.0;
         
@@ -283,11 +323,15 @@ public sealed class MainWindow : D2DRenderWindow
         var size = S(32);
         var y = bounds.Y + (bounds.Height - size) / 2;
 
+        // The toggle flips light and dark. "System" is a deliberate choice, made in Settings - a
+        // button that cycles through three states leaves you guessing which one you are in.
         if (ui.Tile(30, new Rect(bounds.X + S(12), y, size, size), false,
             Icons.Theme, S(15), "Switch theme"))
         {
-            _settings.Theme = _settings.Theme == AppTheme.Light ? AppTheme.Dark : AppTheme.Light;
-            _storage.SaveSettings(_settings);
+            _settings.Theme = SystemTheme.Resolve(_settings.Theme).IsDark
+                ? AppTheme.Light
+                : AppTheme.Dark;
+            SaveSettings();
         }
 
         if (ui.Tile(31, new Rect(bounds.Right - S(12) - size, y, size, size), _settingsOpen,
@@ -400,84 +444,319 @@ public sealed class MainWindow : D2DRenderWindow
 
     /// <summary>
     /// Settings replace the detail pane in place rather than opening a dialog: every change applies
-    /// immediately, so there is nothing to confirm or cancel.
+    /// immediately, so there is nothing to confirm or cancel. Rows sit directly in the column with
+    /// hairline separators doing the grouping, rather than being boxed into nested cards.
     /// </summary>
     private void DrawSettings(Ui ui, Rect bounds)
     {
         var theme = ui.Theme;
 
-        // Header, over a hairline. The right inset clears the caption buttons.
+        // Header, over a hairline.
         var header = new Rect(bounds.X, bounds.Y, bounds.Width, S(64));
         ui.Text("Settings", new Rect(header.X + S(28), header.Y, header.Width, header.Height),
             theme.TextPrimary, (float)S(Metrics.FontTitle), bold: true);
+
+        if (ui.Tile(60, new Rect(header.Right - S(56), header.Center.Y - S(18), S(36), S(36)),
+            false, Icons.Close, S(14), "Close settings"))
+        {
+            _settingsOpen = false;
+        }
         ui.FillRect(new Rect(bounds.X, header.Bottom, bounds.Width, 1), theme.StrokeSubtle);
 
+        // The scrollable body. Clipped, so a long list cannot paint over the header.
+        var body = new Rect(bounds.X, header.Bottom, bounds.Width, bounds.Bottom - header.Bottom);
+        ui.PushClip(body);
+
         // A capped, centred column: rows fill it, and it centres itself in the pane.
-        var columnWidth = Math.Min(S(600), bounds.Width - S(64));
-        var x = bounds.X + (bounds.Width - columnWidth) / 2;
-        var y = header.Bottom + S(24);
+        var width = Math.Min(S(600), body.Width - S(64));
+        var x = body.X + (body.Width - width) / 2;
+        var y = body.Y + S(20) - _settingsScroll;
 
-        y = Section(ui, "CAPTURE", x, y, columnWidth);
+        y = Section(ui, "CAPTURE", x, y, width);
 
-        y = Toggle(ui, 40, "Copy to clipboard automatically",
-            "Every capture lands on the clipboard as well as on disk.",
-            x, y, columnWidth, _settings.CopyToClipboardAutomatically,
-            value => _settings.CopyToClipboardAutomatically = value);
-
-        y = Toggle(ui, 41, "Save automatically",
-            $"Captures are written to {_settings.ScreenshotFolder}.",
-            x, y, columnWidth, _settings.SaveAutomatically,
-            value => _settings.SaveAutomatically = value);
-
-        y = Section(ui, "GENERAL", x, y, columnWidth);
-
-        y = Toggle(ui, 42, "Start with Windows",
-            "NexusShot launches into the notification area at sign-in.",
-            x, y, columnWidth, _settings.StartWithWindows,
-            value =>
+        y = Row(ui, x, y, width, "Save folder", Shorten(_settings.ScreenshotFolder, 52),
+            row =>
             {
-                _settings.StartWithWindows = value;
-                Startup.Set(value);
+                if (!ui.Button(40, ActionSlot(row, S(92)), "Change…",
+                    fontSize: S(Metrics.FontCaption))) return;
+
+                if (FolderPicker.Pick(Handle, _settings.ScreenshotFolder) is { } folder)
+                {
+                    _settings.ScreenshotFolder = folder;
+                    SaveSettings();
+                }
             });
 
-        _ = y;
+        y = Row(ui, x, y, width, "Default capture mode", null,
+            row => Choice(ui, 41, ActionSlot(row, S(240)),
+                ["Region", "Full screen", "Active window"],
+                (int)_settings.DefaultCaptureMode,
+                index =>
+                {
+                    _settings.DefaultCaptureMode = (CaptureMode)index;
+                    SaveSettings();
+                }));
+
+        y = Row(ui, x, y, width,
+            "Copy to clipboard automatically",
+            "Every capture lands on the clipboard, ready to paste.",
+            row => Switch(ui, 42, ActionSlot(row, S(44)), _settings.CopyToClipboardAutomatically,
+                value =>
+                {
+                    _settings.CopyToClipboardAutomatically = value;
+                    SaveSettings();
+                }));
+
+        y = Row(ui, x, y, width,
+            "Save screenshots automatically",
+            "Captures are written straight into the save folder.",
+            row => Switch(ui, 43, ActionSlot(row, S(44)), _settings.SaveAutomatically,
+                value =>
+                {
+                    _settings.SaveAutomatically = value;
+                    SaveSettings();
+                }));
+
+        y = Section(ui, "SHORTCUTS", x, y, width);
+
+        ui.Text(
+            "Click a shortcut, then press the new keys. A single key such as F9 or PrtScn works too. "
+            + "Backspace restores the default, Esc cancels.",
+            new Rect(x, y, width, S(32)),
+            theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false, wrap: true);
+        y += S(38);
+
+        y = Hotkey(ui, 44, x, y, width, "Capture region", _settings.CaptureRegionHotkey);
+        y = Hotkey(ui, 45, x, y, width, "Capture full screen", _settings.CaptureFullScreenHotkey);
+        y = Hotkey(ui, 46, x, y, width, "Capture active window", _settings.CaptureActiveWindowHotkey);
+        y = Hotkey(ui, 47, x, y, width, "Open NexusShot", _settings.OpenMainWindowHotkey);
+
+        if (_hotkeyWarning is { } warning)
+        {
+            ui.Text(warning, new Rect(x, y + S(6), width, S(20)),
+                theme.Danger, (float)S(Metrics.FontCaption), middle: false);
+            y += S(28);
+        }
+
+        y = Section(ui, "PREVIEW", x, y, width);
+
+        y = Row(ui, x, y, width,
+            "Auto-dismiss after",
+            "Seconds before a floating preview disappears. 0 keeps it open.",
+            row => Stepper(ui, 48, ActionSlot(row, S(112)), _settings.PreviewDismissSeconds, 0, 120,
+                value =>
+                {
+                    _settings.PreviewDismissSeconds = value;
+                    SaveSettings();
+                }));
+
+        y = Section(ui, "GENERAL", x, y, width);
+
+        y = Row(ui, x, y, width, "Theme", null,
+            row => Choice(ui, 49, ActionSlot(row, S(210)),
+                ["System", "Light", "Dark"],
+                (int)_settings.Theme,
+                index =>
+                {
+                    _settings.Theme = (AppTheme)index;
+                    SaveSettings();
+                }));
+
+        y = Row(ui, x, y, width,
+            "Start NexusShot with Windows", null,
+            row => Switch(ui, 50, ActionSlot(row, S(44)), _settings.StartWithWindows,
+                value =>
+                {
+                    _settings.StartWithWindows = value;
+                    Startup.Set(value);
+                    SaveSettings();
+                }));
+
+        ui.PopClip();
+
+        // The scroll extent, so the wheel handler knows where the bottom is.
+        _settingsHeight = y + _settingsScroll - body.Y + S(24);
     }
 
+    /// <summary>A section header: a caption-sized label with room above it.</summary>
     private double Section(Ui ui, string title, double x, double y, double width)
     {
-        ui.Text(title, new Rect(x, y, width, S(20)),
+        ui.Text(title, new Rect(x, y + S(16), width, S(20)),
             ui.Theme.TextTertiary, (float)S(Metrics.FontCaption), bold: true, middle: false);
-        return y + S(26);
+        return y + S(42);
     }
 
-    /// <summary>A settings row: title, caption, and a switch, over a hairline.</summary>
-    private double Toggle(
-        Ui ui, int id, string title, string caption,
-        double x, double y, double width, bool value, Action<bool> set)
+    /// <summary>
+    /// A settings row: a title, an optional caption, and a control on the right, over a hairline.
+    /// The control draws itself into the slot the row hands it.
+    /// </summary>
+    private double Row(
+        Ui ui, double x, double y, double width,
+        string title, string? caption, Action<Rect> control)
     {
         var theme = ui.Theme;
-        var height = S(56);
+        var height = caption is null ? S(48) : S(60);
         var row = new Rect(x, y, width, height);
 
-        if (ui.Interact(id, row)) { set(!value); _storage.SaveSettings(_settings); }
+        var textWidth = width - S(260);
 
-        ui.Text(title, new Rect(x, y + S(9), width - S(60), S(18)),
-            theme.TextPrimary, (float)S(Metrics.FontBody), middle: false);
+        if (caption is null)
+        {
+            ui.Text(title, new Rect(x, row.Y, textWidth, row.Height),
+                theme.TextPrimary, (float)S(Metrics.FontBody));
+        }
+        else
+        {
+            ui.Text(title, new Rect(x, row.Y + S(11), textWidth, S(18)),
+                theme.TextPrimary, (float)S(Metrics.FontBody), middle: false);
+            ui.Text(caption, new Rect(x, row.Y + S(31), textWidth, S(18)),
+                theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
+        }
 
-        ui.Text(caption, new Rect(x, y + S(28), width - S(60), S(16)),
-            theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
-
-        // The switch: a track with a knob that slides, filled with the accent when on.
-        var track = new Rect(row.Right - S(40), row.Center.Y - S(10), S(40), S(20));
-        ui.FillRounded(track, (float)S(10), value ? theme.Accent : theme.StrokeDefault);
-
-        var knob = new Point(
-            value ? track.Right - S(10) : track.X + S(10),
-            track.Center.Y);
-        ui.FillCircle(knob, (float)S(8), Rgba.White);
+        control(row);
 
         ui.FillRect(new Rect(x, row.Bottom, width, 1), theme.StrokeSubtle);
-        return row.Bottom + S(1);
+        return row.Bottom + 1;
+    }
+
+    /// <summary>The right-aligned slot a row's control sits in.</summary>
+    private static Rect ActionSlot(Rect row, double width) =>
+        new(row.Right - width, row.Center.Y - 14, width, 28);
+
+    /// <summary>A toggle switch: a track with a knob that slides.</summary>
+    private void Switch(Ui ui, int id, Rect slot, bool value, Action<bool> set)
+    {
+        var track = new Rect(slot.Right - S(40), slot.Center.Y - S(10), S(40), S(20));
+        if (ui.Interact(id, track)) set(!value);
+
+        ui.FillRounded(track, (float)S(10),
+            value ? ui.Theme.Accent
+            : ui.IsHot(id) ? ui.Theme.StrokeStrong
+            : ui.Theme.StrokeDefault);
+
+        var knob = new Point(value ? track.Right - S(10) : track.X + S(10), track.Center.Y);
+        ui.FillCircle(knob, (float)S(7), Rgba.White);
+    }
+
+    /// <summary>
+    /// A segmented choice. A dropdown would need a popup layer and a hit-test that outlives the
+    /// frame; for three mutually exclusive options, segments say the same thing in one pass and
+    /// show the alternatives without a click.
+    /// </summary>
+    private void Choice(Ui ui, int id, Rect slot, string[] options, int selected, Action<int> set)
+    {
+        var segment = slot.Width / options.Length;
+
+        ui.FillRounded(slot, (float)S(Metrics.RadiusControl), ui.Theme.SurfaceSunken);
+        ui.StrokeRounded(slot, (float)S(Metrics.RadiusControl), ui.Theme.StrokeSubtle);
+
+        for (var i = 0; i < options.Length; i++)
+        {
+            var bounds = new Rect(slot.X + i * segment, slot.Y, segment, slot.Height);
+            var isSelected = i == selected;
+
+            if (ui.Interact(id * 10 + i, bounds) && !isSelected) set(i);
+
+            if (isSelected)
+                ui.FillRounded(bounds.Deflate(S(2)), (float)S(4), ui.Theme.Accent);
+            else if (ui.IsHot(id * 10 + i))
+                ui.FillRounded(bounds.Deflate(S(2)), (float)S(4), ui.Theme.FillHover);
+
+            ui.Text(options[i], bounds,
+                isSelected ? ui.Theme.TextOnAccent : ui.Theme.TextSecondary,
+                (float)S(Metrics.FontCaption), align: TextAlign.Center);
+        }
+    }
+
+    /// <summary>A number stepper: minus, value, plus.</summary>
+    private void Stepper(Ui ui, int id, Rect slot, int value, int min, int max, Action<int> set)
+    {
+        var button = S(28);
+
+        if (ui.Button(id * 10, new Rect(slot.X, slot.Y, button, slot.Height), "−",
+            enabled: value > min, fontSize: S(Metrics.FontBody)))
+            set(Math.Max(min, value - 1));
+
+        ui.Text(value.ToString(),
+            new Rect(slot.X + button, slot.Y, slot.Width - button * 2, slot.Height),
+            ui.Theme.TextPrimary, (float)S(Metrics.FontBody), align: TextAlign.Center);
+
+        if (ui.Button(id * 10 + 1, new Rect(slot.Right - button, slot.Y, button, slot.Height), "+",
+            enabled: value < max, fontSize: S(Metrics.FontBody)))
+            set(Math.Min(max, value + 1));
+    }
+
+    /// <summary>
+    /// A hotkey recorder. Clicking arms it; the next key press becomes the binding.
+    ///
+    /// The window's key handler does the recording, because a hotkey is defined by a real key event
+    /// and there is nothing here to listen with.
+    /// </summary>
+    private double Hotkey(
+        Ui ui, int id, double x, double y, double width, string title, HotkeyBinding binding)
+    {
+        return Row(ui, x, y, width, title, null, row =>
+        {
+            var slot = ActionSlot(row, S(180));
+            var recording = _recordingHotkey == id;
+
+            if (ui.Interact(id, slot))
+            {
+                _recordingHotkey = recording ? null : id;
+                _hotkeyWarning = null;
+            }
+
+            ui.FillRounded(slot, (float)S(Metrics.RadiusControl),
+                recording ? ui.Theme.FillSelected
+                : ui.IsHot(id) ? ui.Theme.FillHover
+                : ui.Theme.SurfaceOverlay);
+
+            ui.StrokeRounded(slot, (float)S(Metrics.RadiusControl),
+                recording ? ui.Theme.Accent : ui.Theme.StrokeSubtle,
+                recording ? 1.5f : 1f);
+
+            ui.Text(recording ? "Press keys…" : Describe(binding), slot,
+                recording ? ui.Theme.Accent : ui.Theme.TextSecondary,
+                (float)S(Metrics.FontCaption), align: TextAlign.Center);
+        });
+    }
+
+    /// <summary>A binding as text: "Ctrl + Shift + S".</summary>
+    private static string Describe(HotkeyBinding binding)
+    {
+        if (binding.Key == 0) return "None";
+
+        var parts = new List<string>(4);
+        if ((binding.Modifiers & 0x0002) != 0) parts.Add("Ctrl");
+        if ((binding.Modifiers & 0x0004) != 0) parts.Add("Shift");
+        if ((binding.Modifiers & 0x0001) != 0) parts.Add("Alt");
+        if ((binding.Modifiers & 0x0008) != 0) parts.Add("Win");
+        parts.Add(KeyName(binding.Key));
+
+        return string.Join(" + ", parts);
+    }
+
+    private static string KeyName(uint key) => key switch
+    {
+        >= 0x70 and <= 0x87 => $"F{key - 0x6F}",           // F1..F24
+        0x2C => "PrtScn",
+        0x2D => "Insert",
+        0x2E => "Delete",
+        0x24 => "Home",
+        0x23 => "End",
+        0x21 => "PgUp",
+        0x22 => "PgDn",
+        0x20 => "Space",
+        >= 0x30 and <= 0x5A => ((char)key).ToString(),      // 0-9, A-Z
+        _ => $"0x{key:X2}",
+    };
+
+    /// <summary>A path, shortened from the middle so both ends stay readable.</summary>
+    private static string Shorten(string path, int limit)
+    {
+        if (path.Length <= limit) return path;
+        var keep = (limit - 3) / 2;
+        return $"{path[..keep]}…{path[^keep..]}";
     }
 
     // ============================  DATA  ============================
@@ -506,8 +785,7 @@ public sealed class MainWindow : D2DRenderWindow
     ///
     /// A full-resolution GPU bitmap is ~33 MB for a 4K capture, and a history of them adds up fast
     /// for something that ends up in a 52x34 chip. WIC scales during the decode, so the big bitmap
-    /// never exists. This is the thumbnail optimisation the XAML build had, and the reason it was
-    /// worth keeping.
+    /// never exists.
     /// </summary>
     private ImageSurface? GetThumbnail(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
     {
@@ -534,7 +812,7 @@ public sealed class MainWindow : D2DRenderWindow
     ///
     /// Exactly one is held: the preview shows one capture at a time, so caching more would pin
     /// tens of megabytes each for images nothing is drawing. This is what makes the preview exact
-    /// rather than an upscaled thumbnail - the bug that cost the XAML build a release.
+    /// rather than an upscaled thumbnail.
     /// </summary>
     private ImageSurface? GetFullBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
     {
@@ -656,6 +934,28 @@ public sealed class MainWindow : D2DRenderWindow
 
         switch (msg)
         {
+            case WmRunPosted:
+            {
+                Action[] work;
+                lock (_posted)
+                {
+                    work = [.. _posted];
+                    _posted.Clear();
+                }
+                foreach (var item in work) item();
+                return new LRESULT { Value = 0 };
+            }
+
+            case SystemTheme.WM_SETTINGCHANGE:
+                // The only signal an unpackaged app gets that the user flipped the system theme.
+                if (SystemTheme.IsColorSetChange(msg, (IntPtr)lParam.Value.ToInt64())
+                    && _settings.Theme == AppTheme.System)
+                {
+                    ApplyTheme();
+                    Invalidate();
+                }
+                break;
+
             case WmLButtonDown:
                 _pointer = ClientPoint(lParam);
                 _pointerDown = true;
@@ -676,23 +976,44 @@ public sealed class MainWindow : D2DRenderWindow
             case WmMouseWheel:
             {
                 var delta = (short)((wParam.Value.ToUInt64() >> 16) & 0xFFFF);
-                var content = _history.Count * S(50);
-                var viewport = Math.Max(1, ClientRect.Height - S(300));
-                var maximum = Math.Max(0, content - viewport);
+                var step = delta / 120.0 * S(50);
 
-                _scroll = Math.Clamp(_scroll - delta / 120.0 * S(50), 0, maximum);
+                // Whichever pane the pointer is over gets the wheel.
+                if (_settingsOpen && _pointer.X > S(248))
+                {
+                    var viewport = Math.Max(1, ClientRect.Height - S(64));
+                    var maximum = Math.Max(0, _settingsHeight - viewport);
+                    _settingsScroll = Math.Clamp(_settingsScroll - step, 0, maximum);
+                }
+                else
+                {
+                    var content = _history.Count * S(50);
+                    var viewport = Math.Max(1, ClientRect.Height - S(300));
+                    _scroll = Math.Clamp(_scroll - step, 0, Math.Max(0, content - viewport));
+                }
+
                 Invalidate();
                 return new LRESULT { Value = 0 };
             }
 
             case WmKeyDown:
-                if ((VIRTUAL_KEY)(ulong)wParam.Value == VIRTUAL_KEY.VK_ESCAPE)
+            {
+                var key = (VIRTUAL_KEY)(ulong)wParam.Value;
+
+                if (_recordingHotkey is not null)
+                {
+                    RecordHotkey(key);
+                    return new LRESULT { Value = 0 };
+                }
+
+                if (key == VIRTUAL_KEY.VK_ESCAPE)
                 {
                     if (_settingsOpen) { _settingsOpen = false; Invalidate(); }
                     else Hide();
                     return new LRESULT { Value = 0 };
                 }
                 break;
+            }
 
             case WmClose:
                 // A capture tool lives in the tray: closing the window hides it rather than exiting,
@@ -701,6 +1022,99 @@ public sealed class MainWindow : D2DRenderWindow
                 return new LRESULT { Value = 0 };
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Turns the key press into a binding for the armed row.
+    ///
+    /// A bare modifier is not a shortcut, so those are ignored and recording stays armed until a
+    /// real key arrives. Esc cancels, Backspace restores the default - and a single key such as F9
+    /// or PrtScn is a legitimate shortcut, so no modifier is required.
+    /// </summary>
+    private void RecordHotkey(VIRTUAL_KEY key)
+    {
+        if (_recordingHotkey is not { } id) return;
+
+        if (key is VIRTUAL_KEY.VK_ESCAPE)
+        {
+            _recordingHotkey = null;
+            Invalidate();
+            return;
+        }
+
+        // Modifiers alone are the user still assembling the chord.
+        if (key is VIRTUAL_KEY.VK_CONTROL or VIRTUAL_KEY.VK_SHIFT or VIRTUAL_KEY.VK_MENU
+            or VIRTUAL_KEY.VK_LWIN or VIRTUAL_KEY.VK_RWIN
+            or VIRTUAL_KEY.VK_LCONTROL or VIRTUAL_KEY.VK_RCONTROL
+            or VIRTUAL_KEY.VK_LSHIFT or VIRTUAL_KEY.VK_RSHIFT
+            or VIRTUAL_KEY.VK_LMENU or VIRTUAL_KEY.VK_RMENU)
+            return;
+
+        var target = Binding(id);
+        if (target is null)
+        {
+            _recordingHotkey = null;
+            return;
+        }
+
+        if (key == VIRTUAL_KEY.VK_BACK)
+        {
+            var defaults = new AppSettings();
+            var restored = Binding(id, defaults)!;
+            target.Modifiers = restored.Modifiers;
+            target.Key = restored.Key;
+        }
+        else
+        {
+            uint modifiers = 0;
+            if (Down(VIRTUAL_KEY.VK_CONTROL)) modifiers |= 0x0002;
+            if (Down(VIRTUAL_KEY.VK_SHIFT)) modifiers |= 0x0004;
+            if (Down(VIRTUAL_KEY.VK_MENU)) modifiers |= 0x0001;
+            if (Down(VIRTUAL_KEY.VK_LWIN) || Down(VIRTUAL_KEY.VK_RWIN)) modifiers |= 0x0008;
+
+            target.Modifiers = modifiers;
+            target.Key = (uint)key;
+        }
+
+        _recordingHotkey = null;
+        SaveSettings();
+        HotkeysChanged?.Invoke();
+        Invalidate();
+
+        static bool Down(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
+    }
+
+    /// <summary>The binding a hotkey row edits.</summary>
+    private HotkeyBinding? Binding(int id, AppSettings? from = null)
+    {
+        var settings = from ?? _settings;
+        return id switch
+        {
+            44 => settings.CaptureRegionHotkey,
+            45 => settings.CaptureFullScreenHotkey,
+            46 => settings.CaptureActiveWindowHotkey,
+            47 => settings.OpenMainWindowHotkey,
+            _ => null,
+        };
+    }
+
+    /// <summary>Reports bindings that another application already owns, so the user can see which
+    /// one clashed rather than wondering why nothing happens.</summary>
+    public void ReportHotkeyConflicts(IReadOnlyList<HotkeyId> failed)
+    {
+        _hotkeyWarning = failed.Count == 0
+            ? null
+            : $"Another app already owns: {string.Join(", ", failed.Select(Describe))}.";
+        Invalidate();
+
+        static string Describe(HotkeyId id) => id switch
+        {
+            HotkeyId.CaptureRegion => "Capture region",
+            HotkeyId.CaptureFullScreen => "Capture full screen",
+            HotkeyId.CaptureActiveWindow => "Capture active window",
+            HotkeyId.OpenMainWindow => "Open NexusShot",
+            _ => id.ToString(),
+        };
     }
 
     private static Point ClientPoint(LPARAM lParam)

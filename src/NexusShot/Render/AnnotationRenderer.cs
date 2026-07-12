@@ -3,16 +3,11 @@ using NexusShot.Core;
 namespace NexusShot.Render;
 
 /// <summary>
-/// Draws a document's annotations, in image-pixel space, onto any Direct2D target.
+/// Draws a document's annotations, in image-pixel space, onto any Direct2D target. Every frame draws
+/// current state and nothing else, so a drag costs the same whether the pointer is still or fast.
 ///
-/// This replaces the XAML build's retained-mode renderer wholesale. There is no visual tree to
-/// patch, so there are no "update just this annotation" or "these strokes are dirty" paths, no
-/// per-pointer-move element scans, and no bitmap surfaces to keep in sync with the model. Every
-/// frame draws current state and nothing else. That is what makes a drag cost the same whether
-/// the pointer is still or moving fast.
-///
-/// The caller sets the world transform (image space to screen), so the exporter draws with the
-/// identity transform and produces exactly what the screen shows.
+/// The caller sets the world transform, so the exporter draws with the identity transform and
+/// produces exactly what the screen shows.
 /// </summary>
 public sealed class AnnotationRenderer(D2DResources resources)
 {
@@ -113,14 +108,6 @@ public sealed class AnnotationRenderer(D2DResources resources)
         }
     }
 
-    /// <summary>
-    /// A freehand paint stroke, with its erasures punched out.
-    ///
-    /// The XAML build had to rasterise this into a WriteableBitmap and hand-write the erased
-    /// pixels, because a XAML Polyline cannot have holes. Direct2D can: the stroke is drawn into
-    /// a layer whose opacity mask is the eraser path drawn with an inverting blend, so erasing
-    /// costs one extra geometry per mask instead of a per-pixel software loop.
-    /// </summary>
     private void DrawPaintStroke(IComObject<ID2D1RenderTarget> target, Annotation annotation, Rgba color)
     {
         if (annotation.Points.Count == 0) return;
@@ -131,21 +118,14 @@ public sealed class AnnotationRenderer(D2DResources resources)
             return;
         }
 
-        // Erased strokes. A XAML Polyline cannot have holes, which is why the old build rasterised
-        // the stroke into a WriteableBitmap and hand-cleared the erased pixels in a software loop.
-        // Direct2D can express it directly: the stroke geometry minus the widened eraser paths is
-        // a geometry, so the hole is part of the shape and the GPU fills it in one pass.
         using var geometry = ErasedStrokeGeometry(annotation);
         if (geometry is null) return;
         target.FillGeometry(geometry, resources.Brush(color));
     }
 
-    /// <summary>
-    /// The stroke's painted footprint with its erasures subtracted, as one geometry.
-    /// Widen() turns each centreline into its real round-capped footprint, and CombineWithGeometry
-    /// with EXCLUDE punches the eraser out - the same result the software mask produced, computed
-    /// once as a shape rather than per pixel per frame.
-    /// </summary>
+    /// <summary>The stroke's footprint with its erasures subtracted, as one geometry: Widen turns
+    /// each centreline into its real round-capped region, and EXCLUDE punches the eraser out. The
+    /// hole is part of the shape, so the GPU fills it in one pass.</summary>
     private IComObject<ID2D1PathGeometry>? ErasedStrokeGeometry(Annotation annotation)
     {
         var stroke = WidenedPath(annotation.Points, PaintStrokeGeometry.Diameter(annotation.StrokeThickness));
@@ -234,7 +214,7 @@ public sealed class AnnotationRenderer(D2DResources resources)
         if (annotation.Points.Count == 0) return;
 
         // No effect source (pixels not decoded yet, or the target cannot host effects): a frosted
-        // stroke placeholder, exactly as the XAML build showed while its pixels loaded.
+        // stroke placeholder until the pixels arrive.
         using var context = target.AsDeviceContext();
         if (effects is null || context is null)
         {

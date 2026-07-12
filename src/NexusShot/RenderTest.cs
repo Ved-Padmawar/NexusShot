@@ -60,6 +60,28 @@ internal static class RenderTest
         var output = Path.Combine(Path.GetDirectoryName(imagePath)!, "render-test.png");
         Exporter.SavePng(document, imagePath, output);
         Console.WriteLine($"exported {output}");
+
+        // Crop. The session opens on the whole image and is then resized by its handles, so this
+        // drags the bottom-right corner in to leave a 400x260 frame. Save must apply it - it was
+        // silently a no-op, which is the bug this asserts against.
+        document.ActiveTool = EditorTool.Crop;
+        document.BeginCropSession();
+
+        document.BeginGesture(new Point(image.Width, image.Height), 8);   // the bottom-right handle
+        document.ContinueGesture(new Point(400, 260));
+        document.EndGesture(new Point(400, 260));
+        document.CommitCrop();
+
+        var cropped = Path.Combine(Path.GetDirectoryName(imagePath)!, "render-test-cropped.png");
+        Exporter.SavePng(document, imagePath, cropped);
+
+        var (_, croppedWidth, croppedHeight) = ImageSurface.Decode(cropped);
+        Console.WriteLine($"cropped to {croppedWidth}x{croppedHeight} (expected 400x260)");
+
+        if (croppedWidth != 400 || croppedHeight != 260)
+            throw new InvalidOperationException(
+                $"Crop was not applied on export: got {croppedWidth}x{croppedHeight}.");
+
         image.Dispose();
     }
 

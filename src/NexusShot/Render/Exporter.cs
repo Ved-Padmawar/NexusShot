@@ -7,9 +7,7 @@ namespace NexusShot.Render;
 ///
 /// This is the same <see cref="AnnotationRenderer"/> the screen uses, pointed at an offscreen
 /// target. That is the whole design: the export cannot drift from the preview, because there is
-/// only one piece of drawing code. The XAML build needed a separate GDI+ flattener kept in
-/// agreement with the on-screen renderer by hand - and it could never screen-scrape, because
-/// RenderTargetBitmap only captures composited on-screen pixels.
+/// only one piece of drawing code, so the export cannot drift from the preview.
 ///
 /// Adorners are deliberately not drawn: the file gets the annotations, never the selection grips.
 /// </summary>
@@ -23,9 +21,13 @@ public static class Exporter
     /// to the placeholder would mean the exported blur silently differed from the one on screen.
     /// The result is copied out to a WIC bitmap only to be encoded.
     /// </summary>
-    public static void SavePng(EditorDocument document, string sourcePath, string path)
+    /// <summary><paramref name="cropOverride"/> crops without the document committing to it - a copy
+    /// shows what is on screen, but must not silently discard the uncropped original.</summary>
+    public static void SavePng(
+        EditorDocument document, string sourcePath, string path, Rect? cropOverride = null)
     {
-        var crop = document.CropBounds
+        var crop = cropOverride
+            ?? document.CropBounds
             ?? new Rect(0, 0, document.ImageWidth, document.ImageHeight);
         var width = (uint)Math.Max(1, Math.Round(crop.Width));
         var height = (uint)Math.Max(1, Math.Round(crop.Height));

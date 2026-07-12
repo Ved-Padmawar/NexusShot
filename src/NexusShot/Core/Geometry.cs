@@ -1,9 +1,7 @@
 namespace NexusShot.Core;
 
 /// <summary>
-/// Replaces <c>Windows.Foundation.Point</c>. Kept structurally identical (double X/Y, value
-/// equality, <c>Left/Top/Right/Bottom</c> on <see cref="Rect"/>) so the editing logic ported
-/// from the XAML build compiles unchanged against it.
+/// A point in image or client space. Structurally identical to Windows.Foundation.Point.
 /// </summary>
 public readonly record struct Point(double X, double Y)
 {
