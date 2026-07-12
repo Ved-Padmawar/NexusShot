@@ -18,13 +18,19 @@ public sealed class AnnotationRenderer(D2DResources resources)
 {
     /// <summary>Draws every annotation in paint order. Adorners are the caller's business, so
     /// the exporter can reuse this without drawing selection handles into the file.</summary>
+    /// <summary><paramref name="skip"/> omits one annotation, for when a live editor is standing in
+    /// for it on screen.</summary>
     public void DrawAnnotations(
         IComObject<ID2D1RenderTarget> target,
         EditorDocument document,
-        IPixelEffectSource? effects)
+        IPixelEffectSource? effects,
+        Annotation? skip = null)
     {
         foreach (var annotation in document.Annotations)
+        {
+            if (ReferenceEquals(annotation, skip)) continue;
             DrawAnnotation(target, annotation, document, effects);
+        }
     }
 
     public void DrawAnnotation(
@@ -140,7 +146,7 @@ public sealed class AnnotationRenderer(D2DResources resources)
     /// with EXCLUDE punches the eraser out - the same result the software mask produced, computed
     /// once as a shape rather than per pixel per frame.
     /// </summary>
-    private static IComObject<ID2D1PathGeometry>? ErasedStrokeGeometry(Annotation annotation)
+    private IComObject<ID2D1PathGeometry>? ErasedStrokeGeometry(Annotation annotation)
     {
         var stroke = WidenedPath(annotation.Points, PaintStrokeGeometry.Diameter(annotation.StrokeThickness));
         if (stroke is null) return null;
@@ -150,7 +156,7 @@ public sealed class AnnotationRenderer(D2DResources resources)
             var eraser = WidenedPath(mask.Points, mask.Radius * 2);
             if (eraser is null) continue;
 
-            var combined = D2DResources.D2DFactory.CreatePathGeometry();
+            var combined = resources.CreatePathGeometry();
             using (var sink = combined.Open())
             {
                 stroke.AsGeometry().CombineWithGeometry(
@@ -168,14 +174,14 @@ public sealed class AnnotationRenderer(D2DResources resources)
 
     /// <summary>A polyline centreline widened into the closed region a round-capped stroke of
     /// <paramref name="thickness"/> would actually paint.</summary>
-    private static IComObject<ID2D1PathGeometry>? WidenedPath(IReadOnlyList<Point> points, double thickness)
+    private IComObject<ID2D1PathGeometry>? WidenedPath(IReadOnlyList<Point> points, double thickness)
     {
         if (points.Count == 0) return null;
 
         using var line = CreatePath(points, filled: false);
-        var widened = D2DResources.D2DFactory.CreatePathGeometry();
+        var widened = resources.CreatePathGeometry();
         using (var sink = widened.Open())
-        using (var style = D2DResources.D2DFactory.CreateStrokeStyle(RoundStrokeProperties))
+        using (var style = resources.Factory.CreateStrokeStyle(RoundStrokeProperties))
         {
             line.AsGeometry().Widen(
                 sink,
@@ -412,9 +418,9 @@ public sealed class AnnotationRenderer(D2DResources resources)
     /// the expensive resources (brushes, stroke styles) are the cached ones.</summary>
     /// <summary>Path geometries come from the shared factory, not the render target: they are
     /// factory resources, so one instance serves every window and the exporter.</summary>
-    private static IComObject<ID2D1PathGeometry> CreatePath(IReadOnlyList<Point> points, bool filled)
+    private IComObject<ID2D1PathGeometry> CreatePath(IReadOnlyList<Point> points, bool filled)
     {
-        var geometry = D2DResources.D2DFactory.CreatePathGeometry();
+        var geometry = resources.CreatePathGeometry();
         using (var sink = geometry.Open())
         {
             sink.Object.BeginFigure(ToPoint(points[0]),

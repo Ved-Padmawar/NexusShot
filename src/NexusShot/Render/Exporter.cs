@@ -30,7 +30,9 @@ public static class Exporter
         var width = (uint)Math.Max(1, Math.Round(crop.Width));
         var height = (uint)Math.Max(1, Math.Round(crop.Height));
 
-        using var device = D2DDevice.Create();
+        var (device, factory) = D2DDevice.Create();
+        using var _ = device;
+        using var __ = factory;
         using var context = device.CreateDeviceContext();
 
         // D2D bitmaps are device resources: one realized on the editor's window target cannot be
@@ -62,7 +64,7 @@ public static class Exporter
         var target = context.AsRenderTarget2();
         using var resources = new D2DResources(target);
         var renderer = new AnnotationRenderer(resources);
-        using var effects = new PixelEffectSource(image);
+        using var effects = new PixelEffectSource(image, resources);
 
         context.Object.SetTarget(surface.Object);
         context.BeginDraw();

@@ -10,8 +10,18 @@ namespace NexusShot.Render;
 /// </summary>
 public static class D2DDevice
 {
-    public static IComObject<ID2D1Device> Create()
+    /// <summary>
+    /// A device, and the factory it belongs to.
+    ///
+    /// These are returned together deliberately. D2D refuses to use resources created by different
+    /// factories, so the caller must build its geometry from *this* factory - handing back a bare
+    /// device would leave the pairing implicit and easy to get wrong.
+    /// </summary>
+    public static (IComObject<ID2D1Device> Device, IComObject<ID2D1Factory1> Factory) Create()
     {
+        var factory = D2D1Functions.D2D1CreateFactory<ID2D1Factory1>(
+            D2D1_FACTORY_TYPE.D2D1_FACTORY_TYPE_SINGLE_THREADED);
+
         using var d3d = D3D11Functions.D3D11CreateDevice(
             null,
             D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE,
@@ -19,6 +29,6 @@ public static class D2DDevice
             D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT);
 
         using var dxgi = d3d.As<IDXGIDevice>()!;
-        return D2DResources.D2DFactory.CreateDevice(dxgi);
+        return (factory.CreateDevice(dxgi), factory);
     }
 }

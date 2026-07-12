@@ -17,7 +17,9 @@ internal static class RenderTest
     public static void Run(string imagePath)
     {
         // An offscreen device context, so GPU effects (blur, pixelate) are available.
-        using var device = D2DDevice.Create();
+        var (device, factory) = D2DDevice.Create();
+        using var _ = device;
+        using var __ = factory;
         using var context = device.CreateDeviceContext();
 
         var image = ImageSurface.Load(imagePath, context);
@@ -70,7 +72,7 @@ internal static class RenderTest
 
         using var resources = new D2DResources(context.AsRenderTarget2());
         var renderer = new AnnotationRenderer(resources);
-        using var effects = new PixelEffectSource(image);
+        using var effects = new PixelEffectSource(image, resources);
 
         var timings = new List<double>();
         var origin = target.Bounds;

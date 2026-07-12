@@ -25,8 +25,15 @@ public sealed class EditorWindow : D2DRenderWindow
     private AnnotationRenderer? _renderer;
     private ImageSurface? _image;
     private PixelEffectSource? _effects;
+    private Ui? _ui;
+    private EditorChrome? _chrome;
 
     private bool _fitToViewport = true;
+
+    /// <summary>Client-space pointer, kept for the chrome (which works in client pixels, not image
+    /// pixels) and for hit-testing the toolbar before the canvas sees the event.</summary>
+    private Point _clientPointer;
+    private bool _pointerDown;
 
     /// <summary>Where the image sits on screen, in client pixels; the mapping between screen and
     /// image space. Recomputed on resize and zoom, never per input event.</summary>
@@ -41,31 +48,42 @@ public sealed class EditorWindow : D2DRenderWindow
     /// <summary>The grip under the pointer, if any. Drives the cursor shape.</summary>
     private ResizeHandle? _hoverHandle;
 
+    /// <summary>The inline text box, while one is open.</summary>
+    private TextEditor? _textEditor;
+
     public EditorWindow(string path) : base("NexusShot") => _path = path;
 
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
         _document.Changed += (_, _) => Invalidate();
-        LoadImage();
     }
 
     /// <summary>
-    /// Uploads the image. Effects (blur, pixelate) are an ID2D1DeviceContext feature; an
-    /// ID2D1HwndRenderTarget only exposes them if it QIs across. When it does not, the renderer
-    /// falls back to the frosted placeholder rather than failing, so the editor still works.
+    /// Uploads the image and builds the device resources.
+    ///
+    /// Everything here belongs to the window's render target: D2D refuses to use resources from one
+    /// factory with a target from another, and the bitmap is a device resource besides. So the
+    /// target is the single source of both, and this reruns whenever the target is recreated.
     /// </summary>
-    private void LoadImage()
+    private void EnsureResources(IComObject<ID2D1RenderTarget> target)
     {
-        if (RenderTarget?.Object is not ID2D1DeviceContext raw) return;
-        using var context = new ComObject<ID2D1DeviceContext>(raw, releaseOnDispose: false);
+        if (_resources is not null) return;
+
+        _resources = new D2DResources(target);
+        _renderer = new AnnotationRenderer(_resources);
+        _ui = new Ui(_resources) { Theme = Theme.Dark };
+        _chrome = new EditorChrome(_ui);
+
+        // Effects (blur, pixelate) need a device context. An ID2D1HwndRenderTarget exposes one only
+        // if it QIs across; when it does not, the renderer falls back to its frosted placeholder
+        // rather than failing, so the editor still works.
+        using var context = target.AsDeviceContext();
+        if (context is null) return;
 
         _image = ImageSurface.Load(_path, context);
         _document.SetImageSize(_image.Width, _image.Height);
-        _effects = new PixelEffectSource(_image);
-
-        Layout();
-        Invalidate();
+        _effects = new PixelEffectSource(_image, _resources);
     }
 
     // ============================  VIEW TRANSFORM  ============================
@@ -84,19 +102,30 @@ public sealed class EditorWindow : D2DRenderWindow
     private void Layout()
     {
         if (_image is null) return;
-        var client = ClientRect;
-        const int margin = 32;
+        var well = CanvasWell();
+        const int margin = 24;
 
         var available = new Size(
-            Math.Max(1, client.Width - margin * 2),
-            Math.Max(1, client.Height - margin * 2));
+            Math.Max(1, well.Width - margin * 2),
+            Math.Max(1, well.Height - margin * 2));
 
         _scale = _fitToViewport
             ? Math.Min(1, Math.Min(available.Width / _image.Width, available.Height / _image.Height))
             : 1;
 
-        _offsetX = Math.Round((client.Width - _image.Width * _scale) / 2);
-        _offsetY = Math.Round((client.Height - _image.Height * _scale) / 2);
+        _offsetX = Math.Round(well.X + (well.Width - _image.Width * _scale) / 2);
+        _offsetY = Math.Round(well.Y + (well.Height - _image.Height * _scale) / 2);
+    }
+
+    /// <summary>The sunken area the image sits in: everything between the toolbar and the footer.</summary>
+    private Rect CanvasWell()
+    {
+        var client = ClientRect;
+        return new Rect(
+            0,
+            EditorChrome.ToolbarHeight,
+            Math.Max(1, client.Width),
+            Math.Max(1, client.Height - EditorChrome.ToolbarHeight - EditorChrome.FooterHeight));
     }
 
     /// <summary>Inverse display scale: adorners are drawn in image space but must keep a constant
@@ -126,36 +155,114 @@ public sealed class EditorWindow : D2DRenderWindow
 
     protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)
     {
-        using var target = new ComObject<ID2D1RenderTarget>(renderTarget.Object, releaseOnDispose: false);
-        _resources ??= new D2DResources(target);
-        _renderer ??= new AnnotationRenderer(_resources);
+        using var target = renderTarget.AsRenderTarget();
 
-        renderTarget.Clear(new D3DCOLORVALUE(1f, 0.10f, 0.10f, 0.11f));
-        if (_image is null || _renderer is null) return;
+        // Work in physical pixels.
+        //
+        // The render target defaults to the system DPI, so on a 200% display D2D would scale every
+        // coordinate by 2 - while ClientRect, WM_MOUSEMOVE and the image are all already in physical
+        // pixels. Laying out in one space and drawing through a transform in another is how you get
+        // a toolbar at double size and a pointer that lands in the wrong place.
+        //
+        // Setting the target to 96 DPI means one unit is one pixel, and the app scales its own
+        // chrome by DpiScale. That is also what makes "100% zoom" mean one image pixel to one
+        // physical pixel, which is the rule that keeps a screenshot pin-sharp.
+        target.Object.SetDpi(96, 96);
+
+        // The chrome sizes itself against the display; the canvas deliberately does not, so one
+        // image pixel stays one physical pixel at 100%.
+        EditorChrome.Scale = Functions.GetDpiForWindow(Handle) / 96.0;
+
+        EnsureResources(target);
+        if (_ui is null || _chrome is null || _renderer is null) return;
+
+        var client = ClientRect;
+        renderTarget.Clear(D2DResources.ToD3D(_ui.Theme.SurfaceSunken));
+        if (_image is null) return;
 
         Layout();
 
-        // Draw everything in image space: the world transform carries the zoom and centring, so
-        // annotation geometry is written in image pixels here exactly as the exporter writes it.
+        // ---- canvas, in image space ----
+        // The world transform carries the zoom and centring, so annotation geometry is written in
+        // image pixels here exactly as the exporter writes it, with no second coordinate system.
         renderTarget.Object.SetTransform(
             D2D_MATRIX_3X2_F.Scale((float)_scale, (float)_scale)
             * D2D_MATRIX_3X2_F.Translation((float)_offsetX, (float)_offsetY));
 
-        var imageRect = new D2D_RECT_F(0, 0, _image.Width, _image.Height);
         renderTarget.DrawBitmap(
             _image.Bitmap, 1f,
             // Linear filtering on the GPU: the image is scaled from full resolution every frame,
             // never from a pre-scaled copy. This is what keeps the preview sharp at any zoom.
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-            imageRect);
+            new D2D_RECT_F(0, 0, _image.Width, _image.Height));
 
-        _renderer.DrawAnnotations(target, _document, _effects);
-        _renderer.DrawAdorners(target, _document, AdornerScale);
+        // While a text box is open it *is* the annotation: drawing the annotation too would show it
+        // doubled behind the box.
+        _renderer.DrawAnnotations(target, _document, _effects, skip: _textEditor?.Annotation);
+        if (_textEditor is null) _renderer.DrawAdorners(target, _document, AdornerScale);
 
-        if (_brushCursor is { } cursor && IsPaintTool(_document.ActiveTool))
+        if (_brushCursor is { } cursor && IsPaintTool(_document.ActiveTool) && !_ui.WantsPointer)
             _renderer.DrawBrushCursor(target, cursor, _document.ActiveThickness, AdornerScale);
 
         renderTarget.Object.SetTransform(D2D_MATRIX_3X2_F.Identity());
+
+        // ---- chrome, in client space ----
+        _ui.BeginFrame(target, _clientPointer, _pointerDown);
+        _chrome.Draw(_document, client.Width, client.Height, Path.GetFileName(_path));
+        _ui.EndFrame();
+
+        ApplyChrome();
+    }
+
+    /// <summary>Applies what the toolbar asked for. The chrome reports intent; the window owns the
+    /// document, so there is only ever one writer.</summary>
+    private void ApplyChrome()
+    {
+        if (_chrome is null) return;
+
+        if (_chrome.ToolPicked is { } tool) SelectTool(tool);
+        if (_chrome.UndoPressed) _document.Undo();
+        if (_chrome.RedoPressed) _document.Redo();
+        if (_chrome.SavePressed) Save();
+        if (_chrome.CopyPressed) CopyToClipboard();
+    }
+
+    private void Save()
+    {
+        if (_image is null) return;
+        Exporter.SavePng(_document, _path, _path);
+
+        // The annotations are baked into the file now, so the session starts clean over the new
+        // pixels - the same contract ResetAfterSave had in the XAML build.
+        _document.ResetAfterSave();
+        ReloadImage();
+    }
+
+    private void CopyToClipboard()
+    {
+        if (_image is null) return;
+        var temporary = Path.Combine(Path.GetTempPath(), $"nexusshot-{Guid.NewGuid():N}.png");
+        Exporter.SavePng(_document, _path, temporary);
+        ClipboardImage.Copy(temporary);
+        try { File.Delete(temporary); } catch (IOException) { /* the clipboard may still hold it */ }
+    }
+
+    /// <summary>Re-decodes the file after a save, so the editor is now working over the flattened
+    /// pixels rather than the original plus a document that no longer exists.</summary>
+    private void ReloadImage()
+    {
+        if (_resources is null || RenderTarget is null) return;
+        using var target = RenderTarget.AsRenderTarget();
+        using var context = target.AsDeviceContext();
+        if (context is null) return;
+
+        _effects?.Dispose();
+        _image?.Dispose();
+
+        _image = ImageSurface.Load(_path, context);
+        _effects = new PixelEffectSource(_image, _resources);
+        _document.SetImageSize(_image.Width, _image.Height);
+        Invalidate();
     }
 
     private static bool IsPaintTool(EditorTool tool) =>
@@ -174,6 +281,7 @@ public sealed class EditorWindow : D2DRenderWindow
     private const uint WmMouseLeave = 0x02A3;
     private const uint WmKeyDown = 0x0100;
     private const uint WmSetCursor = 0x0020;
+    private const uint WmCtlColorEdit = 0x0133;
 
     private static readonly LRESULT Handled = new() { Value = 0 };
 
@@ -209,6 +317,17 @@ public sealed class EditorWindow : D2DRenderWindow
                 if (SetToolCursor()) return new LRESULT { Value = 1 };
                 break;
 
+            case WmCtlColorEdit:
+                // The child EDIT asks us what colours to paint with. Answering makes the box read as
+                // part of the canvas rather than a system control dropped on top of it.
+                if (_textEditor is { } editor)
+                {
+                    var brush = editor.OnCtlColor(
+                        (IntPtr)(long)wParam.Value, (IntPtr)(long)lParam.Value, BackdropUnderText(editor));
+                    if (brush != IntPtr.Zero) return new LRESULT { Value = brush };
+                }
+                break;
+
             case WmKeyDown:
                 if (OnKeyDown((VIRTUAL_KEY)(ulong)wParam.Value)) return Handled;
                 break;
@@ -224,6 +343,13 @@ public sealed class EditorWindow : D2DRenderWindow
     private bool SetToolCursor()
     {
         if (_image is null) return false;
+
+        // Over the chrome: an arrow, and never the hidden paint cursor.
+        if (!InCanvas(_clientPointer))
+        {
+            ToolCursor.Set(ToolCursor.Arrow);
+            return true;
+        }
 
         // Hovering a grip: show what dragging it will do.
         if (_hoverHandle is { } handle)
@@ -259,16 +385,47 @@ public sealed class EditorWindow : D2DRenderWindow
 
     private void OnPointerPressed((int X, int Y) client)
     {
-        if (_image is null) return;
+        _clientPointer = new Point(client.X, client.Y);
+        _pointerDown = true;
+
+        if (_image is null) { Invalidate(); return; }
+
+        // Clicking anywhere commits an open text box first, like every canvas editor.
+        CommitText();
+
+        // The chrome gets first refusal. It reports what it wants during the frame it draws, so a
+        // press inside the toolbar must not also start a gesture on the canvas underneath.
+        if (!InCanvas(_clientPointer) || (_ui?.WantsPointer ?? false))
+        {
+            Invalidate();
+            return;
+        }
+
+        var point = ToImage(client.X, client.Y);
+
+        // An existing text annotation reopens for editing rather than being redrawn.
+        if (_document.ActiveTool is EditorTool.Select or EditorTool.Text
+            && _document.Annotations.LastOrDefault(a => a.Tool == EditorTool.Text && a.HitTest(point))
+                is { } existing)
+        {
+            _document.SelectAnnotation(existing);
+            BeginTextEdit(existing);
+            Invalidate();
+            return;
+        }
 
         Functions.SetCapture(Handle);
         _dragging = true;
-        _document.BeginGesture(ToImage(client.X, client.Y), HandleTolerance);
+        _document.BeginGesture(point, HandleTolerance);
+        Invalidate();
     }
 
     private void OnPointerMoved((int X, int Y) client, bool leftDown)
     {
-        if (_image is null) return;
+        _clientPointer = new Point(client.X, client.Y);
+        _pointerDown = leftDown;
+
+        if (_image is null) { Invalidate(); return; }
         var point = ToImage(client.X, client.Y);
 
         // A drag mutates the document and asks for a repaint. That is the whole hot path: no
@@ -281,35 +438,117 @@ public sealed class EditorWindow : D2DRenderWindow
         else
         {
             // Hover feedback only when not dragging: mid-drag the handle is already committed.
-            _hoverHandle = _document.PendingCrop is not null
-                ? _document.GetCropHandleAt(point, HandleTolerance)
-                : _document.Selected is { } selected
-                    ? _document.GetResizeHandleAt(selected, point, HandleTolerance)
-                    : null;
+            _hoverHandle = !InCanvas(_clientPointer) ? null
+                : _document.PendingCrop is not null
+                    ? _document.GetCropHandleAt(point, HandleTolerance)
+                    : _document.Selected is { } selected
+                        ? _document.GetResizeHandleAt(selected, point, HandleTolerance)
+                        : null;
         }
 
-        if (IsPaintTool(_document.ActiveTool))
-        {
-            _brushCursor = point;
-            Invalidate();
-        }
-        else if (_brushCursor is not null)
-        {
-            _brushCursor = null;
-            Invalidate();
-        }
+        _brushCursor = IsPaintTool(_document.ActiveTool) && InCanvas(_clientPointer) ? point : null;
+
+        // The chrome is immediate: hover states only update when something repaints, so every move
+        // invalidates. A frame is ~1 ms, and Windows coalesces WM_PAINT, so this is not a hot loop.
+        Invalidate();
     }
 
     private void OnPointerReleased((int X, int Y) client)
     {
-        if (!_dragging || _image is null) return;
-        _dragging = false;
-        Functions.ReleaseCapture();
-        _document.EndGesture(ToImage(client.X, client.Y));
+        _clientPointer = new Point(client.X, client.Y);
+        _pointerDown = false;
+
+        if (_dragging && _image is not null)
+        {
+            _dragging = false;
+            Functions.ReleaseCapture();
+            _document.EndGesture(ToImage(client.X, client.Y));
+
+            // A freshly placed text box opens for typing immediately - placing one and then having
+            // to click it again would be a step nobody wants.
+            if (_document.Selected is { Tool: EditorTool.Text } placed && placed.Text.Length == 0)
+                BeginTextEdit(placed);
+        }
+        Invalidate();
     }
+
+    // ============================  TEXT  ============================
+
+    /// <summary>
+    /// The image's own colour under the text box, so the EDIT's background disappears into the
+    /// screenshot instead of punching a white hole in it. Sampled from the decoded pixels at the
+    /// annotation's top-left; a screenshot is overwhelmingly flat where text gets placed, so one
+    /// sample is enough and costs nothing.
+    /// </summary>
+    private Rgba BackdropUnderText(TextEditor editor)
+    {
+        if (_image is null) return Rgba.White;
+
+        var bounds = editor.Annotation.Bounds;
+        var x = (int)Math.Clamp(bounds.X + 2, 0, _image.Width - 1);
+        var y = (int)Math.Clamp(bounds.Y + 2, 0, _image.Height - 1);
+
+        var offset = y * _image.Stride + x * 4;
+        var pixels = _image.Pixels;
+        if (offset + 3 >= pixels.Length) return Rgba.White;
+
+        // Premultiplied BGRA over white, since the box is opaque.
+        var alpha = pixels[offset + 3];
+        var inverse = 255 - alpha;
+        return new Rgba(
+            (byte)Math.Min(255, pixels[offset + 2] + inverse),
+            (byte)Math.Min(255, pixels[offset + 1] + inverse),
+            (byte)Math.Min(255, pixels[offset] + inverse));
+    }
+
+    /// <summary>Opens the inline box over an annotation, sized and styled like the text will be.</summary>
+    private void BeginTextEdit(Annotation annotation)
+    {
+        CommitText();
+        if (_image is null) return;
+
+        var bounds = annotation.Bounds;
+        var client = new Rect(
+            _offsetX + bounds.X * _scale,
+            _offsetY + bounds.Y * _scale,
+            Math.Max(24, bounds.Width * _scale),
+            Math.Max(24, bounds.Height * _scale));
+
+        _textEditor = TextEditor.Open(Handle, annotation, client, _scale);
+        Invalidate();
+    }
+
+    /// <summary>
+    /// Writes the box's text back and closes it. An empty box for a brand-new annotation is
+    /// cancelled outright, so a stray click with the text tool leaves nothing behind - and takes its
+    /// undo entry with it, exactly as the XAML build's CancelAnnotation did.
+    /// </summary>
+    private void CommitText()
+    {
+        if (_textEditor is not { } editor) return;
+        _textEditor = null;
+
+        var annotation = editor.Annotation;
+        var text = editor.Text;
+        editor.Dispose();
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _document.CancelAnnotation(annotation);
+            return;
+        }
+        _document.SetTextContent(annotation, text, annotation.Bounds);
+    }
+
+    /// <summary>True inside the image well - the region the canvas owns, between the bars.</summary>
+    private bool InCanvas(Point client) => CanvasWell().Contains(client);
 
     private bool OnKeyDown(VIRTUAL_KEY key)
     {
+        // While the text box has focus its keystrokes are text, not shortcuts - otherwise typing
+        // "rectangle" would switch tools eight times. Escape still closes it.
+        if (_textEditor is not null && key != VIRTUAL_KEY.VK_ESCAPE) return false;
+
         var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
 
         if (control)
@@ -330,8 +569,10 @@ public sealed class EditorWindow : D2DRenderWindow
                 return true;
 
             case VIRTUAL_KEY.VK_ESCAPE:
-                if (_document.IsCropSessionActive) _document.CancelCropSession();
+                if (_textEditor is not null) CommitText();
+                else if (_document.IsCropSessionActive) _document.CancelCropSession();
                 else _document.SelectAnnotation(null);
+                Invalidate();
                 return true;
 
             // Tool shortcuts, matching CleanShot X.
@@ -372,6 +613,7 @@ public sealed class EditorWindow : D2DRenderWindow
 
     protected override void Dispose(bool disposing)
     {
+        _textEditor?.Dispose();
         _effects?.Dispose();
         _image?.Dispose();
         _resources?.Dispose();

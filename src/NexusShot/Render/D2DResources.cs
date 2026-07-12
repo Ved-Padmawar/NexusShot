@@ -80,15 +80,28 @@ public sealed class D2DResources : IDisposable
     }
 
     private IComObject<ID2D1StrokeStyle> CreateStroke(D2D1_STROKE_STYLE_PROPERTIES properties, float[]? dashes = null) =>
-        D2DFactory.CreateStrokeStyle(properties, dashes);
+        Factory.CreateStrokeStyle(properties, dashes);
 
     /// <summary>
-    /// One process-wide factory. Stroke styles and path geometries are factory resources, not
-    /// device resources: they survive a lost device and are shared by every window and the
-    /// exporter, so there is no reason to make one per render target.
+    /// The factory that created this render target.
+    ///
+    /// D2D refuses to use resources together that came from different factories ("Objects used
+    /// together must be created from the same factory instance"), and a stroke style or path
+    /// geometry is a factory resource. So geometries must come from whichever factory owns the
+    /// target being drawn into - not from a convenient process-wide one.
     /// </summary>
-    public static readonly IComObject<ID2D1Factory1> D2DFactory =
-        D2D1Functions.D2D1CreateFactory<ID2D1Factory1>(D2D1_FACTORY_TYPE.D2D1_FACTORY_TYPE_MULTI_THREADED);
+    public IComObject<ID2D1Factory> Factory => _factory ??= GetFactory();
+    private IComObject<ID2D1Factory>? _factory;
+
+    private IComObject<ID2D1Factory> GetFactory()
+    {
+        _target.Object.GetFactory(out var factory);
+        return new ComObject<ID2D1Factory>(factory);
+    }
+
+    /// <summary>A path geometry from the right factory. Everything that builds geometry goes
+    /// through here, so it cannot accidentally use a foreign factory.</summary>
+    public IComObject<ID2D1PathGeometry> CreatePathGeometry() => Factory.CreatePathGeometry();
 
     public static D3DCOLORVALUE ToD3D(Rgba color) =>
         new(color.A / 255f, color.R / 255f, color.G / 255f, color.B / 255f);

@@ -15,7 +15,8 @@ namespace NexusShot.Render;
 /// the effect. Because the mask is the same widened round-capped path the renderer strokes with,
 /// the preview and the export agree by construction rather than by convention.
 /// </summary>
-public sealed class PixelEffectSource(ImageSurface image) : IPixelEffectSource, IDisposable
+public sealed class PixelEffectSource(ImageSurface image, D2DResources resources)
+    : IPixelEffectSource, IDisposable
 {
     private IComObject<ID2D1Effect>? _blur;
     private IComObject<ID2D1Effect>? _downscale;
@@ -109,10 +110,10 @@ public sealed class PixelEffectSource(ImageSurface image) : IPixelEffectSource, 
 
     /// <summary>The painted path as a closed region: the effect's mask. Same widening the renderer
     /// uses for the stroke itself, so the effect lands exactly where paint would have.</summary>
-    private static IComObject<ID2D1PathGeometry>? WidenedStroke(Annotation annotation)
+    private IComObject<ID2D1PathGeometry>? WidenedStroke(Annotation annotation)
     {
         var points = annotation.Points;
-        using var line = D2DResources.D2DFactory.CreatePathGeometry();
+        using var line = resources.CreatePathGeometry();
         using (var sink = line.Open())
         {
             sink.Object.BeginFigure(
@@ -123,9 +124,9 @@ public sealed class PixelEffectSource(ImageSurface image) : IPixelEffectSource, 
             sink.Object.Close();
         }
 
-        var widened = D2DResources.D2DFactory.CreatePathGeometry();
+        var widened = resources.CreatePathGeometry();
         using (var sink = widened.Open())
-        using (var style = D2DResources.D2DFactory.CreateStrokeStyle(AnnotationRenderer.RoundStrokeProperties))
+        using (var style = resources.Factory.CreateStrokeStyle(AnnotationRenderer.RoundStrokeProperties))
         {
             line.AsGeometry().Widen(
                 sink,
