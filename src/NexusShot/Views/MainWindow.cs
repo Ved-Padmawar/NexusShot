@@ -398,28 +398,43 @@ public sealed class MainWindow : D2DRenderWindow
             new Rect(bounds.X + S(24), bounds.Y + S(34), bounds.Width * 0.5, S(16)),
             theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
 
-        // Actions, right-aligned. Edit is the accent: it is what this pane is for.
+        // Actions, right-aligned. Buttons hug their content - 14px of padding either side, as the
+        // XAML style had - rather than being fixed-width blocks.
         var y = bounds.Y + (bounds.Height - S(32)) / 2;
         var right = bounds.Right - S(24);
 
-        right -= S(92);
-        if (ui.Button(23, new Rect(right, y, S(92), S(32)), "Edit",
-            primary: true, glyph: Icons.Edit, glyphSize: S(14)))
+        var font = S(Metrics.FontBody);
+        var glyph = S(14);
+
+        // Edit carries the accent: it is what this pane is for.
+        var edit = ButtonWidth(ui, "Edit", font, glyph);
+        right -= edit;
+        if (ui.Button(23, new Rect(right, y, edit, S(32)), "Edit",
+            primary: true, glyph: Icons.Edit, glyphSize: glyph, fontSize: font))
             EditRequested?.Invoke(item);
 
-        right -= S(100);
-        if (ui.Button(22, new Rect(right, y, S(92), S(32)), "Copy",
-            glyph: Icons.Copy, glyphSize: S(14)))
+        var copy = ButtonWidth(ui, "Copy", font, glyph);
+        right -= copy + S(8);
+        if (ui.Button(22, new Rect(right, y, copy, S(32)), "Copy",
+            glyph: Icons.Copy, glyphSize: glyph, fontSize: font))
             ClipboardImage.Copy(item.FilePath);
 
         right -= S(40);
-        if (ui.Tile(21, new Rect(right, y, S(32), S(32)), false, Icons.Delete, S(14), "Remove"))
+        if (ui.Tile(21, new Rect(right, y, S(32), S(32)), false, Icons.Delete, glyph, "Remove"))
             Delete(item);
 
         right -= S(40);
-        if (ui.Tile(20, new Rect(right, y, S(32), S(32)), false, Icons.Reveal, S(14),
+        if (ui.Tile(20, new Rect(right, y, S(32), S(32)), false, Icons.Reveal, glyph,
             "Show in Explorer"))
             Reveal(item.FilePath);
+    }
+
+    /// <summary>A button sized to its content: 14px of padding either side, as the XAML style had.</summary>
+    private double ButtonWidth(Ui ui, string label, double font, double glyph = 0)
+    {
+        var content = ui.MeasureText(label, font, bold: true);
+        if (glyph > 0) content += glyph + glyph * 0.55;
+        return Math.Round(content + S(28));
     }
 
     private void DrawEmptyState(Ui ui, Rect bounds)

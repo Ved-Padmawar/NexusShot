@@ -19,9 +19,13 @@ public static class AppIcon
     private const int SM_CXSMICON = 49;
     private const int SM_CXICON = 11;
 
-    /// <summary>The first icon in the exe's resource table. The csproj's ApplicationIcon puts ours
-    /// there, and 1 is where the linker writes it.</summary>
-    private const int IconResourceId = 1;
+    /// <summary>
+    /// The ordinal ApplicationIcon assigns to the embedded icon group.
+    ///
+    /// Not 1. Resource 1 is not the icon group, so LoadImage returns nothing - the tray icon is then
+    /// invisible and the taskbar falls back to a stretched default.
+    /// </summary>
+    private const int IconResourceId = 32512;   // IDI_APPLICATION
 
     /// <summary>The tray-sized icon. Shared, so it must not be destroyed.</summary>
     public static IntPtr Small { get; } = Load(GetSystemMetrics(SM_CXSMICON));

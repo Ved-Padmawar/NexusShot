@@ -133,8 +133,10 @@ public sealed class EditorWindow : D2DRenderWindow
             Math.Max(1, well.Width - margin * 2),
             Math.Max(1, well.Height - margin * 2));
 
+        // Fit never enlarges past 1:1: upscaling would soften the image and inflate every stroke
+        // width and adorner drawn in image space.
         _scale = _fitToViewport
-            ? Math.Min(available.Width / _image.Width, available.Height / _image.Height)
+            ? Math.Min(1, Math.Min(available.Width / _image.Width, available.Height / _image.Height))
             : 1;
 
         _offsetX = Math.Round(well.X + (well.Width - _image.Width * _scale) / 2);
@@ -215,8 +217,8 @@ public sealed class EditorWindow : D2DRenderWindow
         _renderer.DrawAnnotations(target, _document, _effects, skip: _textEditor?.Annotation);
         if (_textEditor is null) _renderer.DrawAdorners(target, _document, AdornerScale);
 
-        if (_brushCursor is { } cursor && IsPaintTool(_document.ActiveTool) && !_ui.WantsPointer)
-            _renderer.DrawBrushCursor(target, cursor, _document.ActiveThickness, AdornerScale);
+        // The brush footprint is the *cursor*, not a drawn ring: Windows composites the cursor, so it
+        // tracks the pointer exactly, where anything the app paints arrives a frame late and trails.
 
         renderTarget.Object.SetTransform(D2D_MATRIX_3X2_F.Identity());
 
@@ -254,6 +256,10 @@ public sealed class EditorWindow : D2DRenderWindow
             _fitToViewport = fit;
             Invalidate();
         }
+
+        // The slider and the swatches change the brush's size and colour, and the cursor *is* the
+        // brush footprint.
+        RefreshCursor();
     }
 
     /// <summary>Writes the flattened image over the original. A crop frame the user is still
@@ -389,16 +395,13 @@ public sealed class EditorWindow : D2DRenderWindow
                 break;
 
             case WmSetCursor:
-                // Own the cursor, or Windows keeps restoring the class arrow. The paint tools draw
-                // their own footprint ring in the scene, so the system cursor is hidden for them;
-                // everything else gets a crosshair. This is the WM_SETCURSOR contract the XAML
-                // build had to reach through ProtectedCursor to approximate.
+                // Own the cursor, or Windows keeps restoring the class arrow.
                 if (SetToolCursor()) return new LRESULT { Value = 1 };
                 break;
 
             case WmCtlColorEdit:
-                // The child EDIT asks us what colours to paint with. Answering makes the box read as
-                // part of the canvas rather than a system control dropped on top of it.
+                // The child EDIT asks what colours to use; answering makes it read as part of the
+                // canvas rather than a control dropped on top.
                 if (_textEditor is { } editor)
                 {
                     var brush = editor.OnCtlColor(
@@ -414,45 +417,44 @@ public sealed class EditorWindow : D2DRenderWindow
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
 
-    /// <summary>
-    /// Owns the cursor for the canvas. Windows draws it, so it never lags behind the pointer the
-    /// way an app-drawn cursor does.
-    /// Returns false outside the image so the frame keeps its normal resize cursors.
-    /// </summary>
+    /// <summary>Windows draws the cursor, so it never trails the pointer the way an app-drawn one
+    /// does. False outside the image, so the frame keeps its own resize cursors.</summary>
     private bool SetToolCursor()
     {
         if (_image is null) return false;
 
-        // Over the chrome: an arrow, and never the hidden paint cursor.
         if (!InCanvas(_clientPointer))
         {
-            ToolCursor.Set(ToolCursor.Arrow);
+            Functions.SetCursor(new HCURSOR { Value = ToolCursors.Arrow });
             return true;
         }
 
-        // Hovering a grip: show what dragging it will do.
+        // A grip under the pointer says what dragging it will do, whatever tool is active.
         if (_hoverHandle is { } handle)
         {
-            ToolCursor.Set(handle switch
-            {
-                ResizeHandle.TopLeft or ResizeHandle.BottomRight => ToolCursor.SizeNWSE,
-                ResizeHandle.TopRight or ResizeHandle.BottomLeft => ToolCursor.SizeNESW,
-                ResizeHandle.Top or ResizeHandle.Bottom => ToolCursor.SizeNS,
-                ResizeHandle.Left or ResizeHandle.Right => ToolCursor.SizeWE,
-                _ => ToolCursor.SizeAll,
-            });
+            Functions.SetCursor(new HCURSOR { Value = ToolCursors.Resize(handle) });
             return true;
         }
 
-        // Paint tools draw their true footprint as a ring in the scene. A system cursor on top of
-        // that would be a second, smaller, lying indicator - so hide it.
-        if (IsPaintTool(_document.ActiveTool))
+        var cursor = _document.ActiveTool switch
         {
-            ToolCursor.Set(null);
-            return true;
-        }
+            EditorTool.Select => ToolCursors.Arrow,
+            EditorTool.Pen => ToolCursors.Pencil(),
 
-        ToolCursor.Set(_document.ActiveTool == EditorTool.Select ? ToolCursor.Arrow : ToolCursor.Cross);
+            // The brush and eraser show their true footprint, at its on-screen size. The eraser's is
+            // a faint fill rather than the paint colour: it removes, it does not add.
+            EditorTool.Brush => ToolCursors.Circle(
+                PaintStrokeGeometry.Diameter(_document.ActiveThickness) * _scale,
+                Palette.Parse(_document.ColorHex).WithAlpha(70)),
+
+            EditorTool.Eraser => ToolCursors.Circle(
+                PaintStrokeGeometry.Diameter(_document.ActiveThickness) * _scale,
+                Rgba.White.WithAlpha(28)),
+
+            _ => ToolCursors.Cross,
+        };
+
+        Functions.SetCursor(new HCURSOR { Value = cursor });
         return true;
     }
 
@@ -528,6 +530,7 @@ public sealed class EditorWindow : D2DRenderWindow
         }
 
         _brushCursor = IsPaintTool(_document.ActiveTool) && InCanvas(_clientPointer) ? point : null;
+
 
         // The chrome is immediate: hover states only update when something repaints, so every move
         // invalidates. A frame is ~1 ms, and Windows coalesces WM_PAINT, so this is not a hot loop.
@@ -699,8 +702,16 @@ public sealed class EditorWindow : D2DRenderWindow
         _document.ActiveTool = tool;
         if (tool == EditorTool.Crop && _image is not null) _document.BeginCropSession();
         _brushCursor = null;
+        RefreshCursor();
         Invalidate();
         return true;
+    }
+
+    /// <summary>WM_SETCURSOR only arrives on a mouse move, so a size change on the slider would
+    /// otherwise leave the ring at its old diameter until you jiggled the mouse.</summary>
+    private void RefreshCursor()
+    {
+        if (InCanvas(_clientPointer)) SetToolCursor();
     }
 
     protected override void Dispose(bool disposing)

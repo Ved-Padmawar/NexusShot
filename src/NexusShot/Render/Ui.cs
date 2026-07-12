@@ -184,40 +184,39 @@ public sealed class Ui(D2DResources resources)
         var clicked = Interact(id, bounds);
 
         var fill = selected
-            ? Theme.FillSelected
+            ? Theme.Accent
             : IsActive(id) ? Theme.FillPressed
             : IsHot(id) ? Theme.FillHover
             : default;
 
         if (fill.A > 0) FillRounded(bounds, Metrics.RadiusControl, fill);
 
-        Icon(glyph, bounds, tint ?? (selected ? Theme.TextPrimary : Theme.TextSecondary), glyphSize);
+        var foreground = selected ? Theme.TextOnAccent
+            : IsHot(id) ? Theme.TextPrimary
+            : Theme.TextSecondary;
+        Icon(glyph, bounds, tint ?? foreground, glyphSize);
 
         if (tooltip is not null && IsHot(id)) Tooltip(bounds, tooltip);
         return clicked;
     }
 
-    /// <summary>A colour swatch. Mutual exclusion is the caller's.</summary>
+    /// <summary>A colour swatch: a 16/26-scaled dot with a selection ring drawn outside it, so the
+    /// control is a touch target larger than the dot itself - the old ColorSwatch's proportions.</summary>
     public bool Swatch(int id, Rect bounds, Rgba color, bool selected)
     {
         var clicked = Interact(id, bounds);
 
         var size = Math.Min(bounds.Width, bounds.Height);
         var center = bounds.Center;
-        var radius = (float)(size / 2 - 3);
+        var dotRadius = (float)(size * 8 / 26);
+        var ringRadius = (float)(size - 2) / 2;
 
-        if (selected || IsHot(id))
-        {
-            StrokeCircle(center, radius + 3,
-                selected ? Theme.Accent : Theme.StrokeStrong,
-                selected ? 2f : 1f);
-        }
+        var ringOpacity = selected ? 255 : IsActive(id) ? 128 : IsHot(id) ? 90 : 0;
+        if (ringOpacity > 0)
+            StrokeCircle(center, ringRadius, Theme.TextPrimary.WithAlpha((byte)ringOpacity), 1.5f);
 
-        FillCircle(center, radius, color);
-
-        // White needs an outline or it vanishes on a light surface.
-        if (color.R > 235 && color.G > 235 && color.B > 235)
-            StrokeCircle(center, radius, Theme.StrokeStrong);
+        FillCircle(center, dotRadius, color);
+        StrokeCircle(center, dotRadius, Theme.StrokeStrong);
 
         return clicked;
     }
@@ -250,60 +249,82 @@ public sealed class Ui(D2DResources resources)
         return true;
     }
 
-    /// <summary>A text button, optionally with a leading glyph and an accent (primary) treatment.</summary>
+    /// <summary>
+    /// A text button, optionally with a leading glyph and an accent (primary) treatment.
+    ///
+    /// Hover brightens the *border*, not the fill: a fill that changes on hover reads as a selection,
+    /// and the toolbar already uses fill to mean "this mode is active".
+    /// </summary>
     public bool Button(
         int id, Rect bounds, string label,
         bool primary = false, bool enabled = true, bool toggled = false,
         string? glyph = null, double glyphSize = 14, double fontSize = Metrics.FontBody)
     {
-        Rgba fill, text;
+        Rgba fill, text, border;
+        var bold = false;
 
         if (!enabled)
         {
-            fill = Theme.FillPressed;
+            fill = Theme.SurfaceOverlay;
+            border = Theme.StrokeDefault;
             text = Theme.TextTertiary;
         }
         else if (primary)
         {
             fill = IsActive(id) ? Theme.AccentPressed : IsHot(id) ? Theme.AccentHover : Theme.Accent;
+            border = fill;
             text = Theme.TextOnAccent;
+            bold = true;
         }
         else if (toggled)
         {
-            // A selected segment: the fill states which mode is active, so it must not also change
-            // on hover, or hovering the inactive one would make both look selected.
             fill = Theme.FillSelected;
+            border = Theme.StrokeStrong;
             text = Theme.TextPrimary;
         }
         else
         {
-            fill = IsActive(id) ? Theme.FillPressed : IsHot(id) ? Theme.FillHover : Theme.SurfaceOverlay;
-            text = Theme.TextSecondary;
+            fill = IsActive(id) ? Theme.FillPressed : Theme.SurfaceOverlay;
+            border = IsHot(id) ? Theme.StrokeStrong : Theme.StrokeDefault;
+            text = Theme.TextPrimary;
         }
 
         var clicked = enabled && Interact(id, bounds);
 
-        FillRounded(bounds, Metrics.RadiusControl, fill);
-        if (!primary) StrokeRounded(bounds, Metrics.RadiusControl, Theme.StrokeSubtle);
+        var radius = (float)(Metrics.RadiusControl * (bounds.Height / 32));
+        FillRounded(bounds, radius, fill);
+        StrokeRounded(bounds, radius, border);
 
         if (glyph is null)
         {
-            Text(label, bounds, text, (float)fontSize, align: TextAlign.Center);
+            Text(label, bounds, text, (float)fontSize, bold, TextAlign.Center);
             return clicked;
         }
 
-        // Glyph and label as one centred cluster: the glyph sits left of the text, and the pair is
-        // centred together rather than each being centred in its own half.
-        var gap = glyphSize * 0.45;
-        var labelWidth = label.Length * fontSize * 0.58;
+        // Glyph and label as one centred cluster. The label is measured, not estimated from its
+        // character count: a guess leaves the pair visibly off-centre in the button.
+        var gap = glyphSize * 0.55;
+        var labelWidth = MeasureText(label, fontSize, bold);
         var content = glyphSize + gap + labelWidth;
         var x = bounds.X + (bounds.Width - content) / 2;
 
         Icon(glyph, new Rect(x, bounds.Y, glyphSize, bounds.Height), text, glyphSize);
-        Text(label, new Rect(x + glyphSize + gap, bounds.Y, labelWidth, bounds.Height),
-            text, (float)fontSize);
+        Text(label, new Rect(x + glyphSize + gap, bounds.Y, labelWidth + 2, bounds.Height),
+            text, (float)fontSize, bold);
 
         return clicked;
+    }
+
+    /// <summary>The rendered width of a string, so a caller can centre or size against it.</summary>
+    public double MeasureText(string text, double size, bool bold = false)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+
+        var format = resources.TextFormat(Metrics.FontFamily, (float)size, bold, italic: false);
+        using var layout = resources.DWrite.CreateTextLayout(format, text);
+
+        layout.Object.GetMetrics(out var metrics);
+        return metrics.width;
     }
 
     /// <summary>A small square toggle, for B / I / U.</summary>

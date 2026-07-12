@@ -24,9 +24,9 @@ public sealed class EditorChrome(Ui ui)
     public static double TitleBarHeight => 36 * Scale;
     public static double ToolbarHeight => 52 * Scale;
     public static double ChromeTop => TitleBarHeight + ToolbarHeight;
-    public static double FooterHeight => 40 * Scale;
+    public static double FooterHeight => 44 * Scale;
 
-    private static double TileSize => 34 * Scale;
+    private static double TileSize => 32 * Scale;
 
     /// <summary>Tools, in toolbar order, with a null marking a group separator.</summary>
     private static readonly EditorTool?[] Groups =
@@ -147,7 +147,7 @@ public sealed class EditorChrome(Ui ui)
     private void DrawColorAndThickness(
         EditorDocument document, double left, double right, double y, double tile)
     {
-        var swatch = S(28);
+        var swatch = S(26);
         var swatchSpan = Palette.Swatches.Length * (swatch + S(2));
         var chip = S(104);
         var sliderSpan = S(46) + S(120) + S(30);
@@ -231,7 +231,7 @@ public sealed class EditorChrome(Ui ui)
         ui.FillRect(bar, ui.Theme.SurfaceRaised);
         ui.FillRect(new Rect(0, bar.Y, width, 1), ui.Theme.StrokeSubtle);
 
-        var y = bar.Y + (bar.Height - S(26)) / 2;
+        var y = bar.Y + (bar.Height - S(32)) / 2;
 
         var crop = (document.PendingCrop ?? document.CropBounds) is { } c
             ? $"   ·   Crop {(int)c.Width}×{(int)c.Height} — Enter to apply, Esc to cancel"
@@ -245,40 +245,51 @@ public sealed class EditorChrome(Ui ui)
 
         // Zoom, left of centre.
         var x = width * 0.5 - S(66);
-        if (ui.Button(9030, new Rect(x, y, S(58), S(26)), "Fit",
+        if (ui.Button(9030, new Rect(x, y, S(58), S(32)), "Fit",
             fontSize: S(Metrics.FontCaption), toggled: fit))
             FitPicked = true;
 
         x += S(62);
-        if (ui.Button(9031, new Rect(x, y, S(58), S(26)), "100%",
+        if (ui.Button(9031, new Rect(x, y, S(58), S(32)), "100%",
             fontSize: S(Metrics.FontCaption), toggled: !fit))
             FitPicked = false;
 
-        // Actions, right.
+        // Actions, right. Buttons hug their content rather than being fixed-width blocks.
         var right = width - S(14);
+        var font = S(Metrics.FontBody);
+        var glyph = S(13);
 
-        right -= S(92);
-        if (ui.Button(9020, new Rect(right, y, S(92), S(26)), "Save",
-            primary: true, glyph: Icons.Save, glyphSize: S(13), fontSize: S(Metrics.FontCaption)))
+        var save = Width(ui, "Save", font, glyph);
+        right -= save;
+        if (ui.Button(9020, new Rect(right, y, save, S(32)), "Save",
+            primary: true, glyph: Icons.Save, glyphSize: glyph, fontSize: font))
             SavePressed = true;
 
-        right -= S(96);
-        if (ui.Button(9022, new Rect(right, y, S(88), S(26)), "Save as…",
-            fontSize: S(Metrics.FontCaption)))
+        var saveAs = Width(ui, "Save as…", font);
+        right -= saveAs + S(8);
+        if (ui.Button(9022, new Rect(right, y, saveAs, S(32)), "Save as…", fontSize: font))
             SaveAsPressed = true;
 
-        right -= S(96);
-        if (ui.Button(9021, new Rect(right, y, S(88), S(26)), "Copy",
-            glyph: Icons.Copy, glyphSize: S(13), fontSize: S(Metrics.FontCaption)))
+        var copy = Width(ui, "Copy", font, glyph);
+        right -= copy + S(8);
+        if (ui.Button(9021, new Rect(right, y, copy, S(32)), "Copy",
+            glyph: Icons.Copy, glyphSize: glyph, fontSize: font))
             CopyPressed = true;
 
         // A confirmation, so an action that changes nothing visible still says it happened.
         if (toast is null) return;
 
-        var badge = new Rect(right - S(96), y, S(84), S(26));
+        var badge = new Rect(right - S(88), y, S(80), S(32));
         ui.FillRounded(badge, (float)S(Metrics.RadiusControl), ui.Theme.Accent);
-        ui.Text(toast, badge, ui.Theme.TextOnAccent,
-            (float)S(Metrics.FontCaption), align: TextAlign.Center);
+        ui.Text(toast, badge, ui.Theme.TextOnAccent, (float)font, align: TextAlign.Center);
+    }
+
+    /// <summary>A button sized to its content: 14px of padding either side.</summary>
+    private static double Width(Ui ui, string label, double font, double glyph = 0)
+    {
+        var content = ui.MeasureText(label, font, bold: true);
+        if (glyph > 0) content += glyph + glyph * 0.55;
+        return Math.Round(content + S(28));
     }
 
     private static string Glyph(EditorTool tool) => tool switch

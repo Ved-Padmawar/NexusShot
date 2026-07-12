@@ -76,7 +76,7 @@ public static class AdornerGeometry
 
     /// <summary>
     /// Where a selected annotation's grips sit. Rectangles and ellipses draw their own stroke, so
-    /// grips ride that stroke's rendered centreline (two half-stroke insets in) and no extra
+    /// grips ride that stroke's rendered centreline (one half-stroke inset in) and no extra
     /// dashed frame is drawn. Everything else has no outline of its own, so it gets a dashed frame
     /// and its grips ride that.
     /// </summary>
@@ -86,9 +86,9 @@ public static class AdornerGeometry
 
         if (annotation.Tool is EditorTool.Rectangle or EditorTool.Ellipse)
         {
-            var shapeElementBounds = InsetForStroke(bounds, annotation.StrokeThickness);
+            // Grips ride the shape's own painted stroke centreline, not a second inset past it.
             return new SelectionAdorner(
-                GripBounds: InsetForStroke(shapeElementBounds, annotation.StrokeThickness),
+                GripBounds: InsetForStroke(bounds, annotation.StrokeThickness),
                 DashedFrame: null,
                 FrameThickness: 0);
         }
@@ -96,7 +96,7 @@ public static class AdornerGeometry
         var frameThickness = 1.5 * adornerScale;
         var frameBounds = InsetForStroke(bounds, frameThickness);
         return new SelectionAdorner(
-            GripBounds: InsetForStroke(frameBounds, frameThickness),
+            GripBounds: frameBounds,
             DashedFrame: frameBounds,
             FrameThickness: frameThickness);
     }
@@ -109,7 +109,7 @@ public static class AdornerGeometry
         return new CropAdorner(
             Frame: frameBounds,
             FrameThickness: frameThickness,
-            GripBounds: InsetForStroke(frameBounds, frameThickness));
+            GripBounds: frameBounds);
     }
 }
 
