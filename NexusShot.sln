@@ -2,7 +2,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NexusShot.App", "src\NexusShot.App\NexusShot.App.csproj", "{6D0847F1-31BC-4F2D-B4E8-6EB774E972B5}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NexusShot", "src\NexusShot\NexusShot.csproj", "{6D0847F1-31BC-4F2D-B4E8-6EB774E972B5}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

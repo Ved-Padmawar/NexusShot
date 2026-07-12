@@ -1,15 +1,16 @@
 ; Inno Setup script for NexusShot.
-; Build via installer\build-installer.ps1, which publishes the app and passes these defines;
-; the fallbacks below only exist so the script also compiles directly from the Inno Setup IDE.
+; Build via `.\build.ps1 installer`, which publishes the app and passes these defines; the
+; fallbacks below only exist so the script also compiles directly from the Inno Setup IDE.
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "2.0.0"
 #endif
 #ifndef PublishDir
-  #define PublishDir "..\build\publish"
+  #define PublishDir "..\dist"
 #endif
 
 #define AppName "NexusShot"
-#define AppExeName "NexusShot.App.exe"
+; A single Native AOT executable: no runtime, no framework payload, nothing else to ship.
+#define AppExeName "NexusShot.exe"
 #define AppPublisher "NexusAI"
 
 [Setup]
@@ -45,7 +46,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The one file. Named explicitly rather than globbed, because the installer is itself written into
+; the publish directory and a wildcard would package the previous build inside the new one.
+Source: "{#PublishDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"

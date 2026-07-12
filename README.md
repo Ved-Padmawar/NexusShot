@@ -10,12 +10,14 @@
   <img src="https://img.shields.io/github/v/release/Ved-Padmawar/NexusShot?label=version&color=success" alt="Version" />
   <img src="https://img.shields.io/badge/C%23-239120?logo=csharp&logoColor=white" alt="C#" />
   <img src="https://img.shields.io/badge/-.NET%2010-512BD4?logo=dotnet&logoColor=white" alt=".NET 10" />
-  <img src="https://img.shields.io/badge/WinUI%203-0067B8?logo=windows&logoColor=white" alt="WinUI 3" />
-  <img src="https://img.shields.io/badge/Windows%20App%20SDK-0078D6?logo=windows&logoColor=white" alt="Windows App SDK" />
+  <img src="https://img.shields.io/badge/Win32%20%2B%20Direct2D-0078D6?logo=windows&logoColor=white" alt="Win32 + Direct2D" />
+  <img src="https://img.shields.io/badge/Native%20AOT-5C2D91?logo=dotnet&logoColor=white" alt="Native AOT" />
   <img src="https://img.shields.io/badge/Windows%2010%2F11-0078D6?logo=windows11&logoColor=white" alt="Windows 10/11" />
 </p>
 
-[**⬇ Download**](../../releases/latest) · [Features](#-features) · [Build](#-build-the-installer) · [Architecture](#-architecture)
+[**⬇ Download**](../../releases/latest) · [Features](#-features) · [Build](#-build) · [Architecture](#-architecture)
+
+**One 7.6 MB executable. No runtime, no framework payload, nothing else to install.**
 
 </div>
 
@@ -24,217 +26,152 @@
 ## ✨ Features
 
 **📸 Capture** — full virtual desktop, active window, and drag-selection region, with correct
-multi-monitor and per-monitor-DPI coordinates. Region capture dims the screen over the **live**
-desktop — video keeps playing underneath while you drag — with a crosshair and a live
-pixel-dimension readout. Pixels are read only after the selection is committed.
+multi-monitor and per-monitor-DPI coordinates.
 
-**🃏 Quick Access Overlay** — after each capture a borderless thumbnail card appears at the
-**bottom-left** of the work area and stacks upward as more captures arrive. It never steals focus
-(`WS_EX_NOACTIVATE`) and stays out of Alt-Tab and the taskbar. The card sizes itself to the
-capture's aspect ratio, so only the image shows — no frame or backdrop edge. Hovering reveals
-Copy, Save as, Edit, and Pin; the card can be dragged straight into another application.
-Auto-dismiss is configurable and pauses while the pointer is over the card or when pinned.
+**🎨 Editor** — rectangle, ellipse, line, arrow, pen, brush, eraser, text, highlight, blur,
+pixelate, counter, spotlight, and crop. Annotations are objects, not pixels: they stay editable
+until you save. Blur and pixelate run on the GPU. Text is edited in place.
 
-**🎨 Editor** — displays the screenshot at fit-to-window scale while keeping all annotation geometry
-in image-pixel space. Click-and-drag sets an annotation's position and size in one gesture, and
-each shape family gets its own selection model: boxes show eight resize grips, lines and arrows
-show endpoint grips, brush strokes (pen/blur/pixelate) leave only their effect until explicitly
-selected. Text annotations are editable objects — double-click (or click with the text tool) to
-edit in place, with the box itself as the wrapping text area. Crop is an interactive session: a
-handle-draggable frame with the outside dimmed, applied only on confirm (`Enter`) and discardable
-(`Esc`). Colour palette, stroke thickness, undo/redo, and delete round it out.
+**⌨️ Global hotkeys** — `Ctrl+Shift+S` region · `Ctrl+Shift+F` full screen · `Ctrl+Shift+W` active
+window · `Ctrl+Shift+N` open the shell. A binding another app already owns fails on its own; the
+rest still register.
 
-**⌨️ Global hotkeys** — `Ctrl+Shift+S` region, `Ctrl+Shift+F` full screen, `Ctrl+Shift+W` active
-window, `Ctrl+Shift+N` open dashboard. Registration is all-or-nothing with rollback; a conflict
-surfaces in the tray tooltip instead of crashing.
+### Editor shortcuts
 
-### Keyboard shortcuts
-
-| Context | Shortcuts |
-| --- | --- |
-| **Overlay** | `Ctrl+C` copy · `Ctrl+S` save · `Ctrl+E` edit · `Ctrl+P` pin · `Esc` dismiss |
-| **Editor** | `V` select · `R` rectangle · `E` ellipse · `A` arrow · `L` line · `D` pen · `T` text · `H` highlight · `B` blur · `P` pixelate · `N` counter · `S` spotlight · `C` crop |
+`V` select · `R` rectangle · `O` ellipse · `L` line · `A` arrow · `P` pen · `B` brush · `E` eraser ·
+`T` text · `H` highlight · `U` blur · `X` pixelate · `N` counter · `S` spotlight · `C` crop ·
+`Ctrl+Z` / `Ctrl+Y` undo / redo · `1` toggle fit / 100%
 
 ---
 
-## 🚀 Getting started
-
-### Requirements
-
-- **Windows 10 2004+** (Windows 11 recommended)
-- **.NET 10 SDK**
-- **Visual Studio 2022** with the **Windows application development** workload, or the Windows App SDK build tools
-
-### Run from source
+## 🚀 Build
 
 ```powershell
-dotnet restore NexusShot.sln
-dotnet build NexusShot.sln -c Debug -p:Platform=x64
-dotnet run --project src/NexusShot.App/NexusShot.App.csproj
+.\build.ps1                      # debug build, then run
+.\build.ps1 test                 # headless render + drag-timing check
+.\build.ps1 release              # Native AOT single exe -> dist\NexusShot.exe
+.\build.ps1 installer            # release + Inno Setup -> dist\NexusShot-<version>.exe
 ```
 
-The app starts in the notification area. The dashboard's close button hides it; use **Quit** on the
-tray menu to exit.
+One project, one output directory, one command per thing you might want.
 
-> Screenshots are saved to `Pictures\NexusShot`. Settings and metadata-only history live in
-> `%LOCALAPPDATA%\NexusShot`; corrupt JSON is backed up and regenerated rather than crashing.
+**Requirements:** .NET 10 SDK, and the Visual Studio C++ build tools (Native AOT compiles to machine
+code and links with MSVC). For `installer`, also [Inno Setup 6](https://jrsoftware.org/isdl.php).
 
----
-
-## 📦 Build the installer
-
-To produce a self-contained, distributable installer `.exe`, run the build script from the
-repository root:
-
-```powershell
-pwsh -NoProfile -File installer\build-installer.ps1                 # version 1.1.0
-pwsh -NoProfile -File installer\build-installer.ps1 -Version 1.2.0  # override the version
-```
-
-The script publishes NexusShot self-contained (bundling the .NET and Windows App SDK runtimes, so
-the target machine needs no runtime installed) and compiles it with Inno Setup into
-`dist\NexusShot-Setup-<version>.exe`.
-
-> **Prerequisite:** [Inno Setup 6](https://jrsoftware.org/isdl.php) — `winget install JRSoftware.InnoSetup`
+> Screenshots are saved to `Pictures\NexusShot`. Settings and history live in `%APPDATA%\NexusShot`;
+> a corrupt file falls back to defaults rather than refusing to start.
 
 ---
 
 ## 🏛 Architecture
 
 ```text
-assets/icons/  icon-source.svg + export-icons.ps1 -> nexus-shot.ico
-src/NexusShot.App/
-  Capture/    GDI capture + the layered Win32 region overlay
-  Controls/   ToolTile, ColorSwatch, BrandMark (custom templated controls)
-  Editor/     EditorDocument (state, undo/redo, selection)
-              BoxGeometry (shared crop/shape/text interaction geometry)
-              AnnotationFlattener (export)
-              LiveAnnotationRenderer (on-screen preview)
-  Helpers/    ImageLoader, MonitorHelper
-  Hotkeys/    RegisterHotKey lifecycle
-  Native/     P/Invoke surface and window subclassing
-  Services/   Composition root, storage, clipboard, previews, theme, logging
-  Storage/    Atomic JSON persistence
-  Themes/     Tokens.xaml (theme dictionaries), Controls.xaml, Generic.xaml
-  Tray/       Notification-area icon and command menu
-  ViewModels/ MainViewModel, ScreenshotTile (lazy thumbnails)
-  Views/      MainWindow, FloatingPreviewWindow, EditorWindow
+src/NexusShot/
+  Core/       Framework-free editing logic and types
+              EditorDocument   state, gestures, undo/redo, selection, crop
+              Annotation       one annotation, in image-pixel space
+              BoxGeometry      shared crop/shape/text interaction geometry
+              AdornerGeometry  the exact geometry of selection and crop adorners
+              Theme, Palette   design tokens as values, not resource dictionaries
+  Render/     Direct2D
+              AnnotationRenderer  draws a document onto any D2D target
+              Ui, ToolIcons       immediate-mode widgets, vector icons
+              PixelEffectSource   blur and pixelate as GPU effects
+              Exporter            the same renderer, pointed at an offscreen target
+              ImageSurface        WIC decode + GPU upload
+  Platform/   Win32: capture, tray, hotkeys, clipboard, the inline text EDIT
+  Views/      MainWindow, EditorWindow, RegionOverlay
+  App.cs      tray + hotkeys + capture pipeline
 ```
 
-The sections below document the non-obvious design decisions. Expand any that interest you.
+The app is **immediate mode**: there is no retained visual tree. Input mutates the document and
+asks for a repaint; a frame is one allocation-free pass over the annotation list. `WM_PAINT` is
+already coalesced to the display rate, so a burst of pointer messages collapses into one frame on
+its own.
+
+Measured on a 120-frame drag with 9 annotations live (including GPU blur and pixelate):
+**median 1.2 ms per frame**, against a 16.7 ms budget.
 
 <details>
-<summary><b>The shell browses; the editor edits</b></summary>
+<summary><b>Why this is not WinUI 3 any more</b></summary>
 
 <br />
 
-`MainWindow` is a sidebar of captures plus a detail pane. Annotating opens `EditorWindow` as its
-own window rather than docking it into that pane. A docked editor would surrender the sidebar's
-width from the image on every edit, permanently, to a list the user has stopped looking at.
+The previous build was WinUI 3, and its lag was structural rather than incidental. Every pointer
+move mutated a retained visual tree: find an annotation's elements, patch them, let layout re-run —
+work proportional to the scene, on the UI thread, per input event. The old renderer fought that with
+hand-rolled frame batching (buffer the samples, hook `CompositionTarget.Rendering`, flush once a
+frame) and still lagged when a drag started and stopped abruptly. Two releases went into the
+symptoms.
+
+Immediate mode removes the thing that was slow instead of working around it. Several other problems
+turned out to be the same problem wearing different clothes:
+
+| | WinUI 3 | now |
+| --- | --- | --- |
+| **Erasing** | A XAML `Polyline` cannot have holes, so each stroke was rasterised into a `WriteableBitmap` and the erased pixels cleared in a software loop. | Stroke geometry *minus* the widened eraser path. One geometry, filled by the GPU. |
+| **Blur / pixelate** | C# per-pixel loops on the UI thread, producing a `WriteableBitmap` per stroke per frame. | `ID2D1Effect`. |
+| **Export** | A separate GDI+ flattener, kept in agreement with the on-screen renderer by hand. | The same renderer, pointed at an offscreen target. They cannot drift. |
+| **Blurry preview** | A XAML `Image` scales whatever bitmap it is given: either a pre-scaled thumbnail (soft) or the full image in the visual tree (heavy). | One bitmap per capture, uploaded at full resolution, rescaled by the GPU each frame. |
+| **Cursor lag** | Chased through `ProtectedCursor`. | `WM_SETCURSOR` + `SetCursor`: Windows draws it. |
+| **Payload** | 117 MB (Windows App SDK, self-contained). | **7.6 MB**, single exe. |
+| **RAM idle** | ~140 MB | **~58 MB** |
+
+`EditorDocument`, `BoxGeometry`, `Annotation` and the adorner geometry ported over essentially
+unchanged. They never depended on the framework — only on `Windows.Foundation`'s `Point`/`Rect`,
+which `Core/Geometry.cs` now supplies.
 
 </details>
 
 <details>
-<summary><b>Theming</b></summary>
+<summary><b>Two things that will bite you</b></summary>
 
 <br />
 
-Every brush lives in a `ThemeDictionary` in `Themes/Tokens.xaml` and is consumed via
-`{ThemeResource}` — including inside `VisualState.Setters`. `{StaticResource}` snapshots a brush at
-load time, so a control realised under one theme would keep that brush forever and the window would
-half-switch. The two palettes are not inverses: light uses black-alpha hairlines rather than
-lightened white ones, and a darker accent, because `#0A84FF` on white fails contrast for small text.
+**Direct2D refuses to use resources from one factory with a target from another** — *"Objects used
+together must be created from the same factory instance."* Stroke styles and path geometries are
+*factory* resources, so they must come from whichever factory owns the target being drawn into.
+`D2DResources` takes its factory from its target, and everything that builds geometry goes through
+it. A process-wide factory looks tidy and fails at runtime.
 
-`ThemeService` walks the open windows and sets `RequestedTheme` on each content root, because WinUI 3
-has no application-wide switch that reaches already-open windows (`Application.RequestedTheme` throws
-after launch) and each window owns an independent `XamlRoot`. It also drives
-`DWMWA_USE_IMMERSIVE_DARK_MODE`, since XAML does not own the non-client area. In *System* mode the
-theme follows the OS: the only signal an unpackaged app gets is `WM_SETTINGCHANGE` with
-`lParam == "ImmersiveColorSet"`, which arrives on the tray's existing window subclass.
+**The render target defaults to the system DPI.** On a scaled display D2D then scales every
+coordinate — while `ClientRect`, `WM_MOUSEMOVE` and the image are all already in physical pixels.
+The target is pinned to 96 DPI and the chrome scales itself. That is also what makes "100%" mean one
+image pixel to one *physical* pixel, which is the rule that keeps a screenshot pin-sharp.
 
-The editor toolbar's tiles and colour swatches are custom templated controls, not restyled
-`ToggleButton`/`RadioButton`. A `RadioButton` always lays out a 20px indicator column ahead of its
-content, which clipped the colour dots out of their swatches.
+Also: the app manifest needs the ComCtl32 v6 dependency. Without it an unhandled exception dies
+inside its own `TaskDialog` and reports nothing at all.
 
 </details>
 
 <details>
-<summary><b>Icons</b></summary>
+<summary><b>Immediate-mode UI, and the one place it does not apply</b></summary>
 
 <br />
 
-`assets/icons/icon-source.svg` is the design source of truth, sharing the Nexus family's tile
-geometry and 135° cyan/steel split. The sibling apps rasterise theirs with `cargo tauri icon`;
-NexusShot has no Tauri toolchain, so `export-icons.ps1` redraws the same geometry with
-`System.Drawing` and writes a PNG-framed `.ico`. Keep the two in sync when the mark changes.
+A widget is a function call, not an object: `if (ui.Button(id, bounds, "Save")) { ... }`. The widget
+owns no state, so there is nothing to keep in sync with the model, and the flags the XAML build
+needed to suppress re-entrancy (`_isLoadingThickness`, `_isLoadingTextFormat`) have nothing to
+guard. Icons are vector paths — no icon font, no PNG assets, no `.pri` to forget to publish.
 
-The glyph's two brackets each straddle the diagonal. An earlier version put one bracket wholly
-inside each half, which left the bottom-right bracket as `#18222b` ink on `#3a4652` steel — nearly
-no contrast, so it vanished at 16px and the mark read as a single stray corner.
-
-`ApplicationIcon` only brands the **exe file**, which is what Explorer shows. The **taskbar** reads
-its icon from the *window*, so each `AppWindow` calls `AppIcon.Apply`. That uses `AppWindow.SetIcon`'s
-`IconId` overload over an `HICON` loaded from the module's own resource table, rather than
-`SetIcon(string)` — the string overload resolves a filesystem path, which in an unpackaged app
-depends on the working directory. **Alt-Tab** reads the HWND's `ICON_BIG`, which `SetIcon` does not
-reliably populate, so `Apply` also sends `WM_SETICON` for both sizes. The tray loads the same
-resource at `SM_CXSMICON`.
+The exception is **text entry**, which is hosted in a real Win32 `EDIT` child window. Hand-rolling a
+text box means hand-rolling the caret, selection, shift-arrow, word select, `Ctrl+A`, clipboard,
+in-box undo, and IME composition for anyone typing a language that needs one. All of that already
+exists and is already correct. The control is created over the annotation's box, styled through
+`WM_CTLCOLOREDIT` to paint on the image's own colour, and destroyed when the edit ends.
 
 </details>
 
 <details>
-<summary><b>The region overlay is not a XAML window</b></summary>
+<summary><b>The region overlay freezes the screen</b></summary>
 
 <br />
 
-WinUI 3 has [no supported transparent window](https://github.com/microsoft/microsoft-ui-xaml/issues/7276).
-A screenshot tool needs one: the selection area must be genuinely see-through so the live desktop
-shows underneath. The usual workaround is to screenshot the desktop first and display that frozen
-image full-screen — which is what ShareX does, and why its users
-[ask for the opposite](https://github.com/ShareX/ShareX/issues/68). Windows' own Snipping Tool does
-not freeze; it dims the live screen.
+It draws a snapshot taken *before* the window appears, rather than being transparent over the live
+desktop. A live overlay has to fight the compositor and can catch its own dimming in the capture.
+The snapshot means what you select is exactly what you get.
 
-So `RegionSelectionOverlay` is a plain Win32 `WS_EX_LAYERED` window composited with
-`UpdateLayeredWindow`, drawn with GDI+, running its own message loop on a dedicated STA thread.
-Nothing else in the app depends on it, and no XAML is involved. The surface is a top-down
-32bpp **premultiplied** BGRA DIB: alpha 0 inside the selection, alpha 110 black outside.
-
-Because the app manifest declares `PerMonitorV2`, `GetSystemMetrics(SM_*VIRTUALSCREEN)` returns
-physical pixels, so overlay coordinates need no DPI scaling — a virtual desktop spanning monitors
-with different scale factors works without correction.
+Because the manifest declares `PerMonitorV2`, `GetSystemMetrics(SM_*VIRTUALSCREEN)` returns physical
+pixels, so a virtual desktop spanning monitors with different scale factors needs no correction.
 
 </details>
-
-<details>
-<summary><b>Two renderers, on purpose</b></summary>
-
-<br />
-
-`LiveAnnotationRenderer` draws XAML shapes for the on-screen preview. `AnnotationFlattener`
-composites the same annotations onto the source bitmap with GDI+ at true pixel resolution.
-
-Export never screen-scrapes the canvas. A `RenderTargetBitmap` of the editor canvas can only
-capture what is currently composited on screen, which makes exports depend on window size, scroll
-position, and display DPI — and produces a blank image for anything off-screen. Flattening against
-the source bitmap keeps saved pixels independent of how the editor happens to be displayed.
-
-Annotations are structured objects and are only rasterised on copy or export.
-
-</details>
-
----
-
-## 🛠 Developer notes
-
-- Images are loaded with `ImageLoader`, which streams bytes into `BitmapImage.SetSourceAsync`.
-  Constructing a `BitmapImage` from a `file://` URI does not decode in an unpackaged WinUI 3 app.
-- `MainWindow` hosts the tray icon's message loop, so its close button hides rather than closes.
-- Capturing does **not** hide the dashboard, so NexusShot's own window can be captured.
-- A `FileSystemWatcher` on the save folder keeps the sidebar synchronized with File Explorer:
-  external deletes remove tiles, renames update them, and new PNGs appear automatically. Missing
-  files are pruned from history at startup, off the UI thread.
-- History thumbnails decode lazily at thumbnail resolution. The selected detail image decodes at
-  source resolution for crisp high-DPI display and is released as soon as selection changes, so
-  full-size bitmaps are never accumulated across the grid.
-- Blur and pixelate use `LockBits` rather than `GetPixel`/`SetPixel`, which is orders of magnitude faster.
-- Logs are JSON-lines under `%LOCALAPPDATA%\NexusShot\logs`, rotating at 1 MB. Image contents are never logged.

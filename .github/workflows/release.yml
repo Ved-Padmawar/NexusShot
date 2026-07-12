@@ -24,6 +24,10 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      # Native AOT compiles to machine code and links with MSVC, so the runner needs the C++
+      # toolchain. windows-latest ships it, but not the vswhere path AOT uses to find it - build.ps1
+      # puts that on PATH itself.
+
       - name: Derive version from tag
         id: version
         shell: pwsh
@@ -31,9 +35,13 @@ jobs:
           $v = "${{ github.ref_name }}".TrimStart("v")
           "value=$v" >> $env:GITHUB_OUTPUT
 
+      - name: Verify the renderer
+        shell: pwsh
+        run: pwsh -NoProfile -File build.ps1 test
+
       - name: Build installer
         shell: pwsh
-        run: pwsh -NoProfile -File installer\build-installer.ps1 -Version ${{ steps.version.outputs.value }}
+        run: pwsh -NoProfile -File build.ps1 installer -Version ${{ steps.version.outputs.value }}
 
       - name: Publish release
         uses: softprops/action-gh-release@v3

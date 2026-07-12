@@ -2,7 +2,13 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+
+    <!-- Windows 10 is the real floor: the app uses Direct2D effects (Windows 8+) and per-monitor v2
+         DPI awareness (Windows 10+), which the manifest already declares. A bare `net10.0-windows`
+         implies Windows 7, and the platform analyzer then flags every effect call as unsupported. -->
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+
     <RootNamespace>NexusShot</RootNamespace>
     <AssemblyName>NexusShot</AssemblyName>
     <Nullable>enable</Nullable>

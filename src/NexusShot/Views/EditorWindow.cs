@@ -53,10 +53,20 @@ public sealed class EditorWindow : D2DRenderWindow
 
     public EditorWindow(string path) : base("NexusShot") => _path = path;
 
+    /// <summary>Raised when the window goes away, so the host can drop its reference and refresh a
+    /// thumbnail whose file may have just been re-saved.</summary>
+    public event Action? Closed;
+
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
         _document.Changed += (_, _) => Invalidate();
+    }
+
+    protected override void OnDestroyed(object? sender, EventArgs e)
+    {
+        Closed?.Invoke();
+        base.OnDestroyed(sender, e);
     }
 
     /// <summary>

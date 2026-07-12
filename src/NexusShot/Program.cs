@@ -7,39 +7,27 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        // Headless render check: exercises the real renderer and exporter with no window, so the
-        // drawing code can be verified without fighting Windows for foreground focus.
-        if (args.Length >= 2 && args[0] == "--render-test")
-        {
-            RenderTest.Run(args[1]);
-            return;
-        }
-
-        // Until the main window lands, the editor is the app: pass it a PNG to open.
-        var path = args.Length > 0 ? args[0] : null;
-        if (path is null || !File.Exists(path))
-        {
-            Console.Error.WriteLine("Usage: NexusShot.exe <image.png>");
-            return;
-        }
-
-        // A crash in a windowed app has nowhere to print, and DirectN's own handler needs a
+        // A crash in a windowed app has nowhere to print, and the runtime's own handler needs a
         // TaskDialog to report it. Write the fault somewhere it can actually be read.
-        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            LogCrash(e.ExceptionObject as Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => LogCrash(e.ExceptionObject as Exception);
 
         try
         {
-            using var app = new Application();
-            using var window = new EditorWindow(path);
+            // Headless render check: exercises the real renderer and exporter with no window.
+            if (args.Length >= 2 && args[0] == "--render-test")
+            {
+                RenderTest.Run(args[1]);
+                return;
+            }
 
-            // ResizeClient is in physical pixels, and the app is per-monitor DPI aware, so the
-            // requested size has to be scaled or the window comes out half-size at 200%.
-            var scale = Functions.GetDpiForWindow(window.Handle) / 96.0;
-            window.ResizeClient((int)(1180 * scale), (int)(820 * scale));
-            window.Center();
-            window.Show();
-            window.SetForeground();
+            // Opening a file goes straight to the editor, so NexusShot can be a file association.
+            if (args.Length == 1 && File.Exists(args[0]))
+            {
+                RunEditor(args[0]);
+                return;
+            }
+
+            using var app = new App();
             app.Run();
         }
         catch (Exception exception)
@@ -47,6 +35,21 @@ internal static class Program
             LogCrash(exception);
             throw;
         }
+    }
+
+    private static void RunEditor(string path)
+    {
+        using var application = new Application();
+        using var window = new EditorWindow(path);
+
+        // ResizeClient is in physical pixels and the app is per-monitor DPI aware, so the requested
+        // size has to be scaled or the window comes out half-size on a scaled display.
+        var scale = Functions.GetDpiForWindow(window.Handle) / 96.0;
+        window.ResizeClient((int)(1180 * scale), (int)(820 * scale));
+        window.Center();
+        window.Show();
+        window.SetForeground();
+        application.Run();
     }
 
     private static void LogCrash(Exception? exception)
