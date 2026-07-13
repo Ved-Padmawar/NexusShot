@@ -111,6 +111,10 @@ public sealed class FloatingPreview : D2DRenderWindow
 
         SetWindowPos(Handle, HWND_TOPMOST, x, y, (int)size.Width, (int)size.Height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+        // The first show can drop attributes set while the window was hidden, so the rounding is
+        // re-asserted rather than set once at creation.
+        ApplyDwmChrome();
     }
 
     /// <summary>The height this card occupies in the stack, including the gap below the next one.</summary>
@@ -120,8 +124,23 @@ public sealed class FloatingPreview : D2DRenderWindow
     {
         base.OnCreated(sender, e);
 
+        ApplyDwmChrome();
+
         // Zero means "keep it until acted on", so no timer at all.
         if (_dismissSeconds > 0) SetTimer(Handle, DismissTimerId, 1000, IntPtr.Zero);
+    }
+
+    /// <summary>Rounds the card at the frame. DWM clips the window itself, so the corners are cut
+    /// out of the thumbnail - a stroked rounded rectangle on a square window would leave the image's
+    /// real corners showing through underneath. The border is suppressed so DWM's hairline cannot
+    /// read as a light edge against a dark capture.</summary>
+    private void ApplyDwmChrome()
+    {
+        var corner = DWMWCP_ROUND;
+        DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
+
+        var border = DWMWA_COLOR_NONE;
+        DwmSetWindowAttribute(Handle, DWMWA_BORDER_COLOR, ref border, sizeof(int));
     }
 
     protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)
@@ -154,14 +173,15 @@ public sealed class FloatingPreview : D2DRenderWindow
 
         _ui.BeginFrame(target, PointerInClient(), _pointerDown);
 
-        // The image fills the card: the window is already the capture's aspect ratio, so there is
-        // nothing to letterbox.
+        // The card's height is clamped, so on an extreme capture it is not the image's aspect ratio
+        // and stretching to fit would squash it. Cover and clip instead. No border: DWM rounds the
+        // frame, so a stroke would be clipped at the corners.
+        _ui.PushClip(card);
         target.DrawBitmap(
             _thumbnail.Bitmap, 1f,
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-            AnnotationRenderer.ToRect(card));
-
-        _ui.StrokeRounded(card, (float)S(6), _ui.Theme.StrokeStrong);
+            AnnotationRenderer.ToRect(Cover(card)));
+        _ui.PopClip();
 
         if (IsPinned && !_hovered) DrawPin(_ui, card);
 
@@ -174,11 +194,33 @@ public sealed class FloatingPreview : D2DRenderWindow
         _ui.EndFrame();
     }
 
+    /// <summary>The rect to draw the thumbnail into so it covers the card at its own aspect ratio,
+    /// centred - the overflow on the long axis is clipped away.</summary>
+    private Rect Cover(Rect card)
+    {
+        if (_thumbnail is null || _thumbnail.Width <= 0 || _thumbnail.Height <= 0) return card;
+
+        var scale = Math.Max(
+            card.Width / _thumbnail.Width,
+            card.Height / _thumbnail.Height);
+
+        var width = _thumbnail.Width * scale;
+        var height = _thumbnail.Height * scale;
+
+        return new Rect(
+            card.Center.X - width / 2,
+            card.Center.Y - height / 2,
+            width,
+            height);
+    }
+
     private static readonly Rgba ActionBackground = new(0x20, 0x20, 0x24, 0xE6);
-    private static readonly Rgba ActionHover = new(0x4A, 0x4A, 0x52, 0xF7);
-    private static readonly Rgba ActionPressed = new(0x60, 0x60, 0x6A, 0xFF);
     private static readonly Rgba ActionBorder = new(0xFF, 0xFF, 0xFF, 0x26);
-    private static readonly Rgba ActionBorderHot = new(0xFF, 0xFF, 0xFF, 0x66);
+
+    /// <summary>Hover and press wash white over the rest fill and leave the border alone, which is
+    /// what the stock button template these were gave them.</summary>
+    private static readonly Rgba ActionOverlayHover = new(0xFF, 0xFF, 0xFF, 0x0F);
+    private static readonly Rgba ActionOverlayPressed = new(0xFF, 0xFF, 0xFF, 0x0A);
 
     private static readonly Rgba CloseBackground = new(0x32, 0x32, 0x36, 0xF2);
     private static readonly Rgba CloseHover = new(0xC4, 0x2B, 0x1C, 0xFF);
@@ -246,7 +288,7 @@ public sealed class FloatingPreview : D2DRenderWindow
         }
     }
 
-    /// <summary>A circular overlay action button, brightening on hover and press.</summary>
+    /// <summary>A circular overlay action button, washed a little lighter on hover and press.</summary>
     private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected)
     {
         var clicked = ui.Interact(id, bounds);
@@ -254,17 +296,14 @@ public sealed class FloatingPreview : D2DRenderWindow
         var center = bounds.Center;
         var radius = (float)(bounds.Width / 2);
 
-        // The fill lightens rather than the alpha nudging: these sit on a screenshot, where a small
-        // alpha step on dark grey reads as nothing.
-        var background = selected ? ui.Theme.Accent
-            : ui.IsActive(id) ? ActionPressed
-            : ui.IsHot(id) ? ActionHover
-            : ActionBackground;
+        ui.FillCircle(center, radius, selected ? ui.Theme.Accent : ActionBackground);
 
-        var border = ui.IsHot(id) || ui.IsActive(id) || selected ? ActionBorderHot : ActionBorder;
+        // Over whatever the button already is, so an engaged pin brightens from the accent rather
+        // than snapping back to grey.
+        if (ui.IsActive(id)) ui.FillCircle(center, radius, ActionOverlayPressed);
+        else if (ui.IsHot(id)) ui.FillCircle(center, radius, ActionOverlayHover);
 
-        ui.FillCircle(center, radius, background);
-        ui.StrokeCircle(center, radius, border);
+        ui.StrokeCircle(center, radius, ActionBorder);
         ui.Icon(glyph, bounds, Rgba.White, glyphSize);
 
         return clicked;
@@ -515,6 +554,17 @@ public sealed class FloatingPreview : D2DRenderWindow
     private const int GWL_EXSTYLE = -20;
     private const nint WS_EX_LAYERED = 0x00080000;
     private const uint LWA_ALPHA = 0x00000002;
+
+    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int DWMWA_BORDER_COLOR = 34;
+    private const int DWMWCP_ROUND = 2;
+
+    /// <summary>DWMWA_COLOR_NONE: suppresses the frame's border entirely.</summary>
+    private const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr window, int attribute, ref int value, int size);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TRACKMOUSEEVENT

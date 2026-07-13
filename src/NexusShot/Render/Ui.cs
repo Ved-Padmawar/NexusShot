@@ -444,6 +444,29 @@ public sealed class Ui(D2DResources resources)
     public void Separator(double x, double top, double height) =>
         FillRect(new Rect(x, top, 1, height), Theme.StrokeSubtle);
 
+    /// <summary>A scroll indicator down the right edge of <paramref name="viewport"/>. Nothing is
+    /// drawn when the content fits. Indicator only: the wheel scrolls, and a hit region here would
+    /// sit over the rows underneath and steal their hover.</summary>
+    public void Scrollbar(Rect viewport, double content, double scroll)
+    {
+        var overflow = content - viewport.Height;
+        if (overflow <= 0.5 || viewport.Height <= 0) return;
+
+        var width = 4 * Scale;
+
+        // Floored, or a long list shrinks the thumb to something that indicates nothing.
+        var minimum = Math.Min(24 * Scale, viewport.Height);
+        var length = Math.Max(minimum, viewport.Height * (viewport.Height / content));
+
+        var travel = viewport.Height - length;
+        var progress = Math.Clamp(scroll / overflow, 0, 1);
+
+        FillRounded(
+            new Rect(viewport.Right - width - 3 * Scale, viewport.Y + travel * progress, width, length),
+            (float)(width / 2),
+            Theme.StrokeStrong);
+    }
+
     /// <summary>The display scale, so tooltips are legible on a scaled monitor. Callers that draw
     /// chrome set it once per frame.</summary>
     public double Scale { get; set; } = 1;

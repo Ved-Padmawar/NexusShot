@@ -45,15 +45,19 @@ public static class ToolCursors
     /// <summary>
     /// The brush/eraser cursor: a ring of the stroke's true on-screen diameter.
     ///
-    /// Windows caps a cursor at the system metric (typically 32px). Past that it falls back to a
-    /// crosshair, which is honest, where a ring drawn at the wrong size is not.
+    /// Deliberately not clamped to SM_CXCURSOR - that is the system's *default* cursor size, not a
+    /// limit, and CreateIconIndirect takes a colour cursor of any size. Clamping to it turned every
+    /// brush wider than 32px into a crosshair, which is most of the slider's range. Below ~6px a ring
+    /// is finer than the pointer it replaces, so the crosshair stays the honest answer there.
     /// </summary>
+    private const int MaxCircle = 256;
+
     public static IntPtr Circle(double diameter, Rgba fill)
     {
         var size = (int)Math.Round(diameter);
-        var maximum = GetSystemMetrics(13);   // SM_CXCURSOR
+        if (size < 6) return Cross;
 
-        if (size < 6 || size > maximum) return Cross;
+        size = Math.Min(size, MaxCircle);
 
         var key = (size, Pack(fill));
         if (Circles.TryGetValue(key, out var cached)) return cached;
@@ -203,7 +207,6 @@ public static class ToolCursors
 
     [DllImport("user32.dll")] private static extern IntPtr LoadCursorW(IntPtr instance, nint name);
     [DllImport("user32.dll")] private static extern IntPtr CreateIconIndirect(ref ICONINFO info);
-    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr window);
     [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
 

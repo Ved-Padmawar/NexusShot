@@ -331,13 +331,16 @@ public sealed class MainWindow : CaptionWindow
         var gap = S(2);
         var y = bounds.Y - _scroll;
 
+        // Clipped, not just culled: a row straddling an edge draws in full, and would paint over the
+        // RECENT rule above and the footer's border below. The clip takes the pointer with it.
+        ui.PushClip(bounds);
+
         for (var i = 0; i < _history.Count; i++)
         {
             var item = _history[i];
             var row = new Rect(bounds.X + S(10), y, bounds.Width - S(20), rowHeight);
             y += rowHeight + gap;
 
-            // Cull, and clip to the list: a long history must not paint over the footer.
             if (row.Bottom < bounds.Y || row.Y > bounds.Bottom) continue;
 
             var id = 1000 + i;
@@ -376,7 +379,18 @@ public sealed class MainWindow : CaptionWindow
                 new Rect(textX, row.Y + S(26), textWidth, S(16)),
                 theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
         }
+
+        _historyViewport = Math.Max(1, bounds.Height);
+        _historyHeight = _history.Count * (rowHeight + gap);
+
+        ui.Scrollbar(bounds, _historyHeight, _scroll);
+        ui.PopClip();
     }
+
+    /// <summary>The list's content and visible heights, measured as it is drawn, so the wheel
+    /// handler scrolls against the list that exists rather than an estimate of it.</summary>
+    private double _historyHeight;
+    private double _historyViewport = 1;
 
     private void DrawSidebarFooter(Ui ui, Rect bounds)
     {
@@ -680,6 +694,9 @@ public sealed class MainWindow : CaptionWindow
                     SaveSettings();
                 }));
 
+        // Last frame's extent: this frame's is not known until the rows below have been laid out,
+        // and it is the same number the wheel already clamps against.
+        ui.Scrollbar(body, _settingsHeight, _settingsScroll);
         ui.PopClip();
 
         // Open lists paint after the clip is popped: a list is allowed to overhang the rows below it
@@ -1202,9 +1219,8 @@ public sealed class MainWindow : CaptionWindow
                 }
                 else
                 {
-                    var content = _history.Count * S(50);
-                    var viewport = Math.Max(1, ClientRect.Height - S(300));
-                    _scroll = Math.Clamp(_scroll - step, 0, Math.Max(0, content - viewport));
+                    var maximum = Math.Max(0, _historyHeight - _historyViewport);
+                    _scroll = Math.Clamp(_scroll - step, 0, maximum);
                 }
 
                 Invalidate();

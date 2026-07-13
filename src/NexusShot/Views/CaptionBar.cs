@@ -41,6 +41,11 @@ public abstract class CaptionWindow : D2DRenderWindow
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
+    /// <summary>Ui keys hover and press by id alone, so an id shared with a widget in the window's
+    /// own content makes the two light up together - these sat on 9001-9003, which the editor's
+    /// toolbar already used for its thickness slider and colour chip.</summary>
+    private const int CaptionIdBase = 900_001;
+
     /// <summary>Minimise, maximise/restore, close - drawn by us, in our theme, over our own pixels.</summary>
     protected void DrawCaptionButtons(Ui ui, double width)
     {
@@ -50,20 +55,22 @@ public abstract class CaptionWindow : D2DRenderWindow
 
         var x = width - button * 3;
 
-        if (CaptionButton(ui, 9001, new Rect(x, 0, button, height), Icons.CaptionMinimise, glyph, false))
+        if (CaptionButton(ui, CaptionIdBase, new Rect(x, 0, button, height),
+            Icons.CaptionMinimise, glyph, false))
             QueueSystemCommand(SC_MINIMIZE);
 
         x += button;
 
         var maximised = IsMaximised;
-        if (CaptionButton(ui, 9002, new Rect(x, 0, button, height),
+        if (CaptionButton(ui, CaptionIdBase + 1, new Rect(x, 0, button, height),
             maximised ? Icons.CaptionRestore : Icons.CaptionMaximise, glyph, false))
             QueueSystemCommand(maximised ? SC_RESTORE : SC_MAXIMIZE);
 
         x += button;
 
         // Close alone gets the red hover, which is the one convention users actually rely on.
-        if (CaptionButton(ui, 9003, new Rect(x, 0, button, height), Icons.CaptionClose, glyph, true))
+        if (CaptionButton(ui, CaptionIdBase + 2, new Rect(x, 0, button, height),
+            Icons.CaptionClose, glyph, true))
             PostMessageW(Handle, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
     }
 

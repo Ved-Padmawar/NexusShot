@@ -245,6 +245,12 @@ public sealed class AnnotationRenderer(D2DResources resources)
             resources.Brush(Palette.IsLight(color) ? Rgba.Black : Rgba.White));
     }
 
+    /// <summary>Inset from the box's left edge, so the caret is not flush against the border. Shared
+    /// by drawing, editing and hit-testing, which must agree on the origin.</summary>
+    private const double TextInset = 4;
+
+    private static Point TextOrigin(Rect bounds) => new(bounds.X + TextInset, bounds.Y);
+
     /// <summary>Text wraps to the annotation's box, so the preview matches the editing box and
     /// the export.</summary>
     private void DrawText(IComObject<ID2D1RenderTarget> target, Annotation annotation, Rgba color)
@@ -253,31 +259,118 @@ public sealed class AnnotationRenderer(D2DResources resources)
         var bounds = annotation.Bounds;
 
         using var layout = TextLayout(annotation, bounds);
-        target.DrawTextLayout(ToPoint(new Point(bounds.X, bounds.Y)), layout, resources.Brush(color));
+        target.DrawTextLayout(ToPoint(TextOrigin(bounds)), layout, resources.Brush(color));
     }
 
     /// <summary>The laid-out text for an annotation. Shared with the inline editor so the box the
     /// user types into wraps identically to what gets drawn.</summary>
-    public IComObject<IDWriteTextLayout> TextLayout(Annotation annotation, Rect bounds)
+    public IComObject<IDWriteTextLayout> TextLayout(Annotation annotation, Rect bounds) =>
+        TextLayout(annotation, annotation.Text, bounds);
+
+    /// <summary>The same layout over arbitrary text, so the editor can lay out what has been typed
+    /// rather than what was last committed.</summary>
+    public IComObject<IDWriteTextLayout> TextLayout(Annotation annotation, string text, Rect bounds)
     {
         var format = resources.TextFormat(
             "Segoe UI", (float)Math.Max(8, annotation.FontSize), annotation.IsBold, annotation.IsItalic);
 
         var layout = resources.DWrite.CreateTextLayout(
             format,
-            annotation.Text,
-            maxWidth: (float)Math.Max(10, bounds.Width),
+            text,
+            maxWidth: (float)Math.Max(10, bounds.Width - TextInset * 2),
             maxHeight: (float)Math.Max(10, bounds.Height));
 
-        if (annotation.IsUnderline)
+        if (annotation.IsUnderline && text.Length > 0)
         {
             layout.Object.SetUnderline(true, new DWRITE_TEXT_RANGE
             {
                 startPosition = 0,
-                length = (uint)annotation.Text.Length,
+                length = (uint)text.Length,
             });
         }
         return layout;
+    }
+
+    /// <summary>
+    /// The box being typed into: the selection behind, the text, and the caret. Drawn in the same
+    /// pass as the canvas, so there is no second painter to race.
+    /// </summary>
+    public void DrawTextEditor(
+        IComObject<ID2D1RenderTarget> target, Annotation annotation, string text,
+        int caret, int selectionStart, int selectionEnd, bool caretVisible,
+        double adornerScale, Rgba selection)
+    {
+        var bounds = annotation.Bounds;
+        var color = Palette.Parse(annotation.ColorHex);
+
+        using var layout = TextLayout(annotation, text, bounds);
+        var origin = TextOrigin(bounds);
+
+        if (selectionEnd > selectionStart)
+            DrawSelection(target, layout, selectionStart, selectionEnd, origin, selection);
+
+        if (text.Length > 0)
+            target.DrawTextLayout(ToPoint(origin), layout, resources.Brush(color));
+
+        if (!caretVisible) return;
+        target.FillRectangle(
+            ToRect(CaretRect(layout, caret, origin, adornerScale)), resources.Brush(color));
+    }
+
+    private unsafe void DrawSelection(
+        IComObject<ID2D1RenderTarget> target, IComObject<IDWriteTextLayout> layout,
+        int selectionStart, int selectionEnd, Point origin, Rgba selection)
+    {
+        var start = (uint)selectionStart;
+        var length = (uint)(selectionEnd - selectionStart);
+
+        // Asked for the count first: DirectWrite fills nothing and reports how many it needs.
+        layout.Object.HitTestTextRange(
+            start, length, (float)origin.X, (float)origin.Y, 0, 0, out var count);
+        if (count == 0) return;
+
+        var metrics = new DWRITE_HIT_TEST_METRICS[count];
+        fixed (DWRITE_HIT_TEST_METRICS* buffer = metrics)
+        {
+            layout.Object.HitTestTextRange(
+                start, length, (float)origin.X, (float)origin.Y,
+                (nint)buffer, count, out count);
+        }
+
+        var brush = resources.Brush(selection);
+        for (var i = 0; i < count; i++)
+        {
+            var m = metrics[i];
+            target.FillRectangle(
+                new D2D_RECT_F(m.left, m.top, m.left + m.width, m.top + m.height), brush);
+        }
+    }
+
+    private static Rect CaretRect(
+        IComObject<IDWriteTextLayout> layout, int position, Point origin, double adornerScale)
+    {
+        layout.Object.HitTestTextPosition(
+            (uint)position, false, out var x, out var y, out var metrics);
+
+        var width = Math.Max(1, adornerScale);
+        return new Rect(origin.X + x, origin.Y + y, width, Math.Max(1, metrics.height));
+    }
+
+    /// <summary>The caret index nearest a point, so a click lands the caret where it looks like it
+    /// should.</summary>
+    public int HitTestCaret(Annotation annotation, string text, Point point)
+    {
+        var bounds = annotation.Bounds;
+        using var layout = TextLayout(annotation, text, bounds);
+
+        var origin = TextOrigin(bounds);
+        layout.Object.HitTestPoint(
+            (float)(point.X - origin.X), (float)(point.Y - origin.Y),
+            out var trailing, out _, out var metrics);
+
+        var index = (int)metrics.textPosition;
+        if (trailing != 0) index += (int)metrics.length;
+        return Math.Clamp(index, 0, text.Length);
     }
 
     // ============================  ADORNERS  ============================

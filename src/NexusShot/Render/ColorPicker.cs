@@ -138,15 +138,16 @@ public sealed class ColorPicker
     /// window feeds keys in while it holds focus.</summary>
     private bool TextBox(Ui ui, int id, Rect bounds, Field field, string live, double s)
     {
-        var focused = _editing == field;
-
-        if (ui.Interact(id, bounds) && !focused)
+        // Focus, then fall through and draw. Returning here would skip the fill, border and text,
+        // so the box just clicked would be the one box not painted this frame.
+        if (ui.Interact(id, bounds) && _editing != field)
         {
             Commit();            // Moving between boxes commits the one being left.
             _editing = field;
             _draft = live;
-            return false;
         }
+
+        var focused = _editing == field;
 
         var radius = (float)(4 * s);
         ui.FillRounded(bounds, radius, ui.Theme.SurfaceSunken);

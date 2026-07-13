@@ -46,6 +46,9 @@ public sealed class EditorWindow : CaptionWindow
     /// <summary>The inline text box, while one is open.</summary>
     private TextEditor? _textEditor;
 
+    /// <summary>True while a drag inside the box is selecting text.</summary>
+    private bool _caretDragging;
+
     private AppTheme _theme;
 
     public EditorWindow(string path, AppTheme theme = AppTheme.System) : base("NexusShot")
@@ -88,10 +91,6 @@ public sealed class EditorWindow : CaptionWindow
         AppIcon.ClearCaption(Handle);
         SystemTheme.ApplyFrame(Handle, SystemTheme.Resolve(_theme));
 
-        // The inline text box is a child HWND over the D2D surface; without this the surface paints
-        // under it every frame and the image beneath the box strobes.
-        TextEditor.ClipChildren(Handle);
-
         _document.Changed += (_, _) => Invalidate();
     }
 
@@ -107,7 +106,6 @@ public sealed class EditorWindow : CaptionWindow
 
     private void ReleaseResources()
     {
-        _textEditor?.Dispose();
         _effects?.Dispose();
         _image?.Dispose();
         _resources?.Dispose();
@@ -247,6 +245,15 @@ public sealed class EditorWindow : CaptionWindow
         _renderer.DrawAnnotations(target, _document, _effects, skip: _textEditor?.Annotation);
         if (_textEditor is null) _renderer.DrawAdorners(target, _document, AdornerScale);
 
+        if (_textEditor is { } editing)
+        {
+            DrawTextBoxFrame(target, editing.Annotation);
+            _renderer.DrawTextEditor(
+                target, editing.Annotation, editing.Text,
+                editing.Caret, editing.SelectionStart, editing.SelectionEnd, editing.CaretVisible,
+                AdornerScale, Palette.Selection.WithAlpha(90));
+        }
+
         // The brush footprint is the *cursor*, not a drawn ring: Windows composites the cursor, so it
         // tracks the pointer exactly, where anything the app paints arrives a frame late and trails.
 
@@ -265,9 +272,26 @@ public sealed class EditorWindow : CaptionWindow
 
         ApplyChrome();
 
-        // Keep repainting while either confirmation is up, so it clears on time rather than on the
-        // next stray mouse move.
-        if (toast is not null || copied) Invalidate();
+        // Keep repainting while either confirmation is up, or while a caret is blinking, so each
+        // clears on time rather than on the next stray mouse move.
+        if (toast is not null || copied || _textEditor is not null) Invalidate();
+    }
+
+    /// <summary>The frame around an open text box, in the annotation's own colour, so it is visible
+    /// against any screenshot without obscuring what is under it.</summary>
+    private void DrawTextBoxFrame(IComObject<ID2D1RenderTarget> target, Annotation annotation)
+    {
+        if (_resources is null) return;
+
+        var pad = 2 * AdornerScale;
+        var box = annotation.Bounds;
+        var bounds = new Rect(box.X - pad, box.Y - pad, box.Width + pad * 2, box.Height + pad * 2);
+        var color = Palette.Parse(annotation.ColorHex);
+
+        target.DrawRectangle(
+            AnnotationRenderer.ToRect(bounds),
+            _resources.Brush(color),
+            (float)(1.5 * AdornerScale));
     }
 
     /// <summary>Applies what the chrome asked for. The chrome reports intent; the window owns the
@@ -277,8 +301,8 @@ public sealed class EditorWindow : CaptionWindow
         if (_chrome is null) return;
 
         if (_chrome.ToolPicked is { } tool) SelectTool(tool);
-        if (_chrome.UndoPressed) _document.Undo();
-        if (_chrome.RedoPressed) _document.Redo();
+        if (_chrome.UndoPressed) Undo();
+        if (_chrome.RedoPressed) Redo();
         if (_chrome.DeletePressed) _document.DeleteSelected();
         if (_chrome.SavePressed) Save();
         if (_chrome.SaveAsPressed) SaveAs();
@@ -402,7 +426,10 @@ public sealed class EditorWindow : CaptionWindow
     private const uint WmKeyDown = 0x0100;
     private const uint WmChar = 0x0102;
     private const uint WmSetCursor = 0x0020;
-    private const uint WmCtlColorEdit = 0x0133;
+
+    /// <summary>The WM_SETCURSOR hit-test that means the pointer is over the client area - the part
+    /// the editor owns. Anything else is frame or caption, and belongs to DefWindowProc.</summary>
+    private const int HTCLIENT = 1;
 
     private static readonly LRESULT Handled = new() { Value = 0 };
 
@@ -431,19 +458,13 @@ public sealed class EditorWindow : CaptionWindow
                 break;
 
             case WmSetCursor:
-                // Own the cursor, or Windows keeps restoring the class arrow.
-                if (SetToolCursor()) return new LRESULT { Value = 1 };
-                break;
+                // Only the client area is ours; DefWindowProc owns the frame's resize arrows.
+                if ((lParam.Value.ToInt64() & 0xFFFF) != HTCLIENT) break;
 
-            case WmCtlColorEdit:
-                // The child EDIT asks what colours to use; answering makes it read as part of the
-                // canvas rather than a control dropped on top.
-                if (_textEditor is { } editor)
-                {
-                    var brush = editor.OnCtlColor(
-                        (IntPtr)(long)wParam.Value, (IntPtr)(long)lParam.Value, BackdropUnderText(editor));
-                    if (brush != IntPtr.Zero) return new LRESULT { Value = brush };
-                }
+                // The live pointer, not _clientPointer: WM_SETCURSOR arrives ahead of the
+                // WM_MOUSEMOVE that would refresh it, so on re-entry from the toolbar the field
+                // still holds the old outside-the-canvas coordinate.
+                if (SetToolCursor(PointerNow())) return new LRESULT { Value = 1 };
                 break;
 
             case WmKeyDown:
@@ -453,13 +474,7 @@ public sealed class EditorWindow : CaptionWindow
             case WmChar:
                 // The typed character, already mapped through the keyboard layout - which is what a
                 // text box wants, rather than a raw virtual key code.
-                if (_chrome is not null && _chrome.TextFieldFocused)
-                {
-                    _chrome.HandleKey(_document, (char)(ulong)wParam.Value,
-                        backspace: false, enter: false, escape: false);
-                    Invalidate();
-                    return Handled;
-                }
+                if (OnChar((char)(ulong)wParam.Value)) return Handled;
                 break;
 
             case SystemTheme.WM_SETTINGCHANGE:
@@ -471,13 +486,17 @@ public sealed class EditorWindow : CaptionWindow
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
 
-    /// <summary>Windows draws the cursor, so it never trails the pointer the way an app-drawn one
-    /// does. False outside the image, so the frame keeps its own resize cursors.</summary>
-    private bool SetToolCursor()
+    /// <summary>
+    /// Windows draws the cursor, so it never trails the pointer the way an app-drawn one does.
+    ///
+    /// Inside the client area this always sets a cursor and reports true: falling through would let
+    /// DefWindowProc install the class arrow over the tool's own cursor.
+    /// </summary>
+    private bool SetToolCursor(Point client)
     {
         if (_image is null) return false;
 
-        if (!InCanvas(_clientPointer))
+        if (!InCanvas(client))
         {
             Functions.SetCursor(new HCURSOR { Value = ToolCursors.Arrow });
             return true;
@@ -526,11 +545,23 @@ public sealed class EditorWindow : CaptionWindow
 
         if (_image is null) { Invalidate(); return; }
 
-        // Clicking anywhere commits an open text box first, like every canvas editor.
-        CommitText();
+        // A click inside the open box moves the caret rather than committing and reopening, which
+        // would reselect the whole string.
+        if (_textEditor is { } open
+            && InCanvas(_clientPointer)
+            && !(_ui?.WantsPointer ?? false)
+            && open.Annotation.Bounds.Contains(ToImage(client.X, client.Y)))
+        {
+            PlaceCaret(open, ToImage(client.X, client.Y));
+            _caretDragging = true;
+            Functions.SetCapture(Handle);
+            Invalidate();
+            return;
+        }
 
-        // The chrome gets first refusal - a press on the toolbar, or on a popup floating over the
-        // canvas, must not also start a gesture underneath it.
+        // The chrome gets first refusal, and leaves an open text box alone: reaching for the font
+        // slider is an adjustment to the box, not a click away from it, and committing here would
+        // cancel an empty one outright and delete the annotation.
         if (!InCanvas(_clientPointer)
             || (_ui?.WantsPointer ?? false)
             || (_chrome?.PopupOpen ?? false))
@@ -538,6 +569,9 @@ public sealed class EditorWindow : CaptionWindow
             Invalidate();
             return;
         }
+
+        // A press on the canvas outside the box commits it, like every canvas editor.
+        CommitText();
 
         var point = ToImage(client.X, client.Y);
 
@@ -565,6 +599,13 @@ public sealed class EditorWindow : CaptionWindow
 
         if (_image is null) { Invalidate(); return; }
         var point = ToImage(client.X, client.Y);
+
+        if (_caretDragging && leftDown && _textEditor is { } selecting)
+        {
+            PlaceCaret(selecting, point, extend: true);
+            Invalidate();
+            return;
+        }
 
         // A drag mutates the document and asks for a repaint. That is the whole hot path: no
         // element scans, no sample buffering, no manual frame batching. WM_PAINT is already
@@ -597,6 +638,14 @@ public sealed class EditorWindow : CaptionWindow
         _clientPointer = new Point(client.X, client.Y);
         _pointerDown = false;
 
+        if (_caretDragging)
+        {
+            _caretDragging = false;
+            Functions.ReleaseCapture();
+            Invalidate();
+            return;
+        }
+
         if (_dragging && _image is not null)
         {
             _dragging = false;
@@ -613,49 +662,126 @@ public sealed class EditorWindow : CaptionWindow
 
     // ============================  TEXT  ============================
 
-    /// <summary>
-    /// The image's own colour under the text box, so the EDIT's background disappears into the
-    /// screenshot instead of punching a white hole in it. Sampled from the decoded pixels at the
-    /// annotation's top-left; a screenshot is overwhelmingly flat where text gets placed, so one
-    /// sample is enough and costs nothing.
-    /// </summary>
-    private Rgba BackdropUnderText(TextEditor editor)
+    /// <summary>Undo, wherever the user is: an open box unwinds its own typing first, then undo goes
+    /// on to the document and takes the box with it.</summary>
+    private void Undo()
     {
-        // The editor loads with keepPixels, so this is present; white is a safe fallback if a future
-        // caller ever loads without them.
-        if (_image?.Pixels is not { } pixels) return Rgba.White;
+        if (_textEditor is { CanUndo: true } editor)
+        {
+            editor.Undo();
+            Invalidate();
+            return;
+        }
 
-        var bounds = editor.Annotation.Bounds;
-        var x = (int)Math.Clamp(bounds.X + 2, 0, _image.Width - 1);
-        var y = (int)Math.Clamp(bounds.Y + 2, 0, _image.Height - 1);
-
-        var offset = y * _image.Stride + x * 4;
-        if (offset + 3 >= pixels.Length) return Rgba.White;
-
-        // Premultiplied BGRA over white, since the box is opaque.
-        var alpha = pixels[offset + 3];
-        var inverse = 255 - alpha;
-        return new Rgba(
-            (byte)Math.Min(255, pixels[offset + 2] + inverse),
-            (byte)Math.Min(255, pixels[offset + 1] + inverse),
-            (byte)Math.Min(255, pixels[offset] + inverse));
+        // Dropped, not committed: it is about to be undone away.
+        _textEditor = null;
+        _document.Undo();
+        Invalidate();
     }
 
-    /// <summary>Opens the inline box over an annotation, sized and styled like the text will be.</summary>
+    private void Redo()
+    {
+        if (_textEditor is { CanRedo: true } editor)
+        {
+            editor.Redo();
+            Invalidate();
+            return;
+        }
+
+        _document.Redo();
+        Invalidate();
+    }
+
+    /// <summary>Drops the caret at an image-space point, extending the selection while dragging.</summary>
+    private void PlaceCaret(TextEditor editor, Point point, bool extend = false)
+    {
+        if (_renderer is null) return;
+        editor.MoveTo(_renderer.HitTestCaret(editor.Annotation, editor.Text, point), extend);
+    }
+
+    /// <summary>Opens the inline box over an annotation.</summary>
     private void BeginTextEdit(Annotation annotation)
     {
         CommitText();
         if (_image is null) return;
 
-        var bounds = annotation.Bounds;
-        var client = new Rect(
-            _offsetX + bounds.X * _scale,
-            _offsetY + bounds.Y * _scale,
-            Math.Max(24, bounds.Width * _scale),
-            Math.Max(24, bounds.Height * _scale));
-
-        _textEditor = TextEditor.Open(Handle, annotation, client, _scale);
+        _textEditor = new TextEditor(annotation);
         Invalidate();
+    }
+
+    /// <summary>A printable character while a box is open. Control characters arrive here too, and
+    /// are the business of WM_KEYDOWN.</summary>
+    private bool OnChar(char character)
+    {
+        if (_chrome is { TextFieldFocused: true })
+        {
+            _chrome.HandleKey(_document, character, backspace: false, enter: false, escape: false);
+            Invalidate();
+            return true;
+        }
+
+        if (_textEditor is not { } editor) return false;
+        if (char.IsControl(character) && character != '\r') return false;
+
+        editor.Insert(character == '\r' ? "\n" : character.ToString());
+        Invalidate();
+        return true;
+    }
+
+    /// <summary>Editing keys for an open box. An open box owns the keyboard: only Escape and
+    /// undo/redo pass through.</summary>
+    private bool OnTextKey(VIRTUAL_KEY key)
+    {
+        if (_textEditor is not { } editor) return false;
+
+        var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
+        var shift = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0;
+
+        switch (key)
+        {
+            case VIRTUAL_KEY.VK_BACK: editor.Backspace(); break;
+            case VIRTUAL_KEY.VK_DELETE: editor.Delete(); break;
+            case VIRTUAL_KEY.VK_LEFT: editor.Move(-1, shift, control); break;
+            case VIRTUAL_KEY.VK_RIGHT: editor.Move(1, shift, control); break;
+            case VIRTUAL_KEY.VK_HOME: editor.MoveToLineEdge(end: false, shift); break;
+            case VIRTUAL_KEY.VK_END: editor.MoveToLineEdge(end: true, shift); break;
+
+            case VIRTUAL_KEY.VK_A when control: editor.SelectAll(); break;
+
+            case VIRTUAL_KEY.VK_C when control:
+                if (editor.HasSelection) ClipboardText.Copy(editor.SelectedText);
+                break;
+
+            case VIRTUAL_KEY.VK_X when control:
+                if (editor.HasSelection)
+                {
+                    ClipboardText.Copy(editor.SelectedText);
+                    editor.Backspace();
+                }
+                break;
+
+            case VIRTUAL_KEY.VK_V when control:
+                if (ClipboardText.Paste() is { Length: > 0 } pasted) editor.Insert(pasted);
+                break;
+
+            // Enter is a newline in a text box, not a crop commit.
+            case VIRTUAL_KEY.VK_RETURN: editor.Insert("\n"); break;
+
+            case VIRTUAL_KEY.VK_Z when control: Undo(); break;
+            case VIRTUAL_KEY.VK_Y when control: Redo(); break;
+
+            // Escape closes the box, so it is the one key that goes on to the window.
+            case VIRTUAL_KEY.VK_ESCAPE: return false;
+
+            // Everything else is swallowed: the printable keys arrive again as WM_CHAR and are
+            // inserted there, and letting them through would run the tool shortcuts too.
+            default:
+                Invalidate();
+                return true;
+        }
+
+        Invalidate();
+        return true;
     }
 
     /// <summary>
@@ -670,7 +796,6 @@ public sealed class EditorWindow : CaptionWindow
 
         var annotation = editor.Annotation;
         var text = editor.Text;
-        editor.Dispose();
 
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -699,9 +824,9 @@ public sealed class EditorWindow : CaptionWindow
             return handled;
         }
 
-        // While the text box has focus its keystrokes are text, not shortcuts - otherwise typing
-        // "rectangle" would switch tools eight times. Escape still closes it.
-        if (_textEditor is not null && key != VIRTUAL_KEY.VK_ESCAPE) return false;
+        // An open text box owns the keyboard: its keystrokes are text, not shortcuts, or typing
+        // "rectangle" would switch tools eight times.
+        if (_textEditor is not null && OnTextKey(key)) return true;
 
         var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
 
@@ -709,8 +834,8 @@ public sealed class EditorWindow : CaptionWindow
         {
             switch (key)
             {
-                case VIRTUAL_KEY.VK_Z: _document.Undo(); return true;
-                case VIRTUAL_KEY.VK_Y: _document.Redo(); return true;
+                case VIRTUAL_KEY.VK_Z: Undo(); return true;
+                case VIRTUAL_KEY.VK_Y: Redo(); return true;
             }
             return false;
         }
@@ -776,11 +901,20 @@ public sealed class EditorWindow : CaptionWindow
         return true;
     }
 
-    /// <summary>WM_SETCURSOR only arrives on a mouse move, so a size change on the slider would
-    /// otherwise leave the ring at its old diameter until you jiggled the mouse.</summary>
+    /// <summary>WM_SETCURSOR only arrives on a mouse move, so a size or colour change on the toolbar
+    /// would otherwise leave the ring at its old diameter until you jiggled the mouse.</summary>
     private void RefreshCursor()
     {
-        if (InCanvas(_clientPointer)) SetToolCursor();
+        var pointer = PointerNow();
+        if (InCanvas(pointer)) SetToolCursor(pointer);
+    }
+
+    /// <summary>The pointer's current position in client pixels, straight from Windows.</summary>
+    private Point PointerNow()
+    {
+        if (!Functions.GetCursorPos(out var point)) return _clientPointer;
+        if (!Functions.ScreenToClient(new HWND { Value = Handle }, ref point)) return _clientPointer;
+        return new Point(point.x, point.y);
     }
 
     protected override void Dispose(bool disposing)

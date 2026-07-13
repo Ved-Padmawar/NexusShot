@@ -1,212 +1,201 @@
-using System.Runtime.InteropServices;
 using NexusShot.Core;
 
 namespace NexusShot.Views;
 
 /// <summary>
-/// Inline text entry, hosted as a real Win32 EDIT control.
+/// Inline text entry state: the string, the caret, the selection. The window draws it in the same
+/// D2D pass as everything else.
 ///
-/// Hand-rolling a text box means hand-rolling a caret, selection, shift-arrow, double-click word
-/// select, Ctrl+A, clipboard, undo *within the box*, and IME composition for anyone typing a
-/// language that needs one. All of that already exists and is already correct in EDIT, so the
-/// editor borrows it for the duration of the edit and takes the string back at the end.
-///
-/// The control is a child window sitting exactly over the annotation's box, styled to match the
-/// canvas, and destroyed the moment editing finishes - so the rest of the app remains one D2D
-/// surface with no widget tree.
+/// This was a real Win32 EDIT parked over the canvas, which gets a caret and selection for free. It
+/// does not work here: a child HWND and a Direct2D surface have no defined paint order, so the two
+/// invalidate each other every frame - the box flickered and its glyphs lagged a keystroke. Drawing
+/// the text ourselves is what Paint.NET and Greenshot do, for the same reason.
 /// </summary>
-internal sealed class TextEditor : IDisposable
+internal sealed class TextEditor
 {
-    private const int WS_CHILD = 0x40000000;
-    private const int WS_VISIBLE = 0x10000000;
-    private const int ES_MULTILINE = 0x0004;
-    private const int ES_AUTOVSCROLL = 0x0040;
-    private const int ES_WANTRETURN = 0x1000;
-
-    private const int GWL_STYLE = -16;
-    private const int WS_CLIPCHILDREN = 0x02000000;
-
-    /// <summary>
-    /// Stops the parent painting underneath the child.
-    ///
-    /// The parent is a D2D HwndRenderTarget: it fills the entire client area every frame, including
-    /// the rectangle the EDIT occupies, and the EDIT then repaints itself on top. The two race, and
-    /// the image under the box strobes. WS_CLIPCHILDREN excludes the child's rectangle from the
-    /// parent's paint, so only the EDIT draws there.
-    /// </summary>
-    public static void ClipChildren(IntPtr parent)
-    {
-        var style = GetWindowLongW(parent, GWL_STYLE);
-        if ((style & WS_CLIPCHILDREN) != 0) return;
-        SetWindowLongW(parent, GWL_STYLE, style | WS_CLIPCHILDREN);
-    }
-
-    private const uint WM_SETFONT = 0x0030;
-    private const uint WM_SETTEXT = 0x000C;
-    private const uint WM_GETTEXT = 0x000D;
-    private const uint WM_GETTEXTLENGTH = 0x000E;
-    private const uint EM_SETSEL = 0x00B1;
-
-    private readonly IntPtr _handle;
-    private readonly IntPtr _font;
-    private IntPtr _background;
-
-    /// <summary>The annotation being edited. The window commits back into it.</summary>
     public Annotation Annotation { get; }
 
-    private TextEditor(IntPtr handle, IntPtr font, Annotation annotation)
+    /// <summary>The live text, not written back to the annotation until the edit ends.</summary>
+    public string Text { get; private set; }
+
+    /// <summary>Caret and selection anchor, as indices into <see cref="Text"/>.</summary>
+    public int Caret { get; private set; }
+    public int Anchor { get; private set; }
+
+    public int SelectionStart => Math.Min(Anchor, Caret);
+    public int SelectionEnd => Math.Max(Anchor, Caret);
+    public bool HasSelection => Anchor != Caret;
+    public string SelectedText => HasSelection ? Text[SelectionStart..SelectionEnd] : string.Empty;
+
+    public bool CaretVisible => (Environment.TickCount64 - _caretEpoch) % (BlinkMs * 2) < BlinkMs;
+
+    private const long BlinkMs = 530;
+    private long _caretEpoch = Environment.TickCount64;
+
+    public TextEditor(Annotation annotation)
     {
-        _handle = handle;
-        _font = font;
         Annotation = annotation;
+        Text = annotation.Text;
+
+        // Everything selected, so typing replaces a placeholder.
+        Anchor = 0;
+        Caret = Text.Length;
     }
 
-    /// <summary>
-    /// Answers WM_CTLCOLOREDIT so the box paints the annotation's colour on the image's own
-    /// backdrop instead of system white. Returns the brush the control should use for its
-    /// background, or zero if the message is not ours.
-    ///
-    /// The parent must forward the message here: a child EDIT asks its parent what colours to use,
-    /// which is the one place the host has to cooperate to make the box look like it belongs to the
-    /// canvas rather than being a control dropped on top of it.
-    /// </summary>
-    public IntPtr OnCtlColor(IntPtr deviceContext, IntPtr control, Rgba backdrop)
+    /// <summary>Solid while typing, rather than winking out mid-keystroke.</summary>
+    private void Wake() => _caretEpoch = Environment.TickCount64;
+
+    // The box owns its own history: while it is open the text lives here and never reaches the
+    // document, so the document's undo stack has nothing of it to restore.
+
+    private readonly Stack<(string Text, int Caret, int Anchor)> _undo = new();
+    private readonly Stack<(string Text, int Caret, int Anchor)> _redo = new();
+
+    private EditKind _lastEdit = EditKind.None;
+
+    private enum EditKind { None, Insert, Delete }
+
+    public bool CanUndo => _undo.Count > 0;
+    public bool CanRedo => _redo.Count > 0;
+
+    /// <summary>Snapshots before a mutation. Consecutive edits of the same kind coalesce, so a run
+    /// of typing is one undo entry rather than one per keystroke.</summary>
+    private void PushUndo(EditKind kind)
     {
-        if (control != _handle) return IntPtr.Zero;
+        if (kind != _lastEdit || _undo.Count == 0)
+            _undo.Push((Text, Caret, Anchor));
 
-        var text = Palette.Parse(Annotation.ColorHex);
-        SetTextColor(deviceContext, Bgr(text));
-        SetBkColor(deviceContext, Bgr(backdrop));
-
-        if (_background != IntPtr.Zero) DeleteObject(_background);
-        _background = CreateSolidBrush(Bgr(backdrop));
-        return _background;
+        _lastEdit = kind;
+        _redo.Clear();
     }
 
-    /// <summary>GDI colours are 0x00BBGGRR, not RGB.</summary>
-    private static int Bgr(Rgba color) => color.R | (color.G << 8) | (color.B << 16);
+    /// <summary>Moving the caret ends the run, so the next edit starts a fresh entry.</summary>
+    private void BreakRun() => _lastEdit = EditKind.None;
 
-    /// <summary>
-    /// Opens an editor over <paramref name="bounds"/>, in client pixels. The font is built at the
-    /// annotation's on-screen size, so what is typed sits where it will be drawn.
-    /// </summary>
-    public static TextEditor? Open(
-        IntPtr parent, Annotation annotation, Rect bounds, double scale)
+    public void Undo()
     {
-        var height = (int)Math.Round(annotation.FontSize * scale);
+        if (!_undo.TryPop(out var previous)) return;
 
-        var font = CreateFontW(
-            -height, 0, 0, 0,
-            annotation.IsBold ? 700 : 400,
-            annotation.IsItalic ? 1u : 0u,
-            annotation.IsUnderline ? 1u : 0u,
-            0,
-            1,      // DEFAULT_CHARSET
-            0, 0,
-            4,      // CLEARTYPE_QUALITY... close enough; the EDIT is transient
-            0,
-            "Segoe UI");
+        _redo.Push((Text, Caret, Anchor));
+        (Text, Caret, Anchor) = previous;
+        BreakRun();
+        Wake();
+    }
 
-        var handle = CreateWindowExW(
-            0,
-            "EDIT",
-            annotation.Text,
-            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
-            (int)Math.Round(bounds.X), (int)Math.Round(bounds.Y),
-            (int)Math.Round(bounds.Width), (int)Math.Round(bounds.Height),
-            parent, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+    public void Redo()
+    {
+        if (!_redo.TryPop(out var next)) return;
 
-        if (handle == IntPtr.Zero)
+        _undo.Push((Text, Caret, Anchor));
+        (Text, Caret, Anchor) = next;
+        BreakRun();
+        Wake();
+    }
+
+    public void MoveTo(int index, bool extend = false)
+    {
+        Caret = Math.Clamp(index, 0, Text.Length);
+        if (!extend) Anchor = Caret;
+        BreakRun();
+        Wake();
+    }
+
+    public void SelectAll()
+    {
+        Anchor = 0;
+        Caret = Text.Length;
+        BreakRun();
+        Wake();
+    }
+
+    public void Insert(string text)
+    {
+        if (text.Length == 0) return;
+
+        PushUndo(EditKind.Insert);
+        DeleteSelectionCore();
+        Text = Text.Insert(Caret, text);
+        Caret += text.Length;
+        Anchor = Caret;
+        Wake();
+    }
+
+    public void Backspace()
+    {
+        if (!HasSelection && Caret == 0) return;
+
+        PushUndo(EditKind.Delete);
+        if (DeleteSelectionCore()) { Wake(); return; }
+
+        Text = Text.Remove(Caret - 1, 1);
+        Caret--;
+        Anchor = Caret;
+        Wake();
+    }
+
+    public void Delete()
+    {
+        if (!HasSelection && Caret >= Text.Length) return;
+
+        PushUndo(EditKind.Delete);
+        if (DeleteSelectionCore()) { Wake(); return; }
+
+        Text = Text.Remove(Caret, 1);
+        Anchor = Caret;
+        Wake();
+    }
+
+    /// <summary>Removes the selected span. Takes no snapshot: the caller has already pushed one for
+    /// the edit this is part of.</summary>
+    private bool DeleteSelectionCore()
+    {
+        if (!HasSelection) return false;
+
+        var start = SelectionStart;
+        Text = Text.Remove(start, SelectionEnd - start);
+        Caret = start;
+        Anchor = start;
+        return true;
+    }
+
+    public void Move(int direction, bool extend, bool byWord)
+    {
+        // A bare arrow collapses a selection to its edge rather than moving from the caret.
+        if (HasSelection && !extend)
         {
-            if (font != IntPtr.Zero) DeleteObject(font);
-            return null;
+            MoveTo(direction < 0 ? SelectionStart : SelectionEnd);
+            return;
         }
 
-        SendMessageW(handle, WM_SETFONT, font, 1);
-        SetFocus(handle);
-
-        // Select everything, so typing replaces a placeholder and an edit of existing text starts
-        // from a sensible place.
-        SendMessageW(handle, EM_SETSEL, 0, -1);
-
-        return new TextEditor(handle, font, annotation);
+        MoveTo(byWord ? WordBoundary(direction) : Caret + direction, extend);
     }
 
-    /// <summary>The text currently in the box.</summary>
-    public string Text
+    private int WordBoundary(int direction)
     {
-        get
+        var index = Caret;
+
+        if (direction < 0)
         {
-            var length = (int)SendMessageW(_handle, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
-            if (length <= 0) return string.Empty;
-
-            var buffer = Marshal.AllocHGlobal((length + 1) * 2);
-            try
-            {
-                SendMessageW(_handle, WM_GETTEXT, length + 1, buffer);
-                return Marshal.PtrToStringUni(buffer) ?? string.Empty;
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(buffer);
-            }
+            while (index > 0 && char.IsWhiteSpace(Text[index - 1])) index--;
+            while (index > 0 && !char.IsWhiteSpace(Text[index - 1])) index--;
+            return index;
         }
+
+        while (index < Text.Length && !char.IsWhiteSpace(Text[index])) index++;
+        while (index < Text.Length && char.IsWhiteSpace(Text[index])) index++;
+        return index;
     }
 
-    public bool Owns(IntPtr handle) => handle == _handle;
-
-    public void Dispose()
+    /// <summary>Home/End, within the caret's own line - a text annotation can be several.</summary>
+    public void MoveToLineEdge(bool end, bool extend)
     {
-        if (_handle != IntPtr.Zero) DestroyWindow(_handle);
-        if (_font != IntPtr.Zero) DeleteObject(_font);
-        if (_background != IntPtr.Zero) DeleteObject(_background);
+        var line = end
+            ? Text.IndexOf('\n', Caret)
+            : Text.LastIndexOf('\n', Math.Max(0, Caret - 1));
+
+        MoveTo(end
+            ? line < 0 ? Text.Length : line
+            : line < 0 ? 0 : line + 1,
+            extend);
     }
-
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static extern nint GetWindowLongW(IntPtr window, int index);
-
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static extern nint SetWindowLongW(IntPtr window, int index, nint value);
-
-    [DllImport("gdi32.dll")]
-    private static extern int SetTextColor(IntPtr deviceContext, int color);
-
-    [DllImport("gdi32.dll")]
-    private static extern int SetBkColor(IntPtr deviceContext, int color);
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateSolidBrush(int color);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateWindowExW(
-        int exStyle, string className, string? windowName, int style,
-        int x, int y, int width, int height,
-        IntPtr parent, IntPtr menu, IntPtr instance, IntPtr param);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DestroyWindow(IntPtr window);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr SendMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr SendMessageW(IntPtr window, uint message, int wParam, int lParam);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr SendMessageW(IntPtr window, uint message, int wParam, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr SetFocus(IntPtr window);
-
-    [DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr CreateFontW(
-        int height, int width, int escapement, int orientation, int weight,
-        uint italic, uint underline, uint strikeOut, uint charSet,
-        uint outPrecision, uint clipPrecision, uint quality, uint pitchAndFamily,
-        string faceName);
-
-    [DllImport("gdi32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeleteObject(IntPtr handle);
 }

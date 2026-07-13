@@ -32,12 +32,15 @@ public sealed class EditorDocument
     public string ColorHex { get; set; } = "#FF3B30";
     public double StrokeThickness { get; set; } = 4;
     public double BrushThickness { get; private set; } = 48;
-    public double EraserThickness { get; private set; } = 40;
+    public double EraserThickness { get; private set; } = 48;
 
+    /// <summary>What the size slider is currently editing. The counterpart to SetStrokeThickness:
+    /// the two must route by tool identically, or the slider shows one value and writes another.</summary>
     public double ActiveThickness => ActiveTool switch
     {
         EditorTool.Brush => BrushThickness,
         EditorTool.Eraser => EraserThickness,
+        EditorTool.Text => TextFontSize,
         _ => StrokeThickness,
     };
 
@@ -195,6 +198,11 @@ public sealed class EditorDocument
         if (_draft.IsStrokeTool) _draft.Points.Add(point);
         if (ActiveTool != EditorTool.Eraser) _annotations.Add(_draft);
         _gesture = GestureKind.Draw;
+
+        // The eraser bites on the press, not only on the drag: it mutates masks rather than being an
+        // annotation, so without this a tap that never moves erases nothing.
+        if (ActiveTool == EditorTool.Eraser) _eraserChanged |= ApplyEraserSegment(_draft);
+
         Notify();
     }
 
@@ -414,18 +422,40 @@ public sealed class EditorDocument
     }
 
     /// <summary>
-    /// Applies a thickness to the selection. <paramref name="isAdjusting"/> is true for the
-    /// continuous ticks of a slider drag, which must not each push an undo entry.
+    /// Applies the size slider to whatever the active tool sizes: the brush and eraser footprints,
+    /// the text's font, or a stroke's width. One writer, routed by tool.
+    ///
+    /// <paramref name="isAdjusting"/> is true for the continuous ticks of a slider drag, which must
+    /// not each push an undo entry.
     /// </summary>
     public void SetStrokeThickness(double thickness, bool isAdjusting = false)
     {
-        if (ActiveTool == EditorTool.Brush) BrushThickness = thickness;
-        else if (ActiveTool == EditorTool.Eraser) EraserThickness = thickness;
-        else StrokeThickness = thickness;
-        if (ActiveTool is EditorTool.Brush or EditorTool.Eraser) return;
+        switch (ActiveTool)
+        {
+            case EditorTool.Brush: BrushThickness = thickness; return;
+            case EditorTool.Eraser: EraserThickness = thickness; return;
+            case EditorTool.Text: SetFontSize(thickness, isAdjusting); return;
+        }
+
+        StrokeThickness = thickness;
         if (Selected is null || Selected.StrokeThickness == thickness) return;
         if (!isAdjusting) PushUndo();
         Selected.StrokeThickness = thickness;
+        Notify();
+    }
+
+    /// <summary>The font size for new text, and for the text being edited or selected. The box grows
+    /// with the font, or the larger glyphs are clipped by bounds sized for the old one.</summary>
+    private void SetFontSize(double size, bool isAdjusting)
+    {
+        TextFontSize = size;
+
+        var target = Selected is { Tool: EditorTool.Text } selected ? selected : null;
+        if (target is null || target.FontSize == size) return;
+
+        if (!isAdjusting) PushUndo();
+        target.FontSize = size;
+        NormalizeTextBounds(target);
         Notify();
     }
 

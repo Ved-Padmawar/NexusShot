@@ -188,10 +188,13 @@ public sealed class EditorChrome(Ui ui)
 
         var x = left + (available - content) / 2;
 
-        // Swatches. Mutual exclusion lives in the document.
-        foreach (var hex in Palette.Swatches)
+        // Indexed, never hashed: string.GetHashCode is randomized per process, so a hashed id is a
+        // different arbitrary int every launch - free to collide with the slider, the chip or a
+        // tool, which is what made the colour change on its own when those were touched.
+        for (var i = 0; i < Palette.Swatches.Length; i++)
         {
-            if (ui.Swatch(hex.GetHashCode(), new Rect(x, y, swatch, tile),
+            var hex = Palette.Swatches[i];
+            if (ui.Swatch(9040 + i, new Rect(x, y, swatch, tile),
                 Palette.Parse(hex), document.ColorHex == hex))
                 document.SetColor(hex);
             x += swatch + S(2);
@@ -230,16 +233,21 @@ public sealed class EditorChrome(Ui ui)
         _pickerAnchor = chipBounds;
         x += chip + S(18);
 
-        // Thickness. Brush and eraser work at a far larger scale than a stroke, so the range follows
-        // the tool - the rule the XAML slider's Maximum encoded.
-        var isPaint = document.ActiveTool is EditorTool.Brush or EditorTool.Eraser;
+        // The slider means "size"; the range and the label follow whatever the tool actually sizes.
+        var tool = document.ActiveTool;
+        var isPaint = tool is EditorTool.Brush or EditorTool.Eraser;
+        var isText = tool is EditorTool.Text;
+
+        var maximum = isPaint ? 300 : isText ? 96 : 20;
+        var label = isPaint ? "Size" : isText ? "Font" : "Width";
+
         var thickness = document.ActiveThickness;
 
-        ui.Text(isPaint ? "Size" : "Width", new Rect(x, y, S(42), tile),
+        ui.Text(label, new Rect(x, y, S(42), tile),
             ui.Theme.TextTertiary, (float)S(Metrics.FontCaption));
         x += S(46);
 
-        if (ui.Slider(9001, new Rect(x, y, slider, tile), 1, isPaint ? 300 : 20, ref thickness))
+        if (ui.Slider(9001, new Rect(x, y, slider, tile), isText ? 8 : 1, maximum, ref thickness))
             document.SetStrokeThickness(thickness, isAdjusting: true);
         x += slider + S(6);
 
@@ -297,7 +305,8 @@ public sealed class EditorChrome(Ui ui)
 
         var saveAs = Width(ui, "Save as…", font);
         right -= saveAs + S(8);
-        if (ui.Button(9022, new Rect(right, y, saveAs, S(32)), "Save as…", fontSize: font))
+        // Not 9022: the toolbar's Undo tile owns that, and a shared id lights both up.
+        if (ui.Button(9025, new Rect(right, y, saveAs, S(32)), "Save as…", fontSize: font))
             SaveAsPressed = true;
 
         // The copy confirms itself: the icon becomes a tick and the label reads "Copied".
