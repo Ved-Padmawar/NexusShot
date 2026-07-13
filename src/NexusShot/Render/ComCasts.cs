@@ -13,6 +13,10 @@ internal static class ComCasts
     public static IComObject<ID2D1Geometry> AsGeometry(this IComObject<ID2D1PathGeometry> geometry) =>
         new ComObject<ID2D1Geometry>(geometry.Object, releaseOnDispose: false);
 
+    public static IComObject<ID2D1Geometry> AsGeometry(
+        this IComObject<ID2D1RoundedRectangleGeometry> geometry) =>
+        new ComObject<ID2D1Geometry>(geometry.Object, releaseOnDispose: false);
+
     public static IComObject<ID2D1SimplifiedGeometrySink> AsSimplifiedSink(this IComObject<ID2D1GeometrySink> sink) =>
         new ComObject<ID2D1SimplifiedGeometrySink>(sink.Object, releaseOnDispose: false);
 

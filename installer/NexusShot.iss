@@ -11,7 +11,6 @@
 #define AppName "NexusShot"
 ; A single Native AOT executable: no runtime, no framework payload, nothing else to ship.
 #define AppExeName "NexusShot.exe"
-#define AppLogoName "nexus-shot-128.png"
 #define AppPublisher "NexusAI"
 
 [Setup]
@@ -50,9 +49,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Named explicitly rather than globbed, because the installer is itself written into the publish
 ; directory and a wildcard would package the previous build inside the new one.
 Source: "{#PublishDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-; The sidebar's brand mark. The .ico is linked into the exe as a resource and so has no path to
-; decode, and everything here decodes through WIC from a file - so the PNG ships beside the exe.
-Source: "{#PublishDir}\{#AppLogoName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"

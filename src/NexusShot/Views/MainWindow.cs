@@ -8,12 +8,13 @@ namespace NexusShot.Views;
 /// The shell: a sidebar that browses, a pane that previews and acts. Annotating opens the editor as
 /// its own window rather than docking it here, so the sidebar's width is never taken from the image.
 /// </summary>
-public sealed class MainWindow : D2DRenderWindow
+public sealed class MainWindow : CaptionWindow
 {
     private const uint WmMouseMove = 0x0200;
     private const uint WmLButtonDown = 0x0201;
     private const uint WmLButtonUp = 0x0202;
     private const uint WmKeyDown = 0x0100;
+    private const uint WmChar = 0x0102;
     private const uint WmMouseWheel = 0x020A;
     private const uint WmClose = 0x0010;
 
@@ -40,12 +41,20 @@ public sealed class MainWindow : D2DRenderWindow
     private double _settingsScroll;
     private double _settingsHeight;
 
+    /// <summary>The scrollable body's height, measured as it is drawn, so the wheel handler does not
+    /// have to guess where the header ends.</summary>
+    private double _settingsViewport = 1;
+
     /// <summary>The hotkey row that is armed, if any. The next key press becomes its binding.</summary>
     private int? _recordingHotkey;
     private string? _hotkeyWarning;
 
     /// <summary>Raised when the bindings change, so the app can re-register them.</summary>
     public event Action? HotkeysChanged;
+
+    /// <summary>Raised when a row is armed or disarmed, so the app can suspend the global hotkeys
+    /// while a key is being recorded.</summary>
+    public event Action<bool>? RecordingChanged;
 
     /// <summary>Raised when any setting changes, so the app can react (the watcher follows the save
     /// folder, for one).</summary>
@@ -85,33 +94,34 @@ public sealed class MainWindow : D2DRenderWindow
         _storage = storage;
         _settings = settings;
         _history = history;
-        _selected = history.FirstOrDefault();
+
+        // Nothing selected on open: the detail pane is the only thing that decodes at full
+        // resolution, and doing that before the first frame is what makes the window take a beat.
     }
 
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
 
-        // Alt+Tab and the taskbar still get the big icon; the caption gets neither an icon nor a
-        // title, because the sidebar already carries the brand.
+        // Alt+Tab and the taskbar get the icon; the caption itself shows neither icon nor title,
+        // because the sidebar carries the brand and the caption is now our own pixels.
         AppIcon.ApplyLargeOnly(Handle);
         AppIcon.ClearCaption(Handle);
         ApplyTheme();
     }
 
-    /// <summary>DWM owns the titlebar and repaints it itself; the client area only repaints when
-    /// something invalidates it. Without the Invalidate the titlebar flips instantly and the app
-    /// keeps its old colours until an unrelated event triggers a frame.</summary>
+    /// <summary>The window paints its own caption, so only the frame's dark-mode flag still matters -
+    /// it drives the shadow and the border DWM draws around us.</summary>
     private void ApplyTheme()
     {
-        var theme = SystemTheme.Resolve(_settings.Theme);
-        // The old extended titlebar let the sidebar run behind the caption controls. A raw Win32
-        // caption remains non-client, so tint it with the sidebar surface: without a colour break
-        // at the top edge, the rail reads as continuing all the way to the window frame.
-        SystemTheme.ApplyTitleBar(Handle, theme, theme.SurfaceSunken);
+        SystemTheme.ApplyFrame(Handle, SystemTheme.Resolve(_settings.Theme));
         Invalidate();
         ThemeChanged?.Invoke();
     }
+
+    /// <summary>The whole top strip drags, except where the caption buttons are.</summary>
+    protected override bool IsDragRegion(Point client) =>
+        client.X < ClientRect.Width - CaptionButtonsWidth;
 
     /// <summary>Raised when the theme moves, so open editors retheme with the shell.</summary>
     public event Action? ThemeChanged;
@@ -181,6 +191,9 @@ public sealed class MainWindow : D2DRenderWindow
         if (_settingsOpen) DrawSettings(_ui, pane);
         else DrawDetail(_ui, target, pane);
 
+        // Last, so the buttons float over the app's own pixels rather than under them.
+        DrawCaptionButtons(_ui, width);
+
         _ui.EndFrame();
     }
 
@@ -191,20 +204,25 @@ public sealed class MainWindow : D2DRenderWindow
         var theme = ui.Theme;
         ui.FillRect(bounds, theme.SurfaceSunken);
 
-        var y = bounds.Y + S(20);
+        // The brand sits at the top of the rail: the window controls are over on the right, so
+        // nothing here has to clear them.
+        var y = bounds.Y + S(16);
 
-        // Brand: the app icon, the name, and a version pill.
-        DrawBrandMark(ui, target, new Rect(bounds.X + S(18), y, S(22), S(22)));
+        DrawBrandMark(ui, new Rect(bounds.X + S(18), y, S(22), S(22)));
         ui.Text("NexusShot", new Rect(bounds.X + S(50), y, S(110), S(22)),
             theme.TextPrimary, (float)S(Metrics.FontSubtitle), bold: true);
 
-        var pill = new Rect(bounds.X + S(158), y + S(2), S(44), S(18));
+        // The pill hangs off the rail's trailing edge, mirroring the mark's inset on the left, and is
+        // sized to its text so a two-digit version does not overflow it.
+        var pillFont = S(10);
+        var pillWidth = Math.Max(S(40), ui.MeasureText(AppVersion, pillFont) + S(16));
+        var pill = new Rect(bounds.Right - S(18) - pillWidth, y + S(2), pillWidth, S(18));
+
         ui.FillRounded(pill, (float)S(9), theme.SurfaceOverlay);
-        ui.Text("2.0.0", pill, theme.TextTertiary, (float)S(10), align: TextAlign.Center);
+        ui.Text(AppVersion, pill, theme.TextTertiary, (float)pillFont, align: TextAlign.Center);
 
         y += S(38);
 
-        // Capture actions: icon, label, shortcut - the sidebar's primary content.
         y = DrawCaptureAction(ui, bounds, y, 1, Icons.CaptureRegion, "Region", "Ctrl+Shift+S",
             CaptureMode.Region);
         y = DrawCaptureAction(ui, bounds, y, 2, Icons.CaptureScreen, "Full screen", "Ctrl+Shift+F",
@@ -214,7 +232,6 @@ public sealed class MainWindow : D2DRenderWindow
 
         y += S(14);
 
-        // "RECENT" header, over a hairline.
         ui.FillRect(new Rect(bounds.X, y, bounds.Width, 1), theme.StrokeSubtle);
         ui.Text("RECENT", new Rect(bounds.X + S(20), y + S(10), bounds.Width, S(18)),
             theme.TextTertiary, (float)S(Metrics.FontCaption), bold: true);
@@ -228,28 +245,52 @@ public sealed class MainWindow : D2DRenderWindow
         DrawSidebarFooter(ui, new Rect(bounds.X, bounds.Bottom - footer, bounds.Width, footer));
     }
 
-    /// <summary>The app mark: the real icon, decoded once and rescaled by the GPU per frame.</summary>
-    private void DrawBrandMark(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds)
+    /// <summary>The version stamped onto the assembly at build time (<c>-p:Version</c>). Read rather
+    /// than hardcoded, so a tagged release cannot ship a badge that disagrees with it.</summary>
+    private static readonly string AppVersion = FormatVersion();
+
+    private static string FormatVersion()
     {
-        if (_brand is null && !_brandFailed)
-        {
-            using var context = target.AsDeviceContext();
-            var path = Path.Combine(AppContext.BaseDirectory, "nexus-shot-128.png");
-
-            if (context is not null && File.Exists(path)) _brand = ImageSurface.Load(path, context);
-            _brandFailed = _brand is null;
-        }
-
-        if (_brand is null) return;
-
-        target.DrawBitmap(
-            _brand.Bitmap, 1f,
-            D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-            AnnotationRenderer.ToRect(bounds));
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        return version is null ? string.Empty : $"{version.Major}.{version.Minor}.{version.Build}";
     }
 
-    private ImageSurface? _brand;
-    private bool _brandFailed;
+    /// <summary>The app mark, drawn rather than loaded: a slate tile split by a 135° diagonal, and
+    /// two crop marks, on the 960-unit grid of the icon source.</summary>
+    private void DrawBrandMark(Ui ui, Rect bounds)
+    {
+        const double unit = 960;
+        var k = bounds.Width / unit;
+
+        double X(double u) => bounds.X + u * k;
+        double Y(double u) => bounds.Y + u * k;
+
+        var radius = 220 * k;
+
+        // The slate tile, then the half above the 135° diagonal in cyan - intersected with the tile,
+        // so it inherits the rounded corners rather than overhanging them.
+        ui.FillRounded(bounds, (float)radius, Tile);
+
+        ui.FillRoundedRegion(bounds, (float)radius,
+            [
+                new Point(X(0), Y(0)),
+                new Point(X(unit), Y(0)),
+                new Point(X(0), Y(unit)),
+            ],
+            Cyan);
+
+        // Crop marks: corners on the diagonal, so each arm crosses both halves.
+        var thickness = (float)(84 * k);
+
+        ui.Polyline([new Point(X(268), Y(488)), new Point(X(268), Y(268)), new Point(X(488), Y(268))],
+            Marks, thickness);
+        ui.Polyline([new Point(X(472), Y(692)), new Point(X(692), Y(692)), new Point(X(692), Y(472))],
+            Marks, thickness);
+    }
+
+    private static readonly Rgba Tile = new(0x3A, 0x46, 0x52, 0xFF);
+    private static readonly Rgba Cyan = new(0x46, 0xBA, 0xE3, 0xFF);
+    private static readonly Rgba Marks = new(0x18, 0x22, 0x2B, 0xFF);
 
     private double DrawCaptureAction(
         Ui ui, Rect sidebar, double y, int id,
@@ -357,7 +398,7 @@ public sealed class MainWindow : D2DRenderWindow
         }
 
         if (ui.Tile(31, new Rect(bounds.Right - S(12) - size, y, size, size), _settingsOpen,
-            Icons.Settings, S(15), "Settings"))
+            Icons.Settings, S(15), "Settings", neutral: true))
         {
             _settingsOpen = !_settingsOpen;
         }
@@ -455,6 +496,12 @@ public sealed class MainWindow : D2DRenderWindow
         if (ui.Tile(20, new Rect(right, iconY, icon, icon), false, Icons.Reveal, iconGlyph,
             "Show in Explorer"))
             Reveal(item.FilePath);
+
+        // Close sits apart from the pair that act on the file: it only dismisses the view.
+        right -= icon + S(14);
+        if (ui.Tile(24, new Rect(right, iconY, icon, icon), false, Icons.Close, iconGlyph,
+            "Close  (Esc)"))
+            Deselect();
     }
 
     /// <summary>A button sized to its content: 14px of padding either side, as the XAML style had.</summary>
@@ -465,20 +512,26 @@ public sealed class MainWindow : D2DRenderWindow
         return Math.Round(content + S(28));
     }
 
+    /// <summary>The pane with nothing shown. What it says depends on whether the history is empty:
+    /// "no captures yet" in front of a list of them would be wrong.</summary>
     private void DrawEmptyState(Ui ui, Rect bounds)
     {
         var theme = ui.Theme;
         var centre = bounds.Center;
+        var empty = _history.Count == 0;
 
         ui.Icon(Icons.EmptyState,
             new Rect(bounds.X, centre.Y - S(66), bounds.Width, S(48)),
             theme.TextTertiary, S(38));
 
-        ui.Text("No captures yet",
+        ui.Text(empty ? "No captures yet" : "Nothing selected",
             new Rect(bounds.X, centre.Y - S(6), bounds.Width, S(24)),
             theme.TextSecondary, (float)S(Metrics.FontSubtitle), align: TextAlign.Center);
 
-        ui.Text("Press Ctrl + Shift + S to capture a region",
+        ui.Text(
+            empty
+                ? "Press Ctrl + Shift + S to capture a region"
+                : "Pick a capture from the list, or press Ctrl + Shift + S for a new one",
             new Rect(bounds.X, centre.Y + S(20), bounds.Width, S(20)),
             theme.TextTertiary, (float)S(Metrics.FontBody), align: TextAlign.Center);
     }
@@ -494,14 +547,21 @@ public sealed class MainWindow : D2DRenderWindow
     {
         var theme = ui.Theme;
 
-        // Header: Padding="28,14", over a hairline.
-        var header = new Rect(bounds.X, bounds.Y, bounds.Width, S(14) * 2 + S(Metrics.FontTitle) + S(4));
+        // The header starts below the caption, so its title and close button clear the window
+        // controls floating over this pane's top-right rather than crowding them.
+        var header = new Rect(
+            bounds.X,
+            bounds.Y + CaptionHeight,
+            bounds.Width,
+            S(14) * 2 + S(Metrics.FontTitle) + S(4));
+
         ui.Text("Settings", new Rect(header.X + S(28), header.Y, header.Width, header.Height),
             theme.TextPrimary, (float)S(Metrics.FontTitle), bold: true);
 
         if (ui.Tile(60, new Rect(header.Right - S(28) - S(36), header.Center.Y - S(18), S(36), S(36)),
             false, Icons.Close, S(14), "Close settings"))
         {
+            // The click that got here already committed any focused box, on the way in.
             _settingsOpen = false;
             CloseDropdowns();
         }
@@ -509,6 +569,7 @@ public sealed class MainWindow : D2DRenderWindow
 
         // The scrollable body. Clipped, so a long list cannot paint over the header.
         var body = new Rect(bounds.X, header.Bottom, bounds.Width, bounds.Bottom - header.Bottom);
+        _settingsViewport = Math.Max(1, body.Height);
         ui.PushClip(body);
 
         // Centred column: MaxWidth=640, Margin="32,0,32,32". Sections and rows provide their
@@ -571,10 +632,12 @@ public sealed class MainWindow : D2DRenderWindow
             theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
         y += S(30);
 
-        y = Hotkey(ui, 44, x, y, width, "Capture region", _settings.CaptureRegionHotkey);
-        y = Hotkey(ui, 45, x, y, width, "Capture full screen", _settings.CaptureFullScreenHotkey);
-        y = Hotkey(ui, 46, x, y, width, "Capture active window", _settings.CaptureActiveWindowHotkey);
-        y = Hotkey(ui, 47, x, y, width, "Open NexusShot", _settings.OpenMainWindowHotkey);
+        var hotkeyWidth = HotkeyWidth(ui);
+
+        y = Hotkey(ui, 44, x, y, width, hotkeyWidth, "Capture region", _settings.CaptureRegionHotkey);
+        y = Hotkey(ui, 45, x, y, width, hotkeyWidth, "Capture full screen", _settings.CaptureFullScreenHotkey);
+        y = Hotkey(ui, 46, x, y, width, hotkeyWidth, "Capture active window", _settings.CaptureActiveWindowHotkey);
+        y = Hotkey(ui, 47, x, y, width, hotkeyWidth, "Open NexusShot", _settings.OpenMainWindowHotkey);
 
         if (_hotkeyWarning is { } warning)
         {
@@ -588,7 +651,7 @@ public sealed class MainWindow : D2DRenderWindow
         y = Row(ui, x, y, width,
             "Auto-dismiss after",
             "Seconds before a floating preview disappears. 0 keeps it open.",
-            row => Stepper(ui, 48, ActionSlot(row, S(112)), _settings.PreviewDismissSeconds, 0, 120,
+            row => NumberField(ui, 48, ActionSlot(row, S(120)), _settings.PreviewDismissSeconds, 0, 120,
                 value =>
                 {
                     _settings.PreviewDismissSeconds = value;
@@ -709,47 +772,105 @@ public sealed class MainWindow : D2DRenderWindow
         ui.FillCircle(knob, (float)S(7), Rgba.White);
     }
 
-    /// <summary>A number stepper: minus, value, plus.</summary>
-    private void Stepper(Ui ui, int id, Rect slot, int value, int min, int max, Action<int> set)
+    /// <summary>An editable number box. Clicking focuses it; the window's key handler types into it.
+    /// Commits on Enter or on clicking away, clamped to the range. An empty box means the minimum.</summary>
+    private void NumberField(Ui ui, int id, Rect slot, int value, int min, int max, Action<int> set)
     {
-        var button = S(28);
+        var focused = _editingNumber == id;
+        if (focused) _numberBounds = slot;
 
-        if (ui.Button(id * 10, new Rect(slot.X, slot.Y, button, slot.Height), "−",
-            enabled: value > min, fontSize: S(Metrics.FontBody)))
-            set(Math.Max(min, value - 1));
+        if (ui.Interact(id, slot) && !focused)
+        {
+            _editingNumber = id;
+            _numberDraft = value.ToString();
+        }
 
-        ui.Text(value.ToString(),
-            new Rect(slot.X + button, slot.Y, slot.Width - button * 2, slot.Height),
-            ui.Theme.TextPrimary, (float)S(Metrics.FontBody), align: TextAlign.Center);
+        var radius = (float)S(Metrics.RadiusControl);
+        ui.FillRounded(slot, radius, ui.Theme.SurfaceOverlay);
+        ui.StrokeRounded(slot, radius,
+            focused ? ui.Theme.Accent
+            : ui.IsHot(id) ? ui.Theme.StrokeStrong
+            : ui.Theme.StrokeDefault,
+            focused ? 1.5f : 1f);
 
-        if (ui.Button(id * 10 + 1, new Rect(slot.Right - button, slot.Y, button, slot.Height), "+",
-            enabled: value < max, fontSize: S(Metrics.FontBody)))
-            set(Math.Min(max, value + 1));
+        var text = focused ? _numberDraft : value.ToString();
+        var inner = slot.Deflate(S(10));
+
+        ui.Text(text, inner, ui.Theme.TextPrimary, (float)S(Metrics.FontBody));
+
+        if (!focused) return;
+
+        // A caret, so a focused empty box does not read as a dead one.
+        var caretX = inner.X + ui.MeasureText(text, S(Metrics.FontBody)) + S(1);
+        ui.FillRect(new Rect(caretX, slot.Y + S(8), S(1.5), slot.Height - S(16)), ui.Theme.TextPrimary);
+
+        // Held so the key handler can commit into the right setting without knowing which row it is.
+        _numberCommit = () =>
+        {
+            var parsed = int.TryParse(_numberDraft, out var typed) ? typed : min;
+            set(Math.Clamp(parsed, min, max));
+        };
     }
 
-    /// <summary>
-    /// A hotkey recorder. Clicking arms it; the next key press becomes the binding.
-    ///
-    /// The window's key handler does the recording, because a hotkey is defined by a real key event
-    /// and there is nothing here to listen with.
-    /// </summary>
+    /// <summary>The number box being typed into, if any, and the text as typed.</summary>
+    private int? _editingNumber;
+    private string _numberDraft = "";
+
+    /// <summary>Where the focused box sits, so a click landing anywhere else commits it.</summary>
+    private Rect _numberBounds;
+
+    /// <summary>Writes the focused box's draft back into whichever setting it belongs to.</summary>
+    private Action? _numberCommit;
+
+    /// <summary>Commits and unfocuses the number box, if one is focused.</summary>
+    private void CommitNumberField()
+    {
+        if (_editingNumber is null) return;
+
+        _numberCommit?.Invoke();
+        _numberCommit = null;
+        _editingNumber = null;
+    }
+
+    private const string Recording = "Press keys…";
+
+    /// <summary>The width every recorder shares: the widest label any of them can show. Sizing each
+    /// to its own label leaves a ragged column, and a button that resizes when armed jumps.</summary>
+    private double HotkeyWidth(Ui ui)
+    {
+        var font = S(Metrics.FontCaption);
+        var widest = ui.MeasureText(Recording, font);
+
+        foreach (var id in new[] { 44, 45, 46, 47 })
+        {
+            if (Binding(id) is not { } binding) continue;
+            widest = Math.Max(widest, ui.MeasureText(Describe(binding), font));
+        }
+
+        return Math.Max(S(96), widest + S(28));
+    }
+
+    /// <summary>A hotkey recorder. Clicking arms it; the next key press becomes the binding. The
+    /// window's key handler does the recording - there is nothing here to listen with.</summary>
     private double Hotkey(
-        Ui ui, int id, double x, double y, double width, string title, HotkeyBinding binding)
+        Ui ui, int id, double x, double y, double width, double slotWidth,
+        string title, HotkeyBinding binding)
     {
         return Row(ui, x, y, width, title, null, row =>
         {
             var recording = _recordingHotkey == id;
-            var label = recording ? "Press keys…" : Describe(binding);
+            var label = recording ? Recording : Describe(binding);
 
-            // ShellButtonStyle: Height 32, Padding 14,0. The button hugs its label rather than being
-            // stretched to a fixed width, which is what made these read as squashed bars.
-            var slot = ActionSlot(row,
-                Math.Max(S(96), ui.MeasureText(label, S(Metrics.FontCaption)) + S(28)));
+            var slot = ActionSlot(row, slotWidth);
 
+            // The click lands after `recording` was read, so this frame still draws the old label.
+            // Without the repaint, "Press keys…" would not appear until the next mouse move.
             if (ui.Interact(id, slot))
             {
                 _recordingHotkey = recording ? null : id;
                 _hotkeyWarning = null;
+                RecordingChanged?.Invoke(_recordingHotkey is not null);
+                Invalidate();
             }
 
             ui.FillRounded(slot, (float)S(Metrics.RadiusControl),
@@ -827,30 +948,60 @@ public sealed class MainWindow : D2DRenderWindow
     }
 
     /// <summary>
-    /// The bitmap for a row's thumbnail: decoded down to thumbnail size, not full resolution.
+    /// The bitmap for a row's thumbnail, or null while it is still being decoded.
     ///
-    /// A full-resolution GPU bitmap is ~33 MB for a 4K capture, and a history of them adds up fast
-    /// for something that ends up in a 52x34 chip. WIC scales during the decode, so the big bitmap
-    /// never exists.
+    /// The decode runs off the UI thread: inflating a PNG costs tens of milliseconds even when the
+    /// result is a 52x34 chip. The upload has to happen here, on the thread that owns the device, and
+    /// the row fills in on the next frame.
     /// </summary>
     private ImageSurface? GetThumbnail(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
     {
         if (_thumbnails.TryGetValue(item.FilePath, out var cached)) return cached;
 
-        using var context = target.AsDeviceContext();
-        if (context is null || !File.Exists(item.FilePath)) return null;
-
-        try
+        // Decoded and waiting: upload it now that we are on the thread that owns the device.
+        if (_decoded.TryRemove(item.FilePath, out var pixels))
         {
-            // 2x the chip, so it stays crisp on a scaled display.
-            var surface = ImageSurface.LoadScaled(item.FilePath, context, maxWidth: 160, maxHeight: 160);
+            using var uploadContext = target.AsDeviceContext();
+            if (uploadContext is null) return null;
+
+            var surface = ImageSurface.Upload(pixels, uploadContext);
             _thumbnails[item.FilePath] = surface;
             return surface;
         }
-        catch (Exception exception) when (exception is IOException or InvalidOperationException)
+
+        StartDecode(item.FilePath);
+        return null;
+    }
+
+    /// <summary>Decoded thumbnail pixels waiting to be uploaded, keyed by file.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DecodedImage> _decoded = new();
+
+    /// <summary>Files a decode is already running for, so a repaint does not start a second one.</summary>
+    private readonly HashSet<string> _decoding = [];
+
+    private void StartDecode(string path)
+    {
+        if (!_decoding.Add(path)) return;
+
+        Task.Run(() =>
         {
-            return null;
-        }
+            try
+            {
+                // 2x the chip, so it stays crisp on a scaled display.
+                var pixels = ImageSurface.DecodeScaled(path, maxWidth: 160, maxHeight: 160);
+                _decoded[path] = pixels;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException)
+            {
+                // A capture that will not decode simply has no thumbnail.
+            }
+
+            Post(() =>
+            {
+                _decoding.Remove(path);
+                Invalidate();
+            });
+        });
     }
 
     /// <summary>
@@ -883,10 +1034,25 @@ public sealed class MainWindow : D2DRenderWindow
         }
     }
 
+    /// <summary>Closes the capture back to the empty state, releasing its full-resolution bitmap.</summary>
+    private void Deselect()
+    {
+        _selected = null;
+
+        _preview?.Dispose();
+        _preview = null;
+        _previewPath = null;
+
+        Invalidate();
+    }
+
     private void Delete(ScreenshotHistoryItem item)
     {
         _history.Remove(item);
-        if (ReferenceEquals(_selected, item)) _selected = _history.FirstOrDefault();
+
+        // Deleting what you were looking at lands on the empty state, rather than decoding whichever
+        // capture happens to be next.
+        if (ReferenceEquals(_selected, item)) Deselect();
 
         DropCache(item.FilePath);
 
@@ -1002,6 +1168,12 @@ public sealed class MainWindow : D2DRenderWindow
             case WmLButtonDown:
                 _pointer = ClientPoint(lParam);
                 _pointerDown = true;
+
+                // Clicking away from a focused box commits it, the way moving focus off a real text
+                // box does. A click inside it is the box's own.
+                if (_editingNumber is not null && !_numberBounds.Contains(_pointer))
+                    CommitNumberField();
+
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
@@ -1025,8 +1197,7 @@ public sealed class MainWindow : D2DRenderWindow
                 if (_settingsOpen && _pointer.X > S(248))
                 {
                     CloseDropdowns();
-                    var viewport = Math.Max(1, ClientRect.Height - S(64));
-                    var maximum = Math.Max(0, _settingsHeight - viewport);
+                    var maximum = Math.Max(0, _settingsHeight - _settingsViewport);
                     _settingsScroll = Math.Clamp(_settingsScroll - step, 0, maximum);
                 }
                 else
@@ -1050,17 +1221,61 @@ public sealed class MainWindow : D2DRenderWindow
                     return new LRESULT { Value = 0 };
                 }
 
+                // A focused number box owns the keyboard. Its digits arrive as WM_CHAR; only the
+                // editing keys are handled here.
+                if (_editingNumber is not null)
+                {
+                    switch (key)
+                    {
+                        case VIRTUAL_KEY.VK_BACK:
+                            if (_numberDraft.Length > 0) _numberDraft = _numberDraft[..^1];
+                            break;
+
+                        case VIRTUAL_KEY.VK_RETURN:
+                            CommitNumberField();
+                            break;
+
+                        case VIRTUAL_KEY.VK_ESCAPE:
+                            // Abandons the edit rather than committing it, and keeps the pane open.
+                            _numberCommit = null;
+                            _editingNumber = null;
+                            break;
+
+                        default:
+                            return new LRESULT { Value = 0 };
+                    }
+
+                    Invalidate();
+                    return new LRESULT { Value = 0 };
+                }
+
                 if (key == VIRTUAL_KEY.VK_ESCAPE)
                 {
-                    // Escape peels one layer: the open list, then settings, then the window.
+                    // Escape peels one layer: the open list, then settings, then the capture on
+                    // show, then the window.
                     if (DropdownOpen) CloseDropdowns();
                     else if (_settingsOpen) _settingsOpen = false;
+                    else if (_selected is not null) Deselect();
                     else { Hide(); return new LRESULT { Value = 0 }; }
 
                     Invalidate();
                     return new LRESULT { Value = 0 };
                 }
                 break;
+            }
+
+            case WmChar:
+            {
+                if (_editingNumber is null) break;
+
+                // Digits only, and never more than the three a 0-120 value can need.
+                var character = (char)(ulong)wParam.Value;
+                if (char.IsAsciiDigit(character) && _numberDraft.Length < 3)
+                {
+                    _numberDraft += character;
+                    Invalidate();
+                }
+                return new LRESULT { Value = 0 };
             }
 
             case WmClose:
@@ -1086,6 +1301,7 @@ public sealed class MainWindow : D2DRenderWindow
         if (key is VIRTUAL_KEY.VK_ESCAPE)
         {
             _recordingHotkey = null;
+            RecordingChanged?.Invoke(false);
             Invalidate();
             return;
         }
@@ -1102,6 +1318,7 @@ public sealed class MainWindow : D2DRenderWindow
         if (target is null)
         {
             _recordingHotkey = null;
+            RecordingChanged?.Invoke(false);
             return;
         }
 

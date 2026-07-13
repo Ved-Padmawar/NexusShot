@@ -1,15 +1,23 @@
+using System.Runtime.InteropServices;
 using NexusShot.Views;
 
 namespace NexusShot;
 
-internal static class Program
+internal static partial class Program
 {
+    /// <summary>OLE, not just COM: DoDragDrop is an OLE service and fails on a thread that has only
+    /// been through CoInitialize.</summary>
+    [LibraryImport("ole32.dll")]
+    private static partial int OleInitialize(IntPtr reserved);
+
     [STAThread]
     private static void Main(string[] args)
     {
         // A crash in a windowed app has nowhere to print, and the runtime's own handler needs a
         // TaskDialog to report it. Write the fault somewhere it can actually be read.
         AppDomain.CurrentDomain.UnhandledException += (_, e) => LogCrash(e.ExceptionObject as Exception);
+
+        OleInitialize(IntPtr.Zero);
 
         try
         {
@@ -20,15 +28,27 @@ internal static class Program
                 return;
             }
 
-            // Opening a file goes straight to the editor, so NexusShot can be a file association.
+            // Opening a file goes straight to the editor, so NexusShot can be a file association. An
+            // editor owns no hotkeys and no tray icon, so it is exempt from the single-instance rule.
             if (args.Length == 1 && File.Exists(args[0]))
             {
                 RunEditor(args[0]);
                 return;
             }
 
-            using var app = new App();
-            app.Run();
+            // A second launch raises the running instance instead of starting a rival that could not
+            // register a single hotkey.
+            if (!Platform.SingleInstance.Claim()) return;
+
+            try
+            {
+                using var app = new App();
+                app.Run(showWindow: !Platform.Startup.IsStartupLaunch(args));
+            }
+            finally
+            {
+                Platform.SingleInstance.Release();
+            }
         }
         catch (Exception exception)
         {

@@ -9,7 +9,7 @@ namespace NexusShot.Views;
 /// The markup editor. Input mutates the document and invalidates; a frame is one allocation-free
 /// pass over the annotation list, and WM_PAINT is already coalesced to the display rate.
 /// </summary>
-public sealed class EditorWindow : D2DRenderWindow
+public sealed class EditorWindow : CaptionWindow
 {
     private readonly EditorDocument _document = new();
 
@@ -60,14 +60,21 @@ public sealed class EditorWindow : D2DRenderWindow
     {
         _theme = theme;
         var resolved = SystemTheme.Resolve(theme);
-        SystemTheme.ApplyTitleBar(Handle, resolved, resolved.SurfaceRaised);
+        SystemTheme.ApplyFrame(Handle, resolved);
         if (_ui is not null) _ui.Theme = resolved;
         Invalidate();
     }
 
+    /// <summary>The caption strip above the toolbar drags, save for where the buttons are.</summary>
+    protected override bool IsDragRegion(Point client) =>
+        client.X < ClientRect.Width - CaptionButtonsWidth;
+
     /// <summary>Raised when the window goes away, so the host can drop its reference and refresh a
     /// thumbnail whose file may have just been re-saved.</summary>
     public event Action? Closed;
+
+    /// <summary>Raised when Save writes over the file being edited.</summary>
+    public event Action<string>? Saved;
 
     /// <summary>Raised when Save As writes a new file, so the shell can add it to the history.</summary>
     public event Action<string>? SavedAs;
@@ -75,9 +82,11 @@ public sealed class EditorWindow : D2DRenderWindow
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
-        AppIcon.Apply(Handle);
-        var theme = SystemTheme.Resolve(_theme);
-        SystemTheme.ApplyTitleBar(Handle, theme, theme.SurfaceRaised);
+
+        // The chrome carries the filename, so the caption shows no icon or title of its own.
+        AppIcon.ApplyLargeOnly(Handle);
+        AppIcon.ClearCaption(Handle);
+        SystemTheme.ApplyFrame(Handle, SystemTheme.Resolve(_theme));
 
         // The inline text box is a child HWND over the D2D surface; without this the surface paints
         // under it every frame and the image beneath the box strobes.
@@ -205,6 +214,7 @@ public sealed class EditorWindow : D2DRenderWindow
         // everything. The chrome then scales itself; the canvas deliberately does not.
         target.Object.SetDpi(96, 96);
         EditorChrome.Scale = Functions.GetDpiForWindow(Handle) / 96.0;
+        EditorChrome.CaptionHeight = CaptionHeight;
 
         EnsureResources(target);
         if (_ui is null || _chrome is null || _renderer is null) return;
@@ -243,18 +253,21 @@ public sealed class EditorWindow : D2DRenderWindow
         renderTarget.Object.SetTransform(D2D_MATRIX_3X2_F.Identity());
 
         // ---- chrome, in client space ----
-        var toast = DateTime.UtcNow < _toastUntil ? _toast : null;
+        var now = DateTime.UtcNow;
+        var toast = now < _toastUntil ? _toast : null;
+        var copied = now < _copiedUntil;
 
         _ui.BeginFrame(target, _clientPointer, _pointerDown);
         _chrome.Draw(_document, client.Width, client.Height,
-            Path.GetFileName(_path), _fitToViewport, toast);
+            Path.GetFileName(_path), _fitToViewport, toast, copied);
+        DrawCaptionButtons(_ui, client.Width);
         _ui.EndFrame();
 
         ApplyChrome();
 
-        // Keep repainting while a toast is up, so it disappears on time rather than on the next
-        // stray mouse move.
-        if (toast is not null) Invalidate();
+        // Keep repainting while either confirmation is up, so it clears on time rather than on the
+        // next stray mouse move.
+        if (toast is not null || copied) Invalidate();
     }
 
     /// <summary>Applies what the chrome asked for. The chrome reports intent; the window owns the
@@ -293,10 +306,9 @@ public sealed class EditorWindow : D2DRenderWindow
 
         Exporter.SavePng(_document, _path, _path);
 
-        // The annotations and the crop are baked into the file now, so the session starts clean over
-        // the new pixels.
         _document.ResetAfterSave();
         ReloadImage();
+        Saved?.Invoke(_path);
         ShowToast("Saved");
     }
 
@@ -308,7 +320,7 @@ public sealed class EditorWindow : D2DRenderWindow
         CommitText();
         _document.CommitCrop();
 
-        var suggested = Path.GetFileName(_path);
+        var suggested = $"{Path.GetFileNameWithoutExtension(_path)}_edited.png";
         if (FilePicker.SavePng(Handle, suggested, Path.GetDirectoryName(_path)) is not { } destination)
             return;
 
@@ -337,7 +349,9 @@ public sealed class EditorWindow : D2DRenderWindow
         ClipboardImage.Copy(temporary);
         try { File.Delete(temporary); } catch (IOException) { /* the clipboard may still hold it */ }
 
-        ShowToast("Copied");
+        // The Copy button confirms this itself, by becoming a tick.
+        _copiedUntil = DateTime.UtcNow.AddSeconds(2);
+        Invalidate();
     }
 
     /// <summary>A brief confirmation in the footer, so an action that changes nothing visible still
@@ -351,6 +365,7 @@ public sealed class EditorWindow : D2DRenderWindow
 
     private string? _toast;
     private DateTime _toastUntil;
+    private DateTime _copiedUntil;
 
     /// <summary>Re-decodes the file after a save, so the editor is now working over the flattened
     /// pixels rather than the original plus a document that no longer exists.</summary>
@@ -385,6 +400,7 @@ public sealed class EditorWindow : D2DRenderWindow
     private const uint WmLButtonUp = 0x0202;
     private const uint WmMouseLeave = 0x02A3;
     private const uint WmKeyDown = 0x0100;
+    private const uint WmChar = 0x0102;
     private const uint WmSetCursor = 0x0020;
     private const uint WmCtlColorEdit = 0x0133;
 
@@ -432,6 +448,18 @@ public sealed class EditorWindow : D2DRenderWindow
 
             case WmKeyDown:
                 if (OnKeyDown((VIRTUAL_KEY)(ulong)wParam.Value)) return Handled;
+                break;
+
+            case WmChar:
+                // The typed character, already mapped through the keyboard layout - which is what a
+                // text box wants, rather than a raw virtual key code.
+                if (_chrome is not null && _chrome.TextFieldFocused)
+                {
+                    _chrome.HandleKey(_document, (char)(ulong)wParam.Value,
+                        backspace: false, enter: false, escape: false);
+                    Invalidate();
+                    return Handled;
+                }
                 break;
 
             case SystemTheme.WM_SETTINGCHANGE:
@@ -657,6 +685,20 @@ public sealed class EditorWindow : D2DRenderWindow
 
     private bool OnKeyDown(VIRTUAL_KEY key)
     {
+        // A focused colour box owns the keyboard: the printable keys arrive as WM_CHAR, and only the
+        // editing keys are handled here. Otherwise typing a hex digit would drive the toolbar.
+        if (_chrome is not null && _chrome.TextFieldFocused)
+        {
+            var handled = _chrome.HandleKey(
+                _document, '\0',
+                backspace: key == VIRTUAL_KEY.VK_BACK,
+                enter: key == VIRTUAL_KEY.VK_RETURN,
+                escape: key == VIRTUAL_KEY.VK_ESCAPE);
+
+            if (handled) Invalidate();
+            return handled;
+        }
+
         // While the text box has focus its keystrokes are text, not shortcuts - otherwise typing
         // "rectangle" would switch tools eight times. Escape still closes it.
         if (_textEditor is not null && key != VIRTUAL_KEY.VK_ESCAPE) return false;

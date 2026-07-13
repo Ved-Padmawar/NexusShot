@@ -44,10 +44,16 @@ public sealed class Ui(D2DResources resources)
         Pointer = pointer;
         PointerDown = pointerDown;
         Hot = 0;
+
+        _clips.Clear();
     }
 
+    /// <summary>Ends the frame, unwinding any clip a caller pushed and did not pop. An unbalanced
+    /// stack faults the device with D2DERR_WRONG_STATE, so a caller that returns early must not be
+    /// able to leave one open.</summary>
     public void EndFrame()
     {
+        while (_clips.Count > 0) Pop();
         if (_pointerReleasedThisFrame) Active = 0;
     }
 
@@ -83,23 +89,81 @@ public sealed class Ui(D2DResources resources)
     /// </summary>
     public void PushClip(Rect bounds)
     {
-        _clips.Push(bounds);
+        _clips.Push((bounds, Layer: false));
         _target.Object.PushAxisAlignedClip(
             AnnotationRenderer.ToRect(bounds), D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_ALIASED);
     }
 
-    public void PopClip()
+    public void PopClip() => Pop();
+
+    /// <summary>Clips to a rounded rectangle, which an axis-aligned clip cannot express. Costs a
+    /// layer, so it is for the odd shaped element rather than for general use.</summary>
+    /// <summary>Pops whatever is on top, with the call that matches how it was pushed. A layer popped
+    /// as an axis-aligned clip is what faults the device.</summary>
+    private void Pop()
     {
         if (_clips.Count == 0) return;
-        _clips.Pop();
-        _target.Object.PopAxisAlignedClip();
+
+        var (_, layer) = _clips.Pop();
+        if (layer) _target.Object.PopLayer();
+        else _target.Object.PopAxisAlignedClip();
     }
 
-    private readonly Stack<Rect> _clips = new();
+    /// <summary>Fills the part of a rounded rectangle that falls inside <paramref name="polygon"/>.
+    /// Intersecting the geometries means the polygon picks up the rectangle's rounded corners exactly,
+    /// which is what a clipping layer would give - and a layer allocates an intermediate surface that
+    /// faults the device when the target is mid-resize.</summary>
+    public void FillRoundedRegion(Rect bounds, float radius, IReadOnlyList<Point> polygon, Rgba color)
+    {
+        using var rounded = resources.Factory.CreateRoundedRectangleGeometry(Rounded(bounds, radius));
+        using var shape = Path(polygon, closed: true);
+
+        var region = resources.CreatePathGeometry();
+        using (var sink = region.Open())
+        {
+            rounded.AsGeometry().CombineWithGeometry(
+                shape.AsGeometry(), sink, D2D1_COMBINE_MODE.D2D1_COMBINE_MODE_INTERSECT);
+            sink.Object.Close();
+        }
+
+        using (region)
+            _target.Object.FillGeometry(region.Object, resources.Brush(color).Object, null!);
+    }
+
+    /// <summary>An open path with round caps and joins.</summary>
+    public void Polyline(IReadOnlyList<Point> points, Rgba color, float thickness)
+    {
+        using var geometry = Path(points, closed: false);
+        _target.Object.DrawGeometry(
+            geometry.Object, resources.Brush(color).Object, thickness, resources.RoundStroke.Object);
+    }
+
+    private IComObject<ID2D1PathGeometry> Path(IReadOnlyList<Point> points, bool closed)
+    {
+        var geometry = resources.CreatePathGeometry();
+        using var sink = geometry.Open();
+
+        sink.Object.BeginFigure(
+            AnnotationRenderer.ToPoint(points[0]),
+            closed ? D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_FILLED
+                   : D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_HOLLOW);
+
+        for (var i = 1; i < points.Count; i++)
+            sink.Object.AddLine(AnnotationRenderer.ToPoint(points[i]));
+
+        sink.Object.EndFigure(closed ? D2D1_FIGURE_END.D2D1_FIGURE_END_CLOSED
+                                     : D2D1_FIGURE_END.D2D1_FIGURE_END_OPEN);
+        sink.Object.Close();
+
+        return geometry;
+    }
+
+    /// <summary>The open clips, and whether each was pushed as a layer or an axis-aligned clip.</summary>
+    private readonly Stack<(Rect Bounds, bool Layer)> _clips = new();
 
     /// <summary>True when the pointer is inside every active clip - and so can actually see and
     /// reach whatever is being drawn.</summary>
-    private bool PointerVisible => _clips.All(clip => clip.Contains(Pointer));
+    private bool PointerVisible => _clips.All(clip => clip.Bounds.Contains(Pointer));
 
     /// <summary>Text in a box, with alignment. Returns nothing: chrome text is never hit-tested.</summary>
     public void Text(
@@ -176,22 +240,25 @@ public sealed class Ui(D2DResources resources)
     public bool IsHot(int id) => Hot == id;
     public bool IsActive(int id) => Active == id;
 
-    /// <summary>A tool tile: an icon glyph on a rounded fill that reads selected, hot or idle.</summary>
+    /// <summary>A tool tile: an icon glyph on a rounded fill that reads selected, hot or idle.
+    /// <paramref name="neutral"/> selects with the chrome's translucent fill rather than the accent -
+    /// a nav destination is somewhere you are, not a mode you have armed.</summary>
     public bool Tile(
         int id, Rect bounds, bool selected, string glyph, double glyphSize,
-        string? tooltip = null, Rgba? tint = null)
+        string? tooltip = null, Rgba? tint = null, bool neutral = false)
     {
         var clicked = Interact(id, bounds);
 
         var fill = selected
-            ? Theme.Accent
+            ? neutral ? Theme.FillSelected : Theme.Accent
             : IsActive(id) ? Theme.FillPressed
             : IsHot(id) ? Theme.FillHover
             : default;
 
         if (fill.A > 0) FillRounded(bounds, Metrics.RadiusControl, fill);
 
-        var foreground = selected ? Theme.TextOnAccent
+        var foreground = selected
+            ? neutral ? Theme.TextPrimary : Theme.TextOnAccent
             : IsHot(id) ? Theme.TextPrimary
             : Theme.TextSecondary;
         Icon(glyph, bounds, tint ?? foreground, glyphSize);
@@ -252,17 +319,19 @@ public sealed class Ui(D2DResources resources)
         return true;
     }
 
-    /// <summary>
-    /// A text button, optionally with a leading glyph and an accent (primary) treatment.
-    ///
-    /// Hover brightens the *border*, not the fill: a fill that changes on hover reads as a selection,
-    /// and the toolbar already uses fill to mean "this mode is active".
-    /// </summary>
+    /// <summary>A text button, optionally with a leading glyph and an accent (primary) treatment.
+    /// Hover lifts the surface a step and strengthens the border; pressing lifts it further, so the
+    /// button acknowledges both the pointer arriving and the click landing.</summary>
     public bool Button(
         int id, Rect bounds, string label,
         bool primary = false, bool enabled = true, bool toggled = false,
-        string? glyph = null, double glyphSize = 14, double fontSize = Metrics.FontBody)
+        string? glyph = null, double glyphSize = 14, double fontSize = Metrics.FontBody,
+        bool accent = false)
     {
+        // Interact first: it is what sets Hot/Active, so reading them before it would style the
+        // button from the previous frame's state and drop the first frame of every hover.
+        var clicked = enabled && Interact(id, bounds);
+
         Rgba fill, text, border;
         var bold = false;
 
@@ -287,12 +356,19 @@ public sealed class Ui(D2DResources resources)
         }
         else
         {
-            fill = IsActive(id) ? Theme.FillPressed : Theme.SurfaceOverlay;
-            border = IsHot(id) ? Theme.StrokeStrong : Theme.StrokeDefault;
-            text = Theme.TextPrimary;
-        }
+            // The overlay surface is opaque, so the hover/press tint is composited onto it rather
+            // than replacing it - otherwise the button would go translucent on hover.
+            fill = IsActive(id) ? Over(Theme.SurfaceOverlay, Theme.FillPressed)
+                : IsHot(id) ? Over(Theme.SurfaceOverlay, Theme.FillHover)
+                : Theme.SurfaceOverlay;
 
-        var clicked = enabled && Interact(id, bounds);
+            // A confirmed action tints its text and border rather than filling: a button that turns
+            // solid on success reads as a mode it has entered.
+            border = accent ? Theme.Accent
+                : IsHot(id) || IsActive(id) ? Theme.StrokeStrong
+                : Theme.StrokeDefault;
+            text = accent ? Theme.Accent : Theme.TextPrimary;
+        }
 
         var radius = (float)(Metrics.RadiusControl * (bounds.Height / 32));
         FillRounded(bounds, radius, fill);
@@ -316,6 +392,18 @@ public sealed class Ui(D2DResources resources)
             text, (float)fontSize, bold);
 
         return clicked;
+    }
+
+    /// <summary>Composites a translucent tint over an opaque base, so a hover fill can lift a surface
+    /// rather than replace it.</summary>
+    private static Rgba Over(Rgba baseColor, Rgba tint)
+    {
+        var a = tint.A / 255.0;
+        return new Rgba(
+            (byte)Math.Round(tint.R * a + baseColor.R * (1 - a)),
+            (byte)Math.Round(tint.G * a + baseColor.G * (1 - a)),
+            (byte)Math.Round(tint.B * a + baseColor.B * (1 - a)),
+            baseColor.A);
     }
 
     /// <summary>The rendered width of a string, so a caller can centre or size against it.</summary>

@@ -42,10 +42,10 @@ public static class AdornerGeometry
     /// <paramref name="adornerScale"/> is the inverse display scale, keeping grips a constant
     /// on-screen size however far the image is zoomed.</summary>
     public static GripMetrics Grips(Rect bounds, double adornerScale) => new(
-        Thickness: 4 * adornerScale,
-        UnderlayPad: 1.5 * adornerScale,
-        Arm: Math.Min(18 * adornerScale, Math.Min(bounds.Width, bounds.Height) / 3),
-        Bar: Math.Min(26 * adornerScale, Math.Min(bounds.Width, bounds.Height) / 3));
+        Thickness: 5.5 * adornerScale,
+        UnderlayPad: 1.75 * adornerScale,
+        Arm: Math.Min(20 * adornerScale, Math.Min(bounds.Width, bounds.Height) / 3),
+        Bar: Math.Min(28 * adornerScale, Math.Min(bounds.Width, bounds.Height) / 3));
 
     /// <summary>
     /// The centreline of one grip, offset inward by <paramref name="inset"/> so the full stroke

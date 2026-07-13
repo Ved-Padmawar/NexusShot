@@ -25,6 +25,11 @@ public sealed class FloatingPreview : D2DRenderWindow
     private const uint WmTimer = 0x0113;
 
     private const nuint DismissTimerId = 1;
+    private const nuint DismissAnimationTimerId = 2;
+
+    /// <summary>Posted on a completed drop, so the dismissal does not run inside DoDragDrop's
+    /// unwinding modal loop.</summary>
+    private const uint WmDropped = 0x0400 + 1;   // WM_APP + 1
 
     // Design units; scaled per-monitor.
     private const double CardWidth = 168;
@@ -33,7 +38,7 @@ public sealed class FloatingPreview : D2DRenderWindow
     private const double StackGap = 10;
     private const double EdgeMargin = 18;
 
-    private readonly ScreenshotHistoryItem _item;
+    private ScreenshotHistoryItem _item;
     private readonly int _dismissSeconds;
 
     private D2DResources? _resources;
@@ -63,6 +68,19 @@ public sealed class FloatingPreview : D2DRenderWindow
         _remaining = dismissSeconds;
     }
 
+    /// <summary>Re-points the card at a re-saved capture: the file is the same, the pixels are not.
+    /// The stack re-flows afterwards, since the new image may be a different shape.</summary>
+    public void Refresh(ScreenshotHistoryItem item)
+    {
+        _item = item;
+
+        _thumbnail?.Dispose();
+        _thumbnail = null;
+
+        _remaining = _dismissSeconds;
+        Invalidate();
+    }
+
     /// <summary>The card's size in physical pixels, for the given monitor scale.</summary>
     public static Size CardSize(ScreenshotHistoryItem item, double scale)
     {
@@ -79,6 +97,9 @@ public sealed class FloatingPreview : D2DRenderWindow
     /// <summary>Places the card at its slot in the bottom-left stack.</summary>
     public void PlaceAt(RectInt workArea, double scale, double stackOffset)
     {
+        // A reflow must not fight the dismissal slide.
+        if (_dismissing) return;
+
         _scale = scale;
         var size = CardSize(_item, scale);
 
@@ -153,30 +174,36 @@ public sealed class FloatingPreview : D2DRenderWindow
         _ui.EndFrame();
     }
 
-    // OverlayActionStyle / CloseButton colours, lifted verbatim from the old XAML.
     private static readonly Rgba ActionBackground = new(0x20, 0x20, 0x24, 0xE6);
+    private static readonly Rgba ActionHover = new(0x4A, 0x4A, 0x52, 0xF7);
+    private static readonly Rgba ActionPressed = new(0x60, 0x60, 0x6A, 0xFF);
     private static readonly Rgba ActionBorder = new(0xFF, 0xFF, 0xFF, 0x26);
+    private static readonly Rgba ActionBorderHot = new(0xFF, 0xFF, 0xFF, 0x66);
+
     private static readonly Rgba CloseBackground = new(0x32, 0x32, 0x36, 0xF2);
+    private static readonly Rgba CloseHover = new(0xC4, 0x2B, 0x1C, 0xFF);
     private static readonly Rgba CloseBorder = new(0xFF, 0xFF, 0xFF, 0x59);
 
-    /// <summary>Dismisses the card without acting on the capture. 18x18, inset 4 from the top, 4 from
-    /// the right, radius 10 (circular).</summary>
+    /// <summary>Dismisses the card without acting on the capture.</summary>
     private void DrawClose(Ui ui, Rect card)
     {
         var size = S(18);
         var bounds = new Rect(card.Right - size - S(4), S(4), size, size);
 
-        if (ui.Interact(5, bounds)) Dismiss();
+        var clicked = ui.Interact(5, bounds);
+        var hot = ui.IsHot(5) || ui.IsActive(5);
 
         var center = bounds.Center;
         var radius = (float)(size / 2);
-        ui.FillCircle(center, radius, CloseBackground);
+        ui.FillCircle(center, radius, hot ? CloseHover : CloseBackground);
         ui.StrokeCircle(center, radius, CloseBorder);
         ui.Icon(Icons.Close, bounds, Rgba.White, S(8));
+
+        // Acted on last: Dismiss tears the window down, and the frame still has to finish.
+        if (clicked) Dismiss();
     }
 
-    /// <summary>The hover actions: a full-card scrim behind a centred row of circular buttons,
-    /// 26x26 with 5px spacing, matching OverlayActionStyle.</summary>
+    /// <summary>The hover actions: a full-card scrim behind a centred row of circular buttons.</summary>
     private void DrawActions(Ui ui, Rect card)
     {
         ui.FillRect(card, ui.Theme.HoverScrim);
@@ -189,16 +216,17 @@ public sealed class FloatingPreview : D2DRenderWindow
         var y = card.Center.Y - size / 2;
         var glyph = S(12);
 
+        // Copy leaves the card up: the capture is on the clipboard, but you may still want to drag
+        // it, edit it, or copy it again.
         if (ActionButton(ui, 1, new Rect(x, y, size, size), Icons.Copy, glyph, false))
         {
             ClipboardImage.Copy(_item.FilePath);
-            Dismiss();
         }
         x += size + spacing;
 
-        if (ActionButton(ui, 2, new Rect(x, y, size, size), Icons.Reveal, glyph, false))
+        if (ActionButton(ui, 2, new Rect(x, y, size, size), Icons.Save, glyph, false))
         {
-            Reveal();
+            SaveAs();
         }
         x += size + spacing;
 
@@ -218,8 +246,7 @@ public sealed class FloatingPreview : D2DRenderWindow
         }
     }
 
-    /// <summary>A circular overlay action button: OverlayActionStyle's background/border, plus a
-    /// hover/pressed brighten since the old style relied on the default WinUI Button template for that.</summary>
+    /// <summary>A circular overlay action button, brightening on hover and press.</summary>
     private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected)
     {
         var clicked = ui.Interact(id, bounds);
@@ -227,13 +254,17 @@ public sealed class FloatingPreview : D2DRenderWindow
         var center = bounds.Center;
         var radius = (float)(bounds.Width / 2);
 
+        // The fill lightens rather than the alpha nudging: these sit on a screenshot, where a small
+        // alpha step on dark grey reads as nothing.
         var background = selected ? ui.Theme.Accent
-            : ui.IsActive(id) ? ActionBackground.WithAlpha(0xFF)
-            : ui.IsHot(id) ? ActionBackground.WithAlpha(0xF2)
+            : ui.IsActive(id) ? ActionPressed
+            : ui.IsHot(id) ? ActionHover
             : ActionBackground;
 
+        var border = ui.IsHot(id) || ui.IsActive(id) || selected ? ActionBorderHot : ActionBorder;
+
         ui.FillCircle(center, radius, background);
-        ui.StrokeCircle(center, radius, ActionBorder);
+        ui.StrokeCircle(center, radius, border);
         ui.Icon(glyph, bounds, Rgba.White, glyphSize);
 
         return clicked;
@@ -247,35 +278,88 @@ public sealed class FloatingPreview : D2DRenderWindow
         ui.Icon(Icons.Pin, badge, ui.Theme.Accent, S(11));
     }
 
-    private void Reveal()
+    /// <summary>Writes a copy wherever the user picks, then dismisses: the capture has landed
+    /// somewhere permanent, so the card has done its job.</summary>
+    private void SaveAs()
     {
+        var suggested = Path.GetFileName(_item.FilePath);
+        if (FilePicker.SavePng(Handle, suggested, Path.GetDirectoryName(_item.FilePath))
+            is not { } destination) return;
+
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = $"/select,\"{_item.FilePath}\"",
-                UseShellExecute = true,
-            });
+            File.Copy(_item.FilePath, destination, overwrite: true);
         }
-        catch (Exception exception) when (exception is IOException
-            or System.ComponentModel.Win32Exception)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Explorer not opening is not worth taking the app down for.
+            return;
         }
+
+        Dismiss();
     }
 
+    /// <summary>Dismisses the card without acting on the capture.</summary>
     public void Dismiss()
     {
+        if (_dismissing) return;
+        _dismissing = true;
+
         KillTimer(Handle, DismissTimerId);
+
+        // Removed from the stack now, so the reflow closes the gap while this card is still fading.
         Dismissed?.Invoke(this);
+        StartDismissAnimation();
+    }
+
+    /// <summary>Fades the card out while drifting it left, then closes it. The whole HWND fades via
+    /// WS_EX_LAYERED alpha: the card is its own top-level window, so there is nothing of ours behind
+    /// it to fade into.</summary>
+    private void StartDismissAnimation()
+    {
+        var style = GetWindowLongPtrW(Handle, GWL_EXSTYLE);
+        SetWindowLongPtrW(Handle, GWL_EXSTYLE, style | WS_EX_LAYERED);
+
+        // A freshly layered window has no alpha set and may stop painting; pin it opaque first.
+        SetLayeredWindowAttributes(Handle, 0, 255, LWA_ALPHA);
+
+        GetWindowRect(Handle, out var bounds);
+        _dismissOriginX = bounds.Left;
+        _dismissOriginY = bounds.Top;
+        _dismissStarted = Environment.TickCount64;
+
+        SetTimer(Handle, DismissAnimationTimerId, 10, IntPtr.Zero);
+    }
+
+    private void StepDismissAnimation()
+    {
+        const double durationMs = 180;
+        var progress = Math.Min(1, (Environment.TickCount64 - _dismissStarted) / durationMs);
+        var eased = progress * (2 - progress);
+
+        SetLayeredWindowAttributes(Handle, 0, (byte)(255 * (1 - eased)), LWA_ALPHA);
+
+        var slide = (int)Math.Round(eased * S(8));
+        SetWindowPos(Handle, HWND_TOPMOST, _dismissOriginX - slide, _dismissOriginY, 0, 0,
+            SWP_NOSIZE | SWP_NOACTIVATE);
+
+        if (progress < 1) return;
+
+        KillTimer(Handle, DismissAnimationTimerId);
         Close();
     }
+
+    private bool _dismissing;
+    private long _dismissStarted;
+    private int _dismissOriginX;
+    private int _dismissOriginY;
 
     private bool _pointerDown;
 
     /// <summary>Where the press landed, so a drag can be told from a click.</summary>
     private Point? _pressOrigin;
+
+    /// <summary>True when the press landed on an action button, which is not a drag.</summary>
+    private bool _pressedAction;
 
     private Point PointerInClient()
     {
@@ -286,6 +370,10 @@ public sealed class FloatingPreview : D2DRenderWindow
 
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
     {
+        // A card on its way out takes no further input; only its animation timer still runs.
+        if (_dismissing && msg is WmMouseMove or WmLButtonDown or WmLButtonUp or WmMouseLeave)
+            return new LRESULT { Value = 0 };
+
         switch (msg)
         {
             case WmMouseMove:
@@ -297,14 +385,22 @@ public sealed class FloatingPreview : D2DRenderWindow
 
                 // Past the threshold with the button down, and not on an action: the user is
                 // dragging the capture out of the app rather than clicking it.
-                if (_pointerDown && _pressOrigin is { } origin && !(_ui?.WantsPointer ?? false))
+                if (_pointerDown && _pressOrigin is { } origin && !_pressedAction)
                 {
                     var now = PointerInClient();
                     if (Math.Abs(now.X - origin.X) >= 6 || Math.Abs(now.Y - origin.Y) >= 6)
                     {
                         _pointerDown = false;
                         _pressOrigin = null;
-                        FileDrag.Start(_item.FilePath);
+
+                        // DoDragDrop needs the mouse; holding capture would starve it.
+                        if (GetCapture() == Handle) ReleaseCapture();
+
+                        // A completed drop means the capture reached its destination, so the card is
+                        // done. Posted rather than called - see WmDropped.
+                        if (FileDrag.Start(_item.FilePath, BuildDragImage(origin)))
+                            PostMessageW(Handle, WmDropped, IntPtr.Zero, IntPtr.Zero);
+
                         return new LRESULT { Value = 0 };
                     }
                 }
@@ -312,25 +408,44 @@ public sealed class FloatingPreview : D2DRenderWindow
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
+            case WmDropped:
+                Dismiss();
+                return new LRESULT { Value = 0 };
+
             case WmMouseLeave:
+                // A live press is a drag beginning - leaving the card is how it starts, so it must
+                // not be cancelled here.
                 _hovered = false;
-                _pointerDown = false;
+                if (!_pointerDown) _pressOrigin = null;
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmLButtonDown:
                 _pointerDown = true;
                 _pressOrigin = PointerInClient();
+
+                _pressedAction = _ui?.WantsPointer ?? false;
+
+                // Without capture the moves stop arriving the moment the cursor clears the card -
+                // which is exactly when a drag-out passes its threshold.
+                SetCapture(Handle);
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmLButtonUp:
                 _pointerDown = false;
                 _pressOrigin = null;
+                if (GetCapture() == Handle) ReleaseCapture();
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmTimer:
+                if ((nuint)wParam.Value == DismissAnimationTimerId)
+                {
+                    StepDismissAnimation();
+                    return new LRESULT { Value = 0 };
+                }
+
                 // The countdown pauses under the pointer and while pinned: a timer that runs while
                 // you are reaching for a button will eventually lose you a capture.
                 if (_hovered || IsPinned)
@@ -342,6 +457,30 @@ public sealed class FloatingPreview : D2DRenderWindow
                 return new LRESULT { Value = 0 };
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
+    }
+
+    /// <summary>The card itself, as the picture that follows the cursor. The hotspot is where the
+    /// press landed, so the image stays under the finger rather than jumping.</summary>
+    private DragImage? BuildDragImage(Point press)
+    {
+        try
+        {
+            var size = CardSize(_item, _scale);
+            var width = Math.Max(1, (int)size.Width);
+            var height = Math.Max(1, (int)size.Height);
+
+            var decoded = ImageSurface.DecodeScaled(_item.FilePath, width, height);
+
+            return DragImage.FromPixels(
+                decoded.Pixels, decoded.Width, decoded.Height,
+                Math.Clamp((int)press.X, 0, decoded.Width),
+                Math.Clamp((int)press.Y, 0, decoded.Height));
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException)
+        {
+            // No picture is better than no drag.
+            return null;
+        }
     }
 
     /// <summary>Asks for WM_MOUSELEAVE, which Windows does not send unless a window opts in.</summary>
@@ -360,6 +499,7 @@ public sealed class FloatingPreview : D2DRenderWindow
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
         KillTimer(Handle, DismissTimerId);
+        KillTimer(Handle, DismissAnimationTimerId);
         _thumbnail?.Dispose();
         _resources?.Dispose();
         _thumbnail = null;
@@ -368,8 +508,13 @@ public sealed class FloatingPreview : D2DRenderWindow
     }
 
     private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
+
+    private const int GWL_EXSTYLE = -20;
+    private const nint WS_EX_LAYERED = 0x00080000;
+    private const uint LWA_ALPHA = 0x00000002;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TRACKMOUSEEVENT
@@ -383,9 +528,32 @@ public sealed class FloatingPreview : D2DRenderWindow
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int X, Y; }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")]
+    private static extern nint GetWindowLongPtrW(IntPtr window, int index);
+
+    [DllImport("user32.dll")]
+    private static extern nint SetWindowLongPtrW(IntPtr window, int index, nint value);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetLayeredWindowAttributes(
+        IntPtr window, uint key, byte alpha, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr window, out RECT bounds);
+
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(
         IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessageW(IntPtr window, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")] private static extern IntPtr SetCapture(IntPtr window);
+    [DllImport("user32.dll")] private static extern IntPtr GetCapture();
+    [DllImport("user32.dll")] private static extern bool ReleaseCapture();
 
     [DllImport("user32.dll")] private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT track);
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT point);

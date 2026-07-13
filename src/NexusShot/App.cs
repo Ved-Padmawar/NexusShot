@@ -43,6 +43,7 @@ public sealed class App : IDisposable
         _main.CaptureRequested += Capture;
         _main.EditRequested += Edit;
         _main.HotkeysChanged += ApplyHotkeys;
+        _main.RecordingChanged += SuspendHotkeys;
 
         var scale = Functions.GetDpiForWindow(_main.Handle) / 96.0;
         _main.ResizeClient((int)(1100 * scale), (int)(720 * scale));
@@ -56,6 +57,9 @@ public sealed class App : IDisposable
         _main.ThemeChanged += RethemeEditors;
         WatchSaveFolder();
 
+        // Rewrites a Run entry from an older build, which had no --startup flag.
+        if (_settings.StartWithWindows) Startup.Set(true);
+
         Log.Info("app.started", $"{_history.Count} captures");
 
         // The main window's WndProc is the app's message pump: the tray and the hotkeys both post
@@ -63,10 +67,14 @@ public sealed class App : IDisposable
         _main.MessageIntercept = OnMessage;
     }
 
-    public void Run()
+    /// <summary>A login launch starts in the tray with no window; the hotkeys are live either way.</summary>
+    public void Run(bool showWindow = true)
     {
-        _main.Show();
-        _main.SetForeground();
+        if (showWindow)
+        {
+            _main.Show();
+            _main.SetForeground();
+        }
 
         using var application = new Application();
         application.Run();
@@ -75,6 +83,13 @@ public sealed class App : IDisposable
     /// <summary>Returns true when the message was ours.</summary>
     private bool OnMessage(uint message, long wParam, long lParam)
     {
+        // A second launch asking us to come to the front.
+        if (message == Platform.SingleInstance.WM_SHOW_EXISTING && message != 0)
+        {
+            ShowMain();
+            return true;
+        }
+
         if (message == TrayIcon.WM_TRAY)
         {
             switch (_tray.OnMessage(lParam))
@@ -182,6 +197,23 @@ public sealed class App : IDisposable
         };
     }
 
+    /// <summary>Updates the card showing a re-saved capture, or brings a new one up if that card was
+    /// already dismissed.</summary>
+    private void RefreshPreview(ScreenshotHistoryItem item)
+    {
+        var card = _previews.FirstOrDefault(preview =>
+            string.Equals(preview.FilePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
+
+        if (card is null)
+        {
+            ShowPreview(item);
+            return;
+        }
+
+        card.Refresh(item);
+        ReflowPreviews();
+    }
+
     /// <summary>Shows a quick-access card for a fresh capture, and reflows the stack.</summary>
     private void ShowPreview(ScreenshotHistoryItem item)
     {
@@ -253,19 +285,53 @@ public sealed class App : IDisposable
             _main.Invalidate();
         };
 
-        // Save As writes a new file; it belongs in the history like any other capture.
-        editor.SavedAs += path =>
+        // Save overwrites the capture, so its history row and its card are both showing stale pixels
+        // at a size a crop may have changed.
+        editor.Saved += path =>
         {
-            if (_history.Any(entry => entry.FilePath == path)) return;
-
             var (width, height) = ImageSurface.ReadSize(path);
-            _main.AddCapture(new ScreenshotHistoryItem
+
+            var entry = _history.FirstOrDefault(candidate => candidate.FilePath == path);
+            if (entry is not null)
+            {
+                entry.Width = width;
+                entry.Height = height;
+                _storage.SaveHistory(_history);
+            }
+
+            _main.DropCache(path);
+            _main.Invalidate();
+
+            RefreshPreview(entry ?? new ScreenshotHistoryItem
             {
                 FilePath = path,
                 CapturedAt = DateTimeOffset.Now,
                 Width = width,
                 Height = height,
             });
+        };
+
+        // Save As writes a new file; it belongs in the history, and gets a card of its own.
+        editor.SavedAs += path =>
+        {
+            var existing = _history.FirstOrDefault(entry => entry.FilePath == path);
+            if (existing is not null)
+            {
+                RefreshPreview(existing);
+                return;
+            }
+
+            var (width, height) = ImageSurface.ReadSize(path);
+            var item = new ScreenshotHistoryItem
+            {
+                FilePath = path,
+                CapturedAt = DateTimeOffset.Now,
+                Width = width,
+                Height = height,
+            };
+
+            _main.AddCapture(item);
+            ShowPreview(item);
         };
 
         var scale = Functions.GetDpiForWindow(editor.Handle) / 96.0;
@@ -286,6 +352,15 @@ public sealed class App : IDisposable
     /// <summary>Re-registers the global shortcuts, and tells the shell which ones another app owns
     /// so the settings pane can say so rather than leaving the user wondering.</summary>
     private void ApplyHotkeys() => _main.ReportHotkeyConflicts(_hotkeys.Apply(_settings));
+
+    /// <summary>Drops the global shortcuts while a binding is being recorded. A registered key is
+    /// delivered as WM_HOTKEY, never as a keystroke, so pressing the key you are rebinding would fire
+    /// its action and never reach the recorder.</summary>
+    private void SuspendHotkeys(bool recording)
+    {
+        if (recording) _hotkeys.UnregisterAll();
+        else ApplyHotkeys();
+    }
 
     /// <summary>The save folder may have moved, so the watcher follows it.</summary>
     private void OnSettingsChanged() => WatchSaveFolder();

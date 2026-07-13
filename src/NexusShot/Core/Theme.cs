@@ -62,8 +62,10 @@ public sealed record Theme
         StrokeDefault = Hex("#FFFFFF", 0x1F),
         StrokeStrong = Hex("#FFFFFF", 0x33),
 
-        FillHover = Hex("#FFFFFF", 0x12),
-        FillPressed = Hex("#FFFFFF", 0x0A),
+        // Pressed is deeper than hover, not lighter: on a dark surface "more light" is what reads as
+        // more pressure.
+        FillHover = Hex("#FFFFFF", 0x14),
+        FillPressed = Hex("#FFFFFF", 0x24),
         FillSelected = Hex("#FFFFFF", 0x1F),
 
         TextPrimary = Hex("#F2F2F4"),

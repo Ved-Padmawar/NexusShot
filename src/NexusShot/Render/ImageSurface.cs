@@ -2,6 +2,9 @@ using NexusShot.Core;
 
 namespace NexusShot.Render;
 
+/// <summary>Decoded pixels with no device attached: premultiplied BGRA, top-down.</summary>
+public sealed record DecodedImage(byte[] Pixels, int Width, int Height);
+
 /// <summary>
 /// The decoded source image: a GPU bitmap for drawing, plus the CPU pixels for anything that needs
 /// to read them back (export, colour picking).
@@ -72,8 +75,13 @@ public sealed class ImageSurface : IDisposable
     /// the whole point. A history of 4K captures each cached at full size is hundreds of megabytes
     /// for images that end up in a 52x34 chip.
     /// </summary>
-    public static unsafe ImageSurface LoadScaled(
-        string path, IComObject<ID2D1DeviceContext> context, int maxWidth, int maxHeight)
+    public static ImageSurface LoadScaled(
+        string path, IComObject<ID2D1DeviceContext> context, int maxWidth, int maxHeight) =>
+        Upload(DecodeScaled(path, maxWidth, maxHeight), context);
+
+    /// <summary>The CPU half of <see cref="LoadScaled"/>: decodes and scales, touching no device, so
+    /// it is safe to call from any thread.</summary>
+    public static unsafe DecodedImage DecodeScaled(string path, int maxWidth, int maxHeight)
     {
         using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
         using var frame = decoder.GetFrame(0);
@@ -106,11 +114,20 @@ public sealed class ImageSurface : IDisposable
         fixed (byte* buffer = pixels)
         {
             converter.Object.CopyPixels(0, (uint)stride, (uint)pixels.Length, (nint)buffer).ThrowOnError();
+        }
 
+        return new DecodedImage(pixels, width, height);
+    }
+
+    /// <summary>The GPU half: uploads decoded pixels. Must run on the thread that owns the device.</summary>
+    public static unsafe ImageSurface Upload(DecodedImage image, IComObject<ID2D1DeviceContext> context)
+    {
+        fixed (byte* buffer = image.Pixels)
+        {
             var bitmap = context.CreateBitmap(
-                new D2D_SIZE_U { width = (uint)width, height = (uint)height },
+                new D2D_SIZE_U { width = (uint)image.Width, height = (uint)image.Height },
                 (nint)buffer,
-                (uint)stride,
+                (uint)(image.Width * 4),
                 new D2D1_BITMAP_PROPERTIES1
                 {
                     pixelFormat = new D2D1_PIXEL_FORMAT
@@ -125,8 +142,8 @@ public sealed class ImageSurface : IDisposable
             return new ImageSurface
             {
                 Bitmap = bitmap,
-                Width = width,
-                Height = height,
+                Width = image.Width,
+                Height = image.Height,
                 Pixels = null,
             };
         }

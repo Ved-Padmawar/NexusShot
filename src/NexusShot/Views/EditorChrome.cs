@@ -17,8 +17,11 @@ public sealed class EditorChrome(Ui ui)
     /// physical pixel rather than one DIP.</summary>
     public static double Scale { get; set; } = 1;
 
+    /// <summary>The strip the window's own caption buttons occupy, above the toolbar.</summary>
+    public static double CaptionHeight { get; set; }
+
     public static double ToolbarHeight => 46 * Scale;
-    public static double ChromeTop => ToolbarHeight;
+    public static double ChromeTop => CaptionHeight + ToolbarHeight;
     public static double FooterHeight => 40 * Scale;
 
     private static double TileSize => 32 * Scale;
@@ -56,9 +59,28 @@ public sealed class EditorChrome(Ui ui)
     /// <summary>True while the picker is open, so the canvas ignores clicks that land on it.</summary>
     public bool PopupOpen => _picker.IsOpen;
 
-    public void Draw(
-        EditorDocument document, double width, double height, string title, bool fit, string? toast)
+    /// <summary>True while one of the picker's boxes has the keyboard, so the window sends keys there
+    /// rather than treating them as tool shortcuts.</summary>
+    public bool TextFieldFocused => _picker.IsEditing;
+
+    /// <summary>Routes a key to the focused colour box, applying the colour if it commits.</summary>
+    public bool HandleKey(
+        EditorDocument document, char character, bool backspace, bool enter, bool escape)
     {
+        if (!_picker.IsEditing) return false;
+
+        if (_picker.HandleKey(character, backspace, enter, escape, out var colour)
+            && colour is { } picked)
+            document.SetColor(picked.ToHex());
+
+        return true;
+    }
+
+    public void Draw(
+        EditorDocument document, double width, double height, string title, bool fit, string? toast,
+        bool copied)
+    {
+        _copied = copied;
         ToolPicked = null;
         UndoPressed = RedoPressed = DeletePressed = false;
         SavePressed = SaveAsPressed = CopyPressed = false;
@@ -66,6 +88,7 @@ public sealed class EditorChrome(Ui ui)
 
         ui.Scale = Scale;
         DrawToolbar(document, width);
+        DrawCaptionTitle(title, width);
         DrawFooter(document, width, height, fit, toast);
 
         // Last, so it paints over the toolbar rather than under it.
@@ -73,12 +96,23 @@ public sealed class EditorChrome(Ui ui)
             document.SetColor(colour.ToHex());
     }
 
+    /// <summary>The file being edited, centred in the caption strip the window paints itself.</summary>
+    private void DrawCaptionTitle(string title, double width)
+    {
+        if (CaptionHeight <= 0) return;
+
+        ui.Text(title, new Rect(0, 0, width, CaptionHeight),
+            ui.Theme.TextTertiary, (float)S(Metrics.FontCaption), align: TextAlign.Center);
+    }
+
     private void DrawToolbar(EditorDocument document, double width)
     {
-        const double top = 0;
+        var top = CaptionHeight;
         var bar = new Rect(0, top, width, ToolbarHeight);
 
-        ui.FillRect(bar, ui.Theme.SurfaceRaised);
+        // The caption strip and the toolbar share one surface, so the chrome reads as a single bar
+        // running to the window's top edge rather than a toolbar beneath a titlebar.
+        ui.FillRect(new Rect(0, 0, width, CaptionHeight + ToolbarHeight), ui.Theme.SurfaceRaised);
         ui.FillRect(new Rect(0, bar.Bottom - 1, width, 1), ui.Theme.StrokeSubtle);
 
         var tile = TileSize;
@@ -266,19 +300,25 @@ public sealed class EditorChrome(Ui ui)
         if (ui.Button(9022, new Rect(right, y, saveAs, S(32)), "Save as…", fontSize: font))
             SaveAsPressed = true;
 
-        var copy = Width(ui, "Copy", font, glyph);
+        // The copy confirms itself: the icon becomes a tick and the label reads "Copied".
+        var copyLabel = _copied ? "Copied" : "Copy";
+        var copy = Width(ui, copyLabel, font, glyph);
         right -= copy + S(8);
-        if (ui.Button(9021, new Rect(right, y, copy, S(32)), "Copy",
-            glyph: Icons.Copy, glyphSize: glyph, fontSize: font))
+
+        if (ui.Button(9021, new Rect(right, y, copy, S(32)), copyLabel,
+            glyph: _copied ? Icons.Tick : Icons.Copy, glyphSize: glyph, fontSize: font,
+            accent: _copied))
             CopyPressed = true;
 
-        // A confirmation, so an action that changes nothing visible still says it happened.
+        // Save still gets a badge: it says which file it wrote, which the button cannot.
         if (toast is null) return;
 
         var badge = new Rect(right - S(88), y, S(80), S(32));
         ui.FillRounded(badge, (float)S(Metrics.RadiusControl), ui.Theme.Accent);
         ui.Text(toast, badge, ui.Theme.TextOnAccent, (float)font, align: TextAlign.Center);
     }
+
+    private bool _copied;
 
     /// <summary>A button sized to its content: 14px of padding either side.</summary>
     private static double Width(Ui ui, string label, double font, double glyph = 0)

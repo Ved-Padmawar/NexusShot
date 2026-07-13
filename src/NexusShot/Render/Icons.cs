@@ -25,6 +25,7 @@ public static class Icons
     public const string Redo = "\uE7A6";
     public const string Delete = "\uE74D";
     public const string Copy = "\uE8C8";
+    public const string Tick = "\uE73E";
     public const string Save = "\uE74E";
     public const string CaptureRegion = "\uE7A8";
     public const string CaptureScreen = "\uE7F4";
