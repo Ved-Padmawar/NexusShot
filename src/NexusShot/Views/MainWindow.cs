@@ -223,12 +223,12 @@ public sealed class MainWindow : CaptionWindow
 
         y += S(38);
 
-        y = DrawCaptureAction(ui, bounds, y, 1, Icons.CaptureRegion, "Region", "Ctrl+Shift+S",
-            CaptureMode.Region);
-        y = DrawCaptureAction(ui, bounds, y, 2, Icons.CaptureScreen, "Full screen", "Ctrl+Shift+F",
-            CaptureMode.FullScreen);
-        y = DrawCaptureAction(ui, bounds, y, 3, Icons.CaptureWindow, "Active window", "Ctrl+Shift+W",
-            CaptureMode.ActiveWindow);
+        y = DrawCaptureAction(ui, bounds, y, 1, Icons.CaptureRegion, "Region",
+            Describe(_settings.CaptureRegionHotkey), CaptureMode.Region);
+        y = DrawCaptureAction(ui, bounds, y, 2, Icons.CaptureScreen, "Full screen",
+            Describe(_settings.CaptureFullScreenHotkey), CaptureMode.FullScreen);
+        y = DrawCaptureAction(ui, bounds, y, 3, Icons.CaptureWindow, "Active window",
+            Describe(_settings.CaptureActiveWindowHotkey), CaptureMode.ActiveWindow);
 
         y += S(14);
 

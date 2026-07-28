@@ -471,16 +471,24 @@ public sealed class Ui(D2DResources resources)
     /// chrome set it once per frame.</summary>
     public double Scale { get; set; } = 1;
 
-    /// <summary>A label under the anchor, sized to its text rather than a character-count guess.</summary>
+    /// <summary>A label under the anchor, clamped to stay within the client area.</summary>
     private void Tooltip(Rect anchor, string text)
     {
         var font = Metrics.FontBody * Scale;
         var padding = 10 * Scale;
         var height = 26 * Scale;
+        var gap = 6 * Scale;
+        var edgeMargin = 4 * Scale;
 
         var width = MeasureText(text, font) + padding * 2;
-        var x = anchor.Center.X - width / 2;
-        var bounds = new Rect(x, anchor.Bottom + 6 * Scale, width, height);
+        var size = _target.Object.GetSize();
+
+        var x = Math.Clamp(anchor.Center.X - width / 2, edgeMargin, size.width - width - edgeMargin);
+        var y = anchor.Bottom + gap + height <= size.height
+            ? anchor.Bottom + gap
+            : anchor.Y - gap - height;
+
+        var bounds = new Rect(x, y, width, height);
 
         FillRounded(bounds, (float)(4 * Scale), Theme.SurfaceOverlay);
         StrokeRounded(bounds, (float)(4 * Scale), Theme.StrokeDefault);
