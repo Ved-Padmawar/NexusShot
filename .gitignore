@@ -2,4 +2,7 @@ bin/
 obj/
 dist/
 docs/
+releases/
 .agents/
+TODO.md
+CLAUDE.md

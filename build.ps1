@@ -22,7 +22,7 @@ param(
     [ValidateSet('dev', 'release', 'installer', 'test')]
     [string]$Mode = 'dev',
 
-    [string]$Version = '2.0.0'
+    [string]$Version = '0.1.0'
 )
 
 $ErrorActionPreference = 'Stop'
