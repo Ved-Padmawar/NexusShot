@@ -106,6 +106,7 @@ public sealed class EditorWindow : CaptionWindow
 
     private void ReleaseResources()
     {
+        _renderer?.Dispose();
         _effects?.Dispose();
         _image?.Dispose();
         _resources?.Dispose();
@@ -274,7 +275,8 @@ public sealed class EditorWindow : CaptionWindow
 
         // Keep repainting while either confirmation is up, or while a caret is blinking, so each
         // clears on time rather than on the next stray mouse move.
-        if (toast is not null || copied || _textEditor is not null) Invalidate();
+        if (toast is not null || copied || _textEditor is not null || _ui.ClickedThisFrame)
+            Invalidate();
     }
 
     /// <summary>The frame around an open text box, in the annotation's own colour, so it is visible

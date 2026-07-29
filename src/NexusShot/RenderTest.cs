@@ -39,6 +39,11 @@ internal static class RenderTest
         Stroke(document, EditorTool.Pen, "#FF3B30", 8, Wave(120, 460, 400, 30));
         Stroke(document, EditorTool.Eraser, "#000000", 30, [new(250, 460), new(310, 460)]);
 
+        // A brush dab nicked by a smaller eraser tap: it must survive as a circle with a bite,
+        // not vanish. Its zero-length centreline cannot go through Widen.
+        Stroke(document, EditorTool.Brush, "#0A84FF", 60, [new(1200, 380)]);
+        Stroke(document, EditorTool.Eraser, "#000000", 16, [new(1225, 380)]);
+
         // Brush effects: the GPU blur and pixelate.
         Stroke(document, EditorTool.Blur, "#000000", 10, Wave(560, 470, 300, 10));
         Stroke(document, EditorTool.Pixelate, "#000000", 10, Wave(900, 470, 300, 10));
@@ -93,7 +98,7 @@ internal static class RenderTest
         context.Object.SetTarget(surface.Object);
 
         using var resources = new D2DResources(context.AsRenderTarget2());
-        var renderer = new AnnotationRenderer(resources);
+        using var renderer = new AnnotationRenderer(resources);
         using var effects = new PixelEffectSource(image, resources);
 
         var timings = new List<double>();

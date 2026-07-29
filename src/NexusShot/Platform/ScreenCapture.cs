@@ -36,8 +36,6 @@ public static class ScreenCapture
 
     public static string CaptureFullScreen() => Capture(VirtualDesktop);
 
-    public static string CaptureRegion(RectInt region) => Capture(Intersect(region, VirtualDesktop));
-
     public static string CaptureActiveWindow()
     {
         var window = GetForegroundWindow();

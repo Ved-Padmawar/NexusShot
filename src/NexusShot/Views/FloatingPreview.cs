@@ -192,6 +192,8 @@ public sealed class FloatingPreview : D2DRenderWindow
         }
 
         _ui.EndFrame();
+
+        if (_ui.ClickedThisFrame) Invalidate();
     }
 
     /// <summary>The rect to draw the thumbnail into so it covers the card at its own aspect ratio,

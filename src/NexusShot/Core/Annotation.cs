@@ -72,9 +72,16 @@ public sealed class Annotation
         {
             if ((Tool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser || IsBrushEffect) && Points.Count > 0)
             {
-                var minX = Points.Min(p => p.X);
-                var minY = Points.Min(p => p.Y);
-                var box = new Rect(minX, minY, Points.Max(p => p.X) - minX, Points.Max(p => p.Y) - minY);
+                double minX = Points[0].X, maxX = minX, minY = Points[0].Y, maxY = minY;
+                foreach (var p in Points)
+                {
+                    if (p.X < minX) minX = p.X;
+                    if (p.X > maxX) maxX = p.X;
+                    if (p.Y < minY) minY = p.Y;
+                    if (p.Y > maxY) maxY = p.Y;
+                }
+
+                var box = new Rect(minX, minY, maxX - minX, maxY - minY);
                 if (!IsBrushEffect) return box;
 
                 // A brush stroke's footprint extends half a brush beyond its centreline.

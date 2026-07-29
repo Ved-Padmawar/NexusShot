@@ -65,7 +65,7 @@ public static class Exporter
 
         var target = context.AsRenderTarget2();
         using var resources = new D2DResources(target);
-        var renderer = new AnnotationRenderer(resources);
+        using var renderer = new AnnotationRenderer(resources);
         using var effects = new PixelEffectSource(image, resources);
 
         context.Object.SetTarget(surface.Object);

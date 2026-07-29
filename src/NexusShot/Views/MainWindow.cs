@@ -25,8 +25,9 @@ public sealed class MainWindow : CaptionWindow
     private D2DResources? _resources;
     private Ui? _ui;
 
-    /// <summary>Thumbnail-sized decodes, one per row. Small enough to keep for the whole history.</summary>
-    private readonly Dictionary<string, ImageSurface> _thumbnails = [];
+    /// <summary>Thumbnail-sized decodes. Bounded, or the cache grows with the history forever; the
+    /// cap is well above a screenful, so scrolling never evicts a row it is about to draw again.</summary>
+    private readonly LruCache<string, ImageSurface> _thumbnails = new(200);
 
     /// <summary>The full-resolution bitmap for the selected capture, and only that one.</summary>
     private ImageSurface? _preview;
@@ -153,7 +154,7 @@ public sealed class MainWindow : CaptionWindow
     /// editor saves over a capture: the file has changed, and the cached pixels are the old ones.</summary>
     public void DropCache(string path)
     {
-        if (_thumbnails.Remove(path, out var thumbnail)) thumbnail.Dispose();
+        if (_thumbnails.Remove(path, out var thumbnail)) thumbnail?.Dispose();
 
         if (_previewPath != path) return;
         _preview?.Dispose();
@@ -195,6 +196,8 @@ public sealed class MainWindow : CaptionWindow
         DrawCaptionButtons(_ui, width);
 
         _ui.EndFrame();
+
+        if (_ui.ClickedThisFrame) Invalidate();
     }
 
     // ============================  SIDEBAR  ============================
@@ -982,7 +985,9 @@ public sealed class MainWindow : CaptionWindow
             if (uploadContext is null) return null;
 
             var surface = ImageSurface.Upload(pixels, uploadContext);
-            _thumbnails[item.FilePath] = surface;
+
+            // The evicted surface owns a GPU bitmap: dropping the reference would leak it.
+            if (_thumbnails.Add(item.FilePath, surface, out var evicted)) evicted?.Dispose();
             return surface;
         }
 

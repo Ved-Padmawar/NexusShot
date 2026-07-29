@@ -26,6 +26,11 @@ public sealed class Ui(D2DResources resources)
     /// click, which they must do before any widget under them gets the event.</summary>
     public bool PointerPressed => _pointerPressedThisFrame;
 
+    /// <summary>True once any widget reported a click this frame. The frame handling a click has
+    /// already drawn the pre-click state, so its window must schedule one more paint - otherwise the
+    /// new state waits for the next input event to become visible.</summary>
+    public bool ClickedThisFrame { get; private set; }
+
     /// <summary>The widget under the pointer, and the one being dragged. Ids are stable across
     /// frames because callers derive them from what the widget represents, not from draw order.</summary>
     public int Hot { get; private set; }
@@ -44,6 +49,7 @@ public sealed class Ui(D2DResources resources)
         Pointer = pointer;
         PointerDown = pointerDown;
         Hot = 0;
+        ClickedThisFrame = false;
 
         _clips.Clear();
     }
@@ -234,6 +240,7 @@ public sealed class Ui(D2DResources resources)
         if (inside && _pointerPressedThisFrame) Active = id;
 
         var clicked = Active == id && _pointerReleasedThisFrame && inside;
+        if (clicked) ClickedThisFrame = true;
         return clicked;
     }
 

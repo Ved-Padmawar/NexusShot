@@ -28,8 +28,9 @@
 **📸 Capture** — full virtual desktop, active window, and drag-selection region, with correct
 multi-monitor and per-monitor-DPI coordinates. The region picker draws a **frozen snapshot** of the
 screen, dimmed, with a crosshair and a live pixel-dimension readout. A live overlay has to fight the
-compositor and can catch its own dimming in the capture; the snapshot means what you select is
-exactly what you get.
+compositor and can catch its own dimming in the capture. The saved image is cropped from that same
+snapshot rather than re-grabbed afterwards, so an open menu or dropdown — which the overlay's own
+activation dismisses — survives into the shot, and what you select is exactly what you get.
 
 **🃏 Quick Access Overlay** — after each capture a borderless thumbnail card appears at the
 **bottom-left** of the work area and stacks upward as more captures arrive. It never steals focus
@@ -159,7 +160,7 @@ turned out to be the same problem wearing different clothes:
 
 | | WinUI 3 | now |
 | --- | --- | --- |
-| **Erasing** | A XAML `Polyline` cannot have holes, so each stroke was rasterised into a `WriteableBitmap` and the erased pixels cleared in a software loop. | Stroke geometry *minus* the widened eraser path. One geometry, filled by the GPU. |
+| **Erasing** | A XAML `Polyline` cannot have holes, so each stroke was rasterised into a `WriteableBitmap` and the erased pixels cleared in a software loop. | Stroke footprint *minus* the eraser's. One geometry, filled by the GPU, realized once and cached until the stroke changes. |
 | **Blur / pixelate** | C# per-pixel loops on the UI thread, producing a `WriteableBitmap` per stroke per frame. | `ID2D1Effect`. |
 | **Export** | A separate GDI+ flattener, kept in agreement with the on-screen renderer by hand. | The same renderer, pointed at an offscreen target. They cannot drift. |
 | **Blurry preview** | A XAML `Image` scales whatever bitmap it is given: either a pre-scaled thumbnail (soft) or the full image in the visual tree (heavy). | One bitmap per capture, uploaded at full resolution, rescaled by the GPU each frame. |
@@ -254,6 +255,12 @@ coordinate — while `ClientRect`, `WM_MOUSEMOVE` and the image are all already 
 The target is pinned to 96 DPI and the chrome scales itself. That is also what makes "100%" mean one
 image pixel to one *physical* pixel, which is the rule that keeps a screenshot pin-sharp.
 
+**`Widen` on a zero-length centreline returns empty geometry.** A tap with no drag is one point, so
+a stroke drawn that way has nothing to widen — and a stroke whose footprint is empty disappears the
+moment anything is subtracted from it. Dabs build an explicit circle instead, for the painted stroke
+and the eraser mask alike. This is only visible once an erasure exists, because the plain draw path
+special-cases a dab as a filled ellipse and never calls `Widen` at all.
+
 Also: the app manifest needs the ComCtl32 v6 dependency. Without it an unhandled exception dies
 inside its own `TaskDialog` and reports nothing at all.
 
@@ -305,9 +312,13 @@ its own caption icon with `WS_EX_DLGMODALFRAME`, because the sidebar already car
   bitmap or a 52×34 chip. `ImageSurface` splits into `DecodeScaled` (CPU, any thread) and `Upload`
   (GPU, must be the thread that owns the device); thumbnails decode on the thread pool and fill in as
   they arrive. First frame went from **104 ms to 27 ms**.
-- History thumbnails decode at thumbnail resolution. The selected detail image decodes at source
-  resolution for crisp high-DPI display and is released as soon as the selection changes, so
-  full-size bitmaps never accumulate.
+- History thumbnails decode at thumbnail resolution and are held in a 200-entry LRU cache: a
+  capture scrolled well past is evicted and re-decodes on demand, so memory stays flat as the
+  history grows rather than climbing with it. The cap sits far above a screenful, so scrolling never
+  evicts a row it is about to draw again.
+- The selected detail image decodes at source resolution for crisp high-DPI display. Exactly one is
+  held — selecting another capture, or closing the selection, releases it — so full-size bitmaps
+  never accumulate.
 - A `FileSystemWatcher` on the save folder keeps the sidebar synchronized with File Explorer:
   external deletes remove rows, new PNGs appear automatically. The watcher fires on a thread-pool
   thread, so its work is posted to the UI thread rather than mutating the history under a frame that

@@ -163,11 +163,7 @@ public sealed class App : IDisposable
         }
     }
 
-    private static string? CaptureRegion()
-    {
-        var region = RegionOverlay.Pick();
-        return region is { } bounds ? ScreenCapture.Capture(bounds) : null;
-    }
+    private static string? CaptureRegion() => RegionOverlay.Pick();
 
     /// <summary>Moves the temp capture into the screenshot folder and records it.</summary>
     private ScreenshotHistoryItem Store(string temporaryPath)

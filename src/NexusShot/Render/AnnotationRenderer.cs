@@ -9,8 +9,16 @@ namespace NexusShot.Render;
 /// The caller sets the world transform, so the exporter draws with the identity transform and
 /// produces exactly what the screen shows.
 /// </summary>
-public sealed class AnnotationRenderer(D2DResources resources)
+public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 {
+    /// <summary>An erased stroke's realized geometry, keyed by everything that changes its shape:
+    /// the endpoints catch a translate, which moves every point but changes no count.</summary>
+    private sealed record ErasedGeometry(
+        int PointCount, Point First, Point Last, double Thickness, int MaskCount, int MaskPointCount,
+        IComObject<ID2D1PathGeometry> Geometry);
+
+    private readonly Dictionary<Guid, ErasedGeometry> _erasedStrokes = [];
+
     /// <summary>Draws every annotation in paint order. Adorners are the caller's business, so
     /// the exporter can reuse this without drawing selection handles into the file.</summary>
     /// <summary><paramref name="skip"/> omits one annotation, for when a live editor is standing in
@@ -25,6 +33,19 @@ public sealed class AnnotationRenderer(D2DResources resources)
         {
             if (ReferenceEquals(annotation, skip)) continue;
             DrawAnnotation(target, annotation, document, effects);
+        }
+
+        PruneErasedStrokes(document);
+    }
+
+    /// <summary>Drops cached geometry for strokes no longer in the document.</summary>
+    private void PruneErasedStrokes(EditorDocument document)
+    {
+        if (_erasedStrokes.Count == 0) return;
+        foreach (var id in _erasedStrokes.Keys.ToArray())
+        {
+            if (document.Annotations.Any(a => a.Id == id)) continue;
+            if (_erasedStrokes.Remove(id, out var cached)) cached.Geometry.Dispose();
         }
     }
 
@@ -118,9 +139,39 @@ public sealed class AnnotationRenderer(D2DResources resources)
             return;
         }
 
-        using var geometry = ErasedStrokeGeometry(annotation);
+        var geometry = CachedErasedGeometry(annotation);
         if (geometry is null) return;
         target.FillGeometry(geometry, resources.Brush(color));
+    }
+
+    /// <summary>The erased stroke's geometry, rebuilt only when its shape changes. Widen and
+    /// Combine are CPU work: rebuilding per frame made every hover pay for every erasure.</summary>
+    private IComObject<ID2D1PathGeometry>? CachedErasedGeometry(Annotation annotation)
+    {
+        var maskPoints = 0;
+        foreach (var mask in annotation.Erasures) maskPoints += mask.Points.Count;
+
+        if (_erasedStrokes.TryGetValue(annotation.Id, out var cached))
+        {
+            if (cached.PointCount == annotation.Points.Count
+                && cached.First == annotation.Points[0]
+                && cached.Last == annotation.Points[^1]
+                && cached.Thickness == annotation.StrokeThickness
+                && cached.MaskCount == annotation.Erasures.Count
+                && cached.MaskPointCount == maskPoints)
+                return cached.Geometry;
+
+            cached.Geometry.Dispose();
+            _erasedStrokes.Remove(annotation.Id);
+        }
+
+        var geometry = ErasedStrokeGeometry(annotation);
+        if (geometry is null) return null;
+
+        _erasedStrokes[annotation.Id] = new ErasedGeometry(
+            annotation.Points.Count, annotation.Points[0], annotation.Points[^1],
+            annotation.StrokeThickness, annotation.Erasures.Count, maskPoints, geometry);
+        return geometry;
     }
 
     /// <summary>The stroke's footprint with its erasures subtracted, as one geometry: Widen turns
@@ -128,12 +179,12 @@ public sealed class AnnotationRenderer(D2DResources resources)
     /// hole is part of the shape, so the GPU fills it in one pass.</summary>
     private IComObject<ID2D1PathGeometry>? ErasedStrokeGeometry(Annotation annotation)
     {
-        var stroke = WidenedPath(annotation.Points, PaintStrokeGeometry.Diameter(annotation.StrokeThickness));
+        var stroke = FootprintGeometry(annotation.Points, PaintStrokeGeometry.Diameter(annotation.StrokeThickness));
         if (stroke is null) return null;
 
         foreach (var mask in annotation.Erasures)
         {
-            var eraser = WidenedPath(mask.Points, mask.Radius * 2);
+            var eraser = FootprintGeometry(mask.Points, mask.Radius * 2);
             if (eraser is null) continue;
 
             var combined = resources.CreatePathGeometry();
@@ -150,6 +201,48 @@ public sealed class AnnotationRenderer(D2DResources resources)
             stroke = combined;
         }
         return stroke;
+    }
+
+    /// <summary>The round footprint a stroke or eraser pass actually painted. A dab must be a plain
+    /// circle: Widen turns its zero-length centreline into *empty* geometry, which would make a
+    /// tapped circle vanish under the smallest eraser touch.</summary>
+    private IComObject<ID2D1PathGeometry>? FootprintGeometry(IReadOnlyList<Point> points, double thickness)
+    {
+        if (points.Count == 0) return null;
+        if (points.Count == 1 || IsDab(points))
+            return CirclePath(points[0], PaintStrokeGeometry.Radius(thickness));
+        return WidenedPath(points, thickness);
+    }
+
+    /// <summary>A circle as a path geometry, so it can join the Combine chain like a widened
+    /// stroke.</summary>
+    private IComObject<ID2D1PathGeometry> CirclePath(Point center, double radius)
+    {
+        var geometry = resources.CreatePathGeometry();
+        using (var sink = geometry.Open())
+        {
+            // Arcs need the full sink, which this already is - Open just types it as the simplified one.
+            var full = (ID2D1GeometrySink)sink.Object;
+            var left = new D2D_POINT_2F((float)(center.X - radius), (float)center.Y);
+            var right = new D2D_POINT_2F((float)(center.X + radius), (float)center.Y);
+            var size = new D2D_SIZE_F((float)radius, (float)radius);
+
+            var toRight = new D2D1_ARC_SEGMENT
+            {
+                point = right,
+                size = size,
+                sweepDirection = D2D1_SWEEP_DIRECTION.D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize = D2D1_ARC_SIZE.D2D1_ARC_SIZE_SMALL,
+            };
+            var toLeft = toRight with { point = left };
+
+            full.BeginFigure(left, D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_FILLED);
+            full.AddArc(in toRight);
+            full.AddArc(in toLeft);
+            full.EndFigure(D2D1_FIGURE_END.D2D1_FIGURE_END_CLOSED);
+            full.Close();
+        }
+        return geometry;
     }
 
     /// <summary>A polyline centreline widened into the closed region a round-capped stroke of
@@ -549,6 +642,14 @@ public sealed class AnnotationRenderer(D2DResources resources)
         radiusX = (float)(bounds.Width / 2),
         radiusY = (float)(bounds.Height / 2),
     };
+
+    /// <summary>Releases the cached geometries. They are factory resources, so this must run
+    /// before the D2DResources that made them is disposed.</summary>
+    public void Dispose()
+    {
+        foreach (var cached in _erasedStrokes.Values) cached.Geometry.Dispose();
+        _erasedStrokes.Clear();
+    }
 }
 
 /// <summary>Arrow shaft and head geometry, shared by the renderer and the exporter.</summary>

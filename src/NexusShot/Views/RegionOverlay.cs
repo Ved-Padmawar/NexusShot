@@ -50,30 +50,46 @@ public sealed class RegionOverlay : D2DRenderWindow
     }
 
     /// <summary>
-    /// Runs the picker to completion and returns the region. Blocking, because a capture is a modal
-    /// act: nothing else in the app can meaningfully happen while the user is choosing what to grab.
+    /// Runs the picker to completion and returns the captured region as a temp PNG, or null if
+    /// cancelled. Blocking, because a capture is a modal act: nothing else in the app can
+    /// meaningfully happen while the user is choosing what to grab.
+    ///
+    /// The result is cropped from the frozen snapshot, never re-captured from the live screen: the
+    /// overlay's own activation dismisses any open menu, so a re-capture saves a changed desktop.
     /// </summary>
-    public static RectInt? Pick()
+    public static string? Pick()
     {
         var desktop = ScreenCapture.VirtualDesktop;
         var snapshot = ScreenCapture.Capture(desktop);
 
         try
         {
-            using var overlay = new RegionOverlay(desktop, snapshot);
-            SetWindowPos(overlay.Handle, IntPtr.Zero,
-                desktop.X, desktop.Y, desktop.Width, desktop.Height, 0);
-            overlay.Show();
-            overlay.SetForeground();
-
-            // A private message loop: the overlay owns the desktop until it resolves. It ends when
-            // the window is destroyed, which Commit and Escape both do.
-            while (overlay.IsWindow && GetMessageW(out var message, IntPtr.Zero, 0, 0) > 0)
+            RectInt? selection;
+            using (var overlay = new RegionOverlay(desktop, snapshot))
             {
-                TranslateMessage(ref message);
-                DispatchMessageW(ref message);
+                SetWindowPos(overlay.Handle, IntPtr.Zero,
+                    desktop.X, desktop.Y, desktop.Width, desktop.Height, 0);
+                overlay.Show();
+                overlay.SetForeground();
+
+                // A private message loop: the overlay owns the desktop until it resolves. It ends
+                // when the window is destroyed, which Commit and Escape both do.
+                while (overlay.IsWindow && GetMessageW(out var message, IntPtr.Zero, 0, 0) > 0)
+                {
+                    TranslateMessage(ref message);
+                    DispatchMessageW(ref message);
+                }
+                selection = overlay.Selection;
             }
-            return overlay.Selection;
+
+            if (selection is not { } region) return null;
+
+            var (pixels, width, height) = ImageSurface.DecodeRegion(
+                snapshot, region.X - desktop.X, region.Y - desktop.Y, region.Width, region.Height);
+
+            var path = Path.Combine(Path.GetTempPath(), $"NexusShot_{Guid.NewGuid():N}.png");
+            PngWriter.Write(path, pixels, width, height);
+            return path;
         }
         finally
         {
