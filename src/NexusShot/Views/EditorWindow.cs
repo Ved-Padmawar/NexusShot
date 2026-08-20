@@ -99,6 +99,9 @@ public sealed class EditorWindow : CaptionWindow
     /// Dispose the host may never call.</summary>
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
+        // Anything still queued outlived the window it was going to draw into.
+        _posted.Clear();
+
         ReleaseResources();
         Closed?.Invoke();
         base.OnDestroyed(sender, e);
@@ -306,9 +309,10 @@ public sealed class EditorWindow : CaptionWindow
         if (_chrome.UndoPressed) Undo();
         if (_chrome.RedoPressed) Redo();
         if (_chrome.DeletePressed) _document.DeleteSelected();
-        if (_chrome.SavePressed) Save();
-        if (_chrome.SaveAsPressed) SaveAs();
-        if (_chrome.CopyPressed) CopyToClipboard();
+        // All three run outside the frame; see Post.
+        if (_chrome.SavePressed) Post(Save);
+        if (_chrome.SaveAsPressed) Post(SaveAs);
+        if (_chrome.CopyPressed) Post(CopyToClipboard);
 
         if (_chrome.FitPicked is { } fit && fit != _fitToViewport)
         {
@@ -428,6 +432,22 @@ public sealed class EditorWindow : CaptionWindow
     private const uint WmKeyDown = 0x0100;
     private const uint WmChar = 0x0102;
     private const uint WmSetCursor = 0x0020;
+    private const uint WmRunPosted = 0x0400 + 1;   // WM_APP + 1
+
+    /// <summary>Runs <paramref name="work"/> once the frame has finished. The chrome reports its
+    /// presses during Render, and a modal picker, a resource reload, or a Saved handler's reflow all
+    /// resize a render target between BeginDraw and EndDraw - which fails with
+    /// D2DERR_WRONG_STATE.</summary>
+    private void Post(Action work)
+    {
+        _posted.Enqueue(work);
+        PostMessageW(Handle, WmRunPosted, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    private readonly Queue<Action> _posted = new();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
     /// <summary>The WM_SETCURSOR hit-test that means the pointer is over the client area - the part
     /// the editor owns. Anything else is frame or caption, and belongs to DefWindowProc.</summary>
@@ -439,6 +459,14 @@ public sealed class EditorWindow : CaptionWindow
     {
         switch (msg)
         {
+            case WmRunPosted:
+            {
+                var work = _posted.ToArray();
+                _posted.Clear();
+                foreach (var item in work) item();
+                return Handled;
+            }
+
             case WmLButtonDown:
                 OnPointerPressed(ClientPoint(lParam));
                 return Handled;

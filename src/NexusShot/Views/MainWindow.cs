@@ -302,7 +302,9 @@ public sealed class MainWindow : CaptionWindow
         var theme = ui.Theme;
         var row = new Rect(sidebar.X + S(10), y, sidebar.Width - S(20), S(38));
 
-        if (ui.Interact(id, row)) CaptureRequested?.Invoke(mode);
+        // Posted: this runs inside Render, and capture hides the window and spins the overlay's own
+        // message loop.
+        if (ui.Interact(id, row)) Post(() => CaptureRequested?.Invoke(mode));
 
         var fill = ui.IsActive(id) ? theme.FillPressed : ui.IsHot(id) ? theme.FillHover : default;
         if (fill.A > 0) ui.FillRounded(row, (float)S(Metrics.RadiusControl), fill);
@@ -491,7 +493,7 @@ public sealed class MainWindow : CaptionWindow
         right -= edit;
         if (ui.Button(23, new Rect(right, y, edit, S(32)), "Edit",
             primary: true, glyph: Icons.Edit, glyphSize: glyph, fontSize: font))
-            EditRequested?.Invoke(item);
+            Post(() => EditRequested?.Invoke(item));
 
         var copy = ButtonWidth(ui, "Copy", font, glyph);
         right -= copy + S(8);
@@ -507,7 +509,7 @@ public sealed class MainWindow : CaptionWindow
 
         right -= icon + S(6);
         if (ui.Tile(21, new Rect(right, iconY, icon, icon), false, Icons.Delete, iconGlyph, "Remove"))
-            Delete(item);
+            Post(() => Delete(item));
 
         right -= icon + S(4);
         if (ui.Tile(20, new Rect(right, iconY, icon, icon), false, Icons.Reveal, iconGlyph,
@@ -604,11 +606,16 @@ public sealed class MainWindow : CaptionWindow
                 if (!ui.Button(40, ActionSlot(row, S(92)), "Change…",
                     fontSize: S(Metrics.FontCaption))) return;
 
-                if (FolderPicker.Pick(Handle, _settings.ScreenshotFolder) is { } folder)
+                // The picker is modal and would pump its loop mid-frame.
+                Post(() =>
                 {
+                    if (FolderPicker.Pick(Handle, _settings.ScreenshotFolder) is not { } folder)
+                        return;
+
                     _settings.ScreenshotFolder = folder;
                     SaveSettings();
-                }
+                    Invalidate();
+                });
             });
 
         y = Row(ui, x, y, width, "Default capture mode", null,

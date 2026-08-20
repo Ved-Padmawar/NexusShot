@@ -27,9 +27,15 @@ public sealed class FloatingPreview : D2DRenderWindow
     private const nuint DismissTimerId = 1;
     private const nuint DismissAnimationTimerId = 2;
 
-    /// <summary>Posted on a completed drop, so the dismissal does not run inside DoDragDrop's
-    /// unwinding modal loop.</summary>
+    /// <summary>Posted, never handled inline: these unwind into a reflow or a modal loop, and
+    /// neither may run inside DoDragDrop or this card's own Render. A reflow reaches SetWindowPos,
+    /// whose synchronous WM_SIZE resizes the render target - between BeginDraw and EndDraw that
+    /// fails with D2DERR_WRONG_STATE.</summary>
     private const uint WmDropped = 0x0400 + 1;   // WM_APP + 1
+    private const uint WmDismiss = 0x0400 + 2;   // WM_APP + 2
+    private const uint WmPinChanged = 0x0400 + 3;   // WM_APP + 3
+    private const uint WmEditRequested = 0x0400 + 4;   // WM_APP + 4
+    private const uint WmSaveAs = 0x0400 + 5;   // WM_APP + 5
 
     // Design units; scaled per-monitor.
     private const double CardWidth = 168;
@@ -270,14 +276,13 @@ public sealed class FloatingPreview : D2DRenderWindow
 
         if (ActionButton(ui, 2, new Rect(x, y, size, size), Icons.Save, glyph, false))
         {
-            SaveAs();
+            PostMessageW(Handle, WmSaveAs, IntPtr.Zero, IntPtr.Zero);
         }
         x += size + spacing;
 
         if (ActionButton(ui, 3, new Rect(x, y, size, size), Icons.Edit, glyph, false))
         {
-            EditRequested?.Invoke(_item);
-            Dismiss();
+            PostMessageW(Handle, WmEditRequested, IntPtr.Zero, IntPtr.Zero);
         }
         x += size + spacing;
 
@@ -286,7 +291,7 @@ public sealed class FloatingPreview : D2DRenderWindow
         {
             IsPinned = !IsPinned;
             _remaining = _dismissSeconds;
-            PinnedChanged?.Invoke();
+            PostMessageW(Handle, WmPinChanged, IntPtr.Zero, IntPtr.Zero);
         }
     }
 
@@ -323,9 +328,23 @@ public sealed class FloatingPreview : D2DRenderWindow
     /// somewhere permanent, so the card has done its job.</summary>
     private void SaveAs()
     {
-        var suggested = Path.GetFileName(_item.FilePath);
-        if (FilePicker.SavePng(Handle, suggested, Path.GetDirectoryName(_item.FilePath))
-            is not { } destination) return;
+        // The picker pumps its own message loop, so the countdown keeps ticking behind it - and
+        // would close the window while the user is still typing a filename.
+        _remaining = _dismissSeconds;
+        _savingAs = true;
+
+        string? destination;
+        try
+        {
+            destination = FilePicker.SavePng(Handle, Path.GetFileName(_item.FilePath),
+                Path.GetDirectoryName(_item.FilePath));
+        }
+        finally
+        {
+            _savingAs = false;
+        }
+
+        if (destination is null) return;
 
         try
         {
@@ -346,8 +365,13 @@ public sealed class FloatingPreview : D2DRenderWindow
         _dismissing = true;
 
         KillTimer(Handle, DismissTimerId);
+        PostMessageW(Handle, WmDismiss, IntPtr.Zero, IntPtr.Zero);
+    }
 
-        // Removed from the stack now, so the reflow closes the gap while this card is still fading.
+    /// <summary>Removed from the stack now, so the reflow closes the gap while this card is still
+    /// fading.</summary>
+    private void DismissCore()
+    {
         Dismissed?.Invoke(this);
         StartDismissAnimation();
     }
@@ -390,6 +414,9 @@ public sealed class FloatingPreview : D2DRenderWindow
     }
 
     private bool _dismissing;
+
+    private bool _savingAs;
+
     private long _dismissStarted;
     private int _dismissOriginX;
     private int _dismissOriginY;
@@ -453,6 +480,24 @@ public sealed class FloatingPreview : D2DRenderWindow
                 Dismiss();
                 return new LRESULT { Value = 0 };
 
+            case WmDismiss:
+                DismissCore();
+                return new LRESULT { Value = 0 };
+
+            case WmPinChanged:
+                PinnedChanged?.Invoke();
+                return new LRESULT { Value = 0 };
+
+            case WmEditRequested:
+                if (_dismissing) return new LRESULT { Value = 0 };
+                EditRequested?.Invoke(_item);
+                Dismiss();
+                return new LRESULT { Value = 0 };
+
+            case WmSaveAs:
+                if (!_dismissing) SaveAs();
+                return new LRESULT { Value = 0 };
+
             case WmMouseLeave:
                 // A live press is a drag beginning - leaving the card is how it starts, so it must
                 // not be cancelled here.
@@ -487,9 +532,10 @@ public sealed class FloatingPreview : D2DRenderWindow
                     return new LRESULT { Value = 0 };
                 }
 
-                // The countdown pauses under the pointer and while pinned: a timer that runs while
-                // you are reaching for a button will eventually lose you a capture.
-                if (_hovered || IsPinned)
+                // The countdown pauses under the pointer, while pinned, and behind the save
+                // dialog: a timer that runs while you are reaching for a button will eventually
+                // lose you a capture.
+                if (_hovered || IsPinned || _savingAs)
                 {
                     _remaining = _dismissSeconds;
                     return new LRESULT { Value = 0 };
