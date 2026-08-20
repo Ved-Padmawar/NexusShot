@@ -42,11 +42,10 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     private void PruneErasedStrokes(EditorDocument document)
     {
         if (_erasedStrokes.Count == 0) return;
-        foreach (var id in _erasedStrokes.Keys.ToArray())
-        {
-            if (document.Annotations.Any(a => a.Id == id)) continue;
-            if (_erasedStrokes.Remove(id, out var cached)) cached.Geometry.Dispose();
-        }
+        var has = new HashSet<Guid>(document.Annotations.Select(a => a.Id));
+        var toRemove = new List<Guid>();
+        foreach (var id in _erasedStrokes.Keys) if (!has.Contains(id)) toRemove.Add(id);
+        foreach (var id in toRemove) if (_erasedStrokes.Remove(id, out var cached)) cached.Geometry.Dispose();
     }
 
     public void DrawAnnotation(
@@ -254,27 +253,15 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         using var line = CreatePath(points, filled: false);
         var widened = resources.CreatePathGeometry();
         using (var sink = widened.Open())
-        using (var style = resources.Factory.CreateStrokeStyle(RoundStrokeProperties))
         {
             line.AsGeometry().Widen(
                 sink,
                 (float)Math.Max(1, thickness),
-                style);
+                resources.RoundStroke);
             sink.Object.Close();
         }
         return widened;
     }
-
-
-    internal static readonly D2D1_STROKE_STYLE_PROPERTIES RoundStrokeProperties = new()
-    {
-        startCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_ROUND,
-        endCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_ROUND,
-        lineJoin = D2D1_LINE_JOIN.D2D1_LINE_JOIN_ROUND,
-        dashCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_ROUND,
-        dashStyle = D2D1_DASH_STYLE.D2D1_DASH_STYLE_SOLID,
-        miterLimit = 10,
-    };
 
     /// <summary>Strokes a polyline with round caps and joins. A single sample is a round dab whose
     /// diameter is the thickness, matching <see cref="PaintStrokeGeometry"/>.</summary>

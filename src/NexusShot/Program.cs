@@ -10,6 +10,9 @@ internal static partial class Program
     [LibraryImport("ole32.dll")]
     private static partial int OleInitialize(IntPtr reserved);
 
+    [LibraryImport("ole32.dll")]
+    private static partial void OleUninitialize();
+
     [STAThread]
     private static void Main(string[] args)
     {
@@ -17,8 +20,8 @@ internal static partial class Program
         // TaskDialog to report it. Write the fault somewhere it can actually be read.
         AppDomain.CurrentDomain.UnhandledException += (_, e) => LogCrash(e.ExceptionObject as Exception);
 
-        OleInitialize(IntPtr.Zero);
-
+        var hr = OleInitialize(IntPtr.Zero);
+        if (hr != 0 && hr != 1) throw new InvalidOperationException($"OleInitialize failed 0x{hr:X8}");
         try
         {
             // Headless render check: exercises the real renderer and exporter with no window.
@@ -54,6 +57,10 @@ internal static partial class Program
         {
             LogCrash(exception);
             throw;
+        }
+        finally
+        {
+            OleUninitialize();
         }
     }
 

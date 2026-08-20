@@ -10,8 +10,10 @@ public sealed class EditorDocument
     private enum GestureKind { None, Draw, Move, Resize, CropMove, CropResize }
 
     private readonly List<Annotation> _annotations = [];
-    private readonly Stack<IReadOnlyList<Annotation>> _undo = new();
-    private readonly Stack<IReadOnlyList<Annotation>> _redo = new();
+    private sealed record DocumentSnapshot(IReadOnlyList<Annotation> Annotations, Rect? CropBounds, Rect? PendingCrop);
+    private readonly Stack<DocumentSnapshot> _undo = new();
+    private readonly Stack<DocumentSnapshot> _redo = new();
+    private const int MaxUndo = 100;
     private readonly Dictionary<Guid, Rect> _strokeBounds = [];
 
     private Annotation? _draft;
@@ -25,7 +27,6 @@ public sealed class EditorDocument
     private bool _gestureUndoPushed;
     private bool _eraserChanged;
     private readonly Dictionary<Annotation, EraserMask> _activeEraserMasks = [];
-    private readonly HashSet<Annotation> _eraserDirtyAnnotations = [];
 
     public IReadOnlyList<Annotation> Annotations => _annotations;
     public EditorTool ActiveTool { get; set; } = EditorTool.Select;
@@ -135,7 +136,6 @@ public sealed class EditorDocument
         _gestureUndoPushed = false;
         _eraserChanged = false;
         _activeEraserMasks.Clear();
-        _eraserDirtyAnnotations.Clear();
 
         // An active crop session owns the pointer: handles resize, the interior moves, and
         // clicks outside the frame do nothing until the session is committed or cancelled.
@@ -410,6 +410,7 @@ public sealed class EditorDocument
             new Rect(0, 0, ImageWidth, ImageHeight));
         annotation.Start = new Point(resized.Left, resized.Top);
         annotation.End = new Point(resized.Right, resized.Bottom);
+        _strokeBounds.Remove(annotation.Id);
     }
 
     public void SetColor(string colorHex)
@@ -581,7 +582,6 @@ public sealed class EditorDocument
             var bounds = GetStrokeBounds(stroke);
             if (!PathMayTouchBounds(path, bounds, radius + stroke.StrokeThickness / 2)) continue;
             hitNow.Add(stroke);
-            _eraserDirtyAnnotations.Add(stroke);
             if (!_activeEraserMasks.TryGetValue(stroke, out var mask))
             {
                 mask = new EraserMask { Radius = radius, Points = [.. path] };
@@ -666,7 +666,12 @@ public sealed class EditorDocument
         annotation.End = new Point(x + width, y + height);
     }
 
-    private int NextCounterValue() => _annotations.Count(a => a.Tool == EditorTool.Counter) + 1;
+    private int NextCounterValue()
+    {
+        var max = 0;
+        foreach (var a in _annotations) if (a.Tool == EditorTool.Counter && a.CounterValue > max) max = a.CounterValue;
+        return max + 1;
+    }
 
     /// <summary>Pushes the undo snapshot for a move/resize on its first actual movement.</summary>
     private void EnsureGestureUndo()
@@ -679,17 +684,24 @@ public sealed class EditorDocument
     private void PushUndo()
     {
         _undo.Push(Snapshot());
+        if (_undo.Count > MaxUndo)
+        {
+            var trimmed = _undo.Reverse().Skip(1).Reverse().ToList();
+            _undo.Clear();
+            foreach (var s in trimmed) _undo.Push(s);
+        }
         _redo.Clear();
     }
 
-    /// <summary>Deep-copies the annotation list so undo restores values, not shared references.</summary>
-    private IReadOnlyList<Annotation> Snapshot() => _annotations.Select(a => a.Clone()).ToList();
+    private DocumentSnapshot Snapshot() => new(_annotations.Select(a => a.Clone()).ToList(), CropBounds, PendingCrop);
 
-    private void Restore(IReadOnlyList<Annotation> snapshot)
+    private void Restore(DocumentSnapshot snapshot)
     {
         var selectedId = Selected?.Id;
         _annotations.Clear();
-        _annotations.AddRange(snapshot);
+        _annotations.AddRange(snapshot.Annotations);
+        CropBounds = snapshot.CropBounds;
+        PendingCrop = snapshot.PendingCrop;
         _strokeBounds.Clear();
         Selected = selectedId is null ? null : _annotations.FirstOrDefault(a => a.Id == selectedId);
         _draft = null;

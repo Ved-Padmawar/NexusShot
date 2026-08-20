@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using NexusShot.Core;
 
 namespace NexusShot.Render;
@@ -11,6 +11,9 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
     private IComObject<ID2D1Effect>? _blur;
     private IComObject<ID2D1Effect>? _downscale;
     private IComObject<ID2D1Effect>? _upscale;
+    /// <summary>One mask per annotation, stamped with the geometry that built it. Point count alone
+    /// is not enough: moving a stroke rewrites coordinates without changing how many there are.</summary>
+    private readonly Dictionary<Guid, (long Stamp, IComObject<ID2D1PathGeometry> Mask)> _maskCache = [];
 
     public void DrawBrushEffect(IComObject<ID2D1DeviceContext> context, Annotation annotation)
     {
@@ -21,7 +24,7 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
             : Blur(context, annotation);
         if (output is null) return;
 
-        using var mask = WidenedStroke(annotation);
+        var mask = WidenedStroke(annotation);
         if (mask is null) return;
 
         // The painted path is the layer's geometric mask, so the effect shows only where the brush
@@ -103,6 +106,14 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
     private IComObject<ID2D1PathGeometry>? WidenedStroke(Annotation annotation)
     {
         var points = annotation.Points;
+        var stamp = GeometryStamp(points, annotation.BrushRadius);
+        if (_maskCache.TryGetValue(annotation.Id, out var cached))
+        {
+            if (cached.Stamp == stamp) return cached.Mask;
+            cached.Mask.Dispose();
+            _maskCache.Remove(annotation.Id);
+        }
+
         using var line = resources.CreatePathGeometry();
         using (var sink = line.Open())
         {
@@ -116,15 +127,29 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
 
         var widened = resources.CreatePathGeometry();
         using (var sink = widened.Open())
-        using (var style = resources.Factory.CreateStrokeStyle(AnnotationRenderer.RoundStrokeProperties))
         {
             line.AsGeometry().Widen(
                 sink,
                 (float)(annotation.BrushRadius * 2),
-                style);
+                resources.RoundStroke);
             sink.Object.Close();
         }
+        _maskCache[annotation.Id] = (stamp, widened);
         return widened;
+    }
+
+    /// <summary>Order-sensitive hash of what the mask was widened from.</summary>
+    private static long GeometryStamp(List<Point> points, double radius)
+    {
+        var hash = new HashCode();
+        hash.Add(points.Count);
+        hash.Add(radius);
+        foreach (var point in points)
+        {
+            hash.Add(point.X);
+            hash.Add(point.Y);
+        }
+        return hash.ToHashCode();
     }
 
     internal static readonly D2D_RECT_F InfiniteRect =
@@ -132,6 +157,8 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
 
     public void Dispose()
     {
+        foreach (var entry in _maskCache.Values) entry.Mask.Dispose();
+        _maskCache.Clear();
         _blur?.Dispose();
         _downscale?.Dispose();
         _upscale?.Dispose();

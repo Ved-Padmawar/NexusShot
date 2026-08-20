@@ -118,5 +118,7 @@ public sealed class D2DResources : IDisposable
         _roundStroke = null;
         _dwrite?.Dispose();
         _dwrite = null;
+        _factory?.Dispose();
+        _factory = null;
     }
 }

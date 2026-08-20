@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 
 namespace NexusShot.Platform;
@@ -128,8 +128,8 @@ public static partial class FileDrag
 
             if (_stored.TryGetValue(format.cfFormat, out var stored))
             {
-                medium = stored;
-                return S_OK;
+                medium = DuplicateMedium(stored, format.cfFormat);
+                return medium.unionmember != IntPtr.Zero ? S_OK : DV_E_FORMATETC;
             }
 
             if ((format.tymed & TYMED_HGLOBAL) == 0) return DV_E_FORMATETC;
@@ -151,6 +151,17 @@ public static partial class FileDrag
             return S_OK;
         }
 
+        /// <summary>A caller-owned copy. OLE calls ReleaseStgMedium on whatever GetData returns, so
+        /// handing back the stored handle would free data we still own.</summary>
+        private static STGMEDIUM DuplicateMedium(in STGMEDIUM src, short cfFormat)
+        {
+            if (src.tymed != TYMED_HGLOBAL || src.unionmember == IntPtr.Zero) return src;
+
+            var dup = OleDuplicateData(src.unionmember, (ushort)cfFormat, 0);
+            if (dup == IntPtr.Zero) return default;
+            return new STGMEDIUM { tymed = src.tymed, unionmember = dup, pUnkForRelease = IntPtr.Zero };
+        }
+
         public int GetDataHere(in FORMATETC format, ref STGMEDIUM medium) => E_NOTIMPL;
 
         public int QueryGetData(in FORMATETC format)
@@ -170,7 +181,14 @@ public static partial class FileDrag
 
         public int SetData(in FORMATETC format, in STGMEDIUM medium, int release)
         {
-            _stored[format.cfFormat] = medium;
+            if (release != 0)
+            {
+                _stored[format.cfFormat] = medium;
+            }
+            else
+            {
+                _stored[format.cfFormat] = DuplicateMedium(medium, format.cfFormat);
+            }
             return S_OK;
         }
 
@@ -416,6 +434,9 @@ public static partial class FileDrag
         in Guid clsid, IntPtr outer, uint context, in Guid iid, out IntPtr instance);
 
     [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr handle);
+
+    [DllImport("ole32.dll")]
+    private static extern IntPtr OleDuplicateData(IntPtr src, ushort cfFormat, uint flags);
 
     [DllImport("ole32.dll")]
     private static extern int DoDragDrop(IntPtr data, IntPtr source, uint allowed, out uint effect);

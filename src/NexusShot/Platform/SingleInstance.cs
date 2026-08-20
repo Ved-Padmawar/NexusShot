@@ -24,9 +24,8 @@ public static class SingleInstance
     /// </summary>
     public static bool Claim()
     {
-        _mutex = new Mutex(initiallyOwned: true, MutexName, out var created);
-
-        if (created) return true;
+        try { _mutex = new Mutex(initiallyOwned: true, MutexName, out var created); if (created) return true; }
+        catch (AbandonedMutexException) { _mutex = new Mutex(initiallyOwned: true, MutexName, out _); return true; }
 
         _mutex.Dispose();
         _mutex = null;

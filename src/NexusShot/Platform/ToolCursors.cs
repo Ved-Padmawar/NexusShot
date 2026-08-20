@@ -52,6 +52,8 @@ public static class ToolCursors
     /// </summary>
     private const int MaxCircle = 256;
 
+    private const int MaxCircles = 16;
+
     public static IntPtr Circle(double diameter, Rgba fill)
     {
         var size = (int)Math.Round(diameter);
@@ -65,6 +67,11 @@ public static class ToolCursors
         var cursor = BuildCircle(size, fill);
         if (cursor == IntPtr.Zero) return Cross;
 
+        if (Circles.Count >= MaxCircles)
+        {
+            var oldest = Circles.Keys.First();
+            if (Circles.Remove(oldest, out var oldHandle)) DestroyIcon(oldHandle);
+        }
         Circles[key] = cursor;
         return cursor;
     }
@@ -205,6 +212,7 @@ public static class ToolCursors
         public IntPtr hbmColor;
     }
 
+    [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr icon);
     [DllImport("user32.dll")] private static extern IntPtr LoadCursorW(IntPtr instance, nint name);
     [DllImport("user32.dll")] private static extern IntPtr CreateIconIndirect(ref ICONINFO info);
     [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr window);

@@ -64,6 +64,24 @@ public static class Monitors
     [DllImport("user32.dll")]
     private static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFO info);
 
+    public static double DpiScaleUnderCursor(IntPtr fallbackWindow)
+    {
+        GetCursorPos(out var cursor);
+        var monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        if (TryGetDpiForMonitor(monitor, out var dpi)) return dpi / 96.0;
+        return Functions.GetDpiForWindow(fallbackWindow) / 96.0;
+    }
+
+    private static bool TryGetDpiForMonitor(IntPtr monitor, out uint dpi)
+    {
+        dpi = 96;
+        try { var hr = GetDpiForMonitor(monitor, 0, out var dx, out _); if (hr == 0) { dpi = dx; return true; } } catch { }
+        return false;
+    }
+
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out POINT point);
+
+    [DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint dpiX, out uint dpiY);
 }

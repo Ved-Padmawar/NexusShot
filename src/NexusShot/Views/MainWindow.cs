@@ -1,4 +1,4 @@
-using NexusShot.Core;
+﻿using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
 
@@ -155,6 +155,7 @@ public sealed class MainWindow : CaptionWindow
     public void DropCache(string path)
     {
         if (_thumbnails.Remove(path, out var thumbnail)) thumbnail?.Dispose();
+        _decoded.TryRemove(path, out _);
 
         if (_previewPath != path) return;
         _preview?.Dispose();
@@ -227,11 +228,11 @@ public sealed class MainWindow : CaptionWindow
         y += S(38);
 
         y = DrawCaptureAction(ui, bounds, y, 1, Icons.CaptureRegion, "Region",
-            Describe(_settings.CaptureRegionHotkey), CaptureMode.Region);
+            Hint(_settings.CaptureRegionHotkey), CaptureMode.Region);
         y = DrawCaptureAction(ui, bounds, y, 2, Icons.CaptureScreen, "Full screen",
-            Describe(_settings.CaptureFullScreenHotkey), CaptureMode.FullScreen);
+            Hint(_settings.CaptureFullScreenHotkey), CaptureMode.FullScreen);
         y = DrawCaptureAction(ui, bounds, y, 3, Icons.CaptureWindow, "Active window",
-            Describe(_settings.CaptureActiveWindowHotkey), CaptureMode.ActiveWindow);
+            Hint(_settings.CaptureActiveWindowHotkey), CaptureMode.ActiveWindow);
 
         y += S(14);
 
@@ -315,8 +316,9 @@ public sealed class MainWindow : CaptionWindow
         ui.Text(label, new Rect(row.X + S(38), row.Y, row.Width - S(48), row.Height),
             theme.TextPrimary, (float)S(Metrics.FontBody));
 
-        ui.Text(shortcut, new Rect(row.X, row.Y, row.Width - S(10), row.Height),
-            theme.TextTertiary, (float)S(Metrics.FontCaption), align: TextAlign.Right);
+        if (shortcut.Length != 0)
+            ui.Text(shortcut, new Rect(row.X, row.Y, row.Width - S(10), row.Height),
+                theme.TextTertiary, (float)S(Metrics.FontCaption), align: TextAlign.Right);
 
         return y + S(39);
     }
@@ -650,8 +652,17 @@ public sealed class MainWindow : CaptionWindow
 
         y = Section(ui, "SHORTCUTS", x, y, width);
 
+        // On the header line: a reset belongs to the group, not to a row of its own.
+        if (!HotkeysAreDefault())
+        {
+            var reset = new Rect(x + width - S(132), y - S(36), S(132), S(28));
+            if (ui.Button(55, reset, "Restore defaults",
+                glyph: Icons.Undo, glyphSize: S(12), fontSize: S(Metrics.FontCaption)))
+                ResetHotkeys();
+        }
+
         ui.Text(
-            "Click a shortcut, then press the new keys. Backspace restores the default, Esc cancels.",
+            "Click a shortcut, then press the new keys. Backspace unbinds, Delete restores that one, Esc cancels.",
             new Rect(x, y, width, S(16)),
             theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
         y += S(30);
@@ -711,8 +722,8 @@ public sealed class MainWindow : CaptionWindow
 
         // Open lists paint after the clip is popped: a list is allowed to overhang the rows below it
         // and the body's own edge, which is the point of a dropdown.
-        _captureModeBox.DrawOpen(ui);
-        _themeBox.DrawOpen(ui);
+        _captureModeBox.DrawOpen(ui, body);
+        _themeBox.DrawOpen(ui, body);
 
         // The scroll extent, so the wheel handler knows where the bottom is.
         _settingsHeight = y + _settingsScroll - body.Y + S(32);
@@ -868,7 +879,7 @@ public sealed class MainWindow : CaptionWindow
         var font = S(Metrics.FontCaption);
         var widest = ui.MeasureText(Recording, font);
 
-        foreach (var id in new[] { 44, 45, 46, 47 })
+        foreach (var id in HotkeyIds)
         {
             if (Binding(id) is not { } binding) continue;
             widest = Math.Max(widest, ui.MeasureText(Describe(binding), font));
@@ -888,7 +899,31 @@ public sealed class MainWindow : CaptionWindow
             var recording = _recordingHotkey == id;
             var label = recording ? Recording : Describe(binding);
 
-            var slot = ActionSlot(row, slotWidth);
+            // The clear gutter is always reserved, so clearing does not shift the recorder.
+            var clearable = binding.Key != 0 && !recording;
+            var full = ActionSlot(row, slotWidth);
+            var clear = new Rect(full.Right - S(22), full.Center.Y - S(11), S(22), S(22));
+            var slot = new Rect(full.X - S(26), full.Y, full.Width, full.Height);
+
+            if (clearable)
+            {
+                if (ui.Interact(id + 7, clear))
+                {
+                    binding.Modifiers = 0;
+                    binding.Key = 0;
+                    _hotkeyWarning = null;
+                    SaveSettings();
+                    HotkeysChanged?.Invoke();
+                    Invalidate();
+                }
+
+                if (ui.IsHot(id + 7))
+                    ui.FillRounded(clear, (float)S(Metrics.RadiusControl), ui.Theme.FillHover);
+
+                ui.Text("✕", clear,
+                    ui.IsHot(id + 7) ? ui.Theme.TextPrimary : ui.Theme.TextTertiary,
+                    (float)S(Metrics.FontCaption), align: TextAlign.Center);
+            }
 
             // The click lands after `recording` was read, so this frame still draws the old label.
             // Without the repaint, "Press keys…" would not appear until the next mouse move.
@@ -914,6 +949,9 @@ public sealed class MainWindow : CaptionWindow
                 (float)S(Metrics.FontCaption), align: TextAlign.Center);
         });
     }
+
+    /// <summary>Describe() for a sidebar hint: unbound draws nothing rather than the word "None".</summary>
+    private static string Hint(HotkeyBinding binding) => binding.Key == 0 ? "" : Describe(binding);
 
     /// <summary>A binding as text: "Ctrl + Shift + S".</summary>
     private static string Describe(HotkeyBinding binding)
@@ -1005,6 +1043,17 @@ public sealed class MainWindow : CaptionWindow
     /// <summary>Decoded thumbnail pixels waiting to be uploaded, keyed by file.</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DecodedImage> _decoded = new();
 
+    /// <summary>Drops pixels for files no longer in the history. An entry is only consumed when its
+    /// row is drawn, so one deleted first would be held forever.</summary>
+    public void SweepDecoded()
+    {
+        if (_decoded.IsEmpty) return;
+
+        var live = _history.Select(item => item.FilePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in _decoded.Keys)
+            if (!live.Contains(path)) _decoded.TryRemove(path, out _);
+    }
+
     /// <summary>Files a decode is already running for, so a repaint does not start a second one.</summary>
     private readonly HashSet<string> _decoding = [];
 
@@ -1040,27 +1089,39 @@ public sealed class MainWindow : CaptionWindow
     /// tens of megabytes each for images nothing is drawing. This is what makes the preview exact
     /// rather than an upscaled thumbnail.
     /// </summary>
+    private bool _previewLoading;
     private ImageSurface? GetFullBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
     {
         if (_previewPath == item.FilePath && _preview is not null) return _preview;
+        if (_previewLoading) return null;
+        if (!File.Exists(item.FilePath)) return null;
 
-        using var context = target.AsDeviceContext();
-        if (context is null || !File.Exists(item.FilePath)) return null;
-
-        _preview?.Dispose();
-        _preview = null;
-        _previewPath = null;
-
-        try
+        _previewLoading = true;
+        var path = item.FilePath;
+        _ = Task.Run(() =>
         {
-            _preview = ImageSurface.Load(item.FilePath, context);
-            _previewPath = item.FilePath;
-            return _preview;
-        }
-        catch (Exception exception) when (exception is IOException or InvalidOperationException)
-        {
-            return null;
-        }
+            try
+            {
+                var decoded = ImageSurface.Decode(path);
+                Post(() =>
+                {
+                    if (_selected?.FilePath != path) { _previewLoading = false; return; }
+                    using var ctx = target.AsDeviceContext();
+                    if (ctx is null) { _previewLoading = false; return; }
+                    try
+                    {
+                        _preview?.Dispose();
+                        _preview = ImageSurface.Upload(new DecodedImage(decoded.Pixels, decoded.Width, decoded.Height), ctx);
+                        _previewPath = path;
+                    }
+                    catch { }
+                    _previewLoading = false;
+                    Invalidate();
+                });
+            }
+            catch { Post(() => _previewLoading = false); }
+        });
+        return _previewPath == path ? _preview : null;
     }
 
     /// <summary>Closes the capture back to the empty state, releasing its full-resolution bitmap.</summary>
@@ -1085,11 +1146,39 @@ public sealed class MainWindow : CaptionWindow
 
         DropCache(item.FilePath);
 
-        try { File.Delete(item.FilePath); }
-        catch (IOException) { /* the file may be open elsewhere; the history entry still goes */ }
+        // history.json is editable on disk, so its paths are not trusted. Delete only under a root
+        // we own: the screenshot folder, or temp for a capture that was never saved.
+        try
+        {
+            var full = Path.GetFullPath(item.FilePath);
+            if (IsUnder(full, _settings.ScreenshotFolder) || IsUnder(full, Path.GetTempPath()))
+                File.Delete(full);
+            else
+                Log.Error("history.delete_outside_root", new InvalidOperationException(full));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The file may be open elsewhere; the history entry still goes.
+        }
 
         _storage.SaveHistory(_history);
         Invalidate();
+    }
+
+    /// <summary>Whether the path sits inside root. The trailing separator matters: without it
+    /// "C:\Shots-elsewhere" prefix-matches "C:\Shots".</summary>
+    private static bool IsUnder(string fullPath, string root)
+    {
+        try
+        {
+            var normalized = Path.GetFullPath(root).TrimEnd(
+                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return fullPath.StartsWith(normalized, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException)
+        {
+            return false;
+        }
     }
 
     private static void Reveal(string path)
@@ -1307,9 +1396,10 @@ public sealed class MainWindow : CaptionWindow
             }
 
             case WmClose:
-                // A capture tool lives in the tray: closing the window hides it rather than exiting,
-                // or the hotkeys would die with it.
                 Hide();
+                _preview?.Dispose();
+                _preview = null;
+                _previewPath = null;
                 return new LRESULT { Value = 0 };
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
@@ -1319,7 +1409,7 @@ public sealed class MainWindow : CaptionWindow
     /// Turns the key press into a binding for the armed row.
     ///
     /// A bare modifier is not a shortcut, so those are ignored and recording stays armed until a
-    /// real key arrives. Esc cancels, Backspace restores the default - and a single key such as F9
+    /// real key arrives. Esc cancels, Backspace unbinds, Delete restores the default - and a single key such as F9
     /// or PrtScn is a legitimate shortcut, so no modifier is required.
     /// </summary>
     private void RecordHotkey(VIRTUAL_KEY key)
@@ -1350,10 +1440,15 @@ public sealed class MainWindow : CaptionWindow
             return;
         }
 
+        // Backspace unbinds - key 0 is never registered. Delete puts the default back.
         if (key == VIRTUAL_KEY.VK_BACK)
         {
-            var defaults = new AppSettings();
-            var restored = Binding(id, defaults)!;
+            target.Modifiers = 0;
+            target.Key = 0;
+        }
+        else if (key == VIRTUAL_KEY.VK_DELETE)
+        {
+            var restored = Binding(id, new AppSettings())!;
             target.Modifiers = restored.Modifiers;
             target.Key = restored.Key;
         }
@@ -1375,6 +1470,37 @@ public sealed class MainWindow : CaptionWindow
         Invalidate();
 
         static bool Down(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
+    }
+
+    private static readonly int[] HotkeyIds = [44, 45, 46, 47];
+
+    /// <summary>Whether every binding already matches a fresh AppSettings.</summary>
+    private bool HotkeysAreDefault()
+    {
+        var defaults = new AppSettings();
+        foreach (var id in HotkeyIds)
+        {
+            if (Binding(id) is not { } current || Binding(id, defaults) is not { } fallback) continue;
+            if (!current.IsSameGesture(fallback)) return false;
+        }
+        return true;
+    }
+
+    private void ResetHotkeys()
+    {
+        var defaults = new AppSettings();
+        foreach (var id in HotkeyIds)
+        {
+            if (Binding(id) is not { } current || Binding(id, defaults) is not { } fallback) continue;
+            current.Modifiers = fallback.Modifiers;
+            current.Key = fallback.Key;
+        }
+
+        _recordingHotkey = null;
+        _hotkeyWarning = null;
+        SaveSettings();
+        HotkeysChanged?.Invoke();
+        Invalidate();
     }
 
     /// <summary>The binding a hotkey row edits.</summary>

@@ -25,7 +25,7 @@ public sealed class App : IDisposable
 
     /// <summary>Editors, keyed by the file they are editing, so a second Edit on the same capture
     /// raises the window that is already open rather than opening another.</summary>
-    private readonly Dictionary<string, EditorWindow> _editors = [];
+    private readonly Dictionary<string, EditorWindow> _editors = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The quick-access cards, newest first. They stack upward from the bottom-left.</summary>
     private readonly List<FloatingPreview> _previews = [];
@@ -84,7 +84,7 @@ public sealed class App : IDisposable
     private bool OnMessage(uint message, long wParam, long lParam)
     {
         // A second launch asking us to come to the front.
-        if (message == Platform.SingleInstance.WM_SHOW_EXISTING && message != 0)
+        if (Platform.SingleInstance.WM_SHOW_EXISTING != 0 && message == Platform.SingleInstance.WM_SHOW_EXISTING)
         {
             ShowMain();
             return true;
@@ -150,7 +150,8 @@ public sealed class App : IDisposable
             var item = Store(path);
             Log.Info("capture", $"{mode} {item.Width}x{item.Height}");
 
-            if (_settings.CopyToClipboardAutomatically) ClipboardImage.Copy(item.FilePath);
+            if (_settings.CopyToClipboardAutomatically)
+                _ = Task.Run(() => { try { ClipboardImage.Copy(item.FilePath); } catch { } });
 
             _main.AddCapture(item);
             ShowPreview(item);
@@ -172,12 +173,18 @@ public sealed class App : IDisposable
         var (width, height) = ImageSurface.ReadSize(temporaryPath);
 
         Directory.CreateDirectory(_settings.ScreenshotFolder);
-        var name = $"NexusShot {DateTime.Now:yyyy-MM-dd HH.mm.ss}.png";
-        var destination = Path.Combine(_settings.ScreenshotFolder, name);
-
+        var baseName = $"NexusShot {DateTime.Now:yyyy-MM-dd HH.mm.ss}";
+        var destination = Path.Combine(_settings.ScreenshotFolder, baseName + ".png");
         if (_settings.SaveAutomatically)
         {
-            File.Move(temporaryPath, destination, overwrite: true);
+            var counter = 1;
+            while (File.Exists(destination))
+            {
+                destination = Path.Combine(_settings.ScreenshotFolder, $"{baseName}_{counter:D3}.png");
+                counter++;
+                if (counter > 999) { destination = Path.Combine(_settings.ScreenshotFolder, $"NexusShot {Guid.NewGuid():N}.png"); break; }
+            }
+            File.Move(temporaryPath, destination, overwrite: false);
         }
         else
         {
@@ -241,7 +248,7 @@ public sealed class App : IDisposable
         // The monitor the pointer is on, not the one the shell happens to be on: a capture belongs
         // to the screen the user is looking at.
         var work = Monitors.WorkAreaUnderCursor();
-        var scale = Functions.GetDpiForWindow(_main.Handle) / 96.0;
+        var scale = Monitors.DpiScaleUnderCursor(_main.Handle);
 
         var offset = 0.0;
         foreach (var preview in _previews.ToArray())
@@ -287,7 +294,7 @@ public sealed class App : IDisposable
         {
             var (width, height) = ImageSurface.ReadSize(path);
 
-            var entry = _history.FirstOrDefault(candidate => candidate.FilePath == path);
+            var entry = _history.FirstOrDefault(candidate => string.Equals(candidate.FilePath, path, StringComparison.OrdinalIgnoreCase));
             if (entry is not null)
             {
                 entry.Width = width;
@@ -310,7 +317,7 @@ public sealed class App : IDisposable
         // Save As writes a new file; it belongs in the history, and gets a card of its own.
         editor.SavedAs += path =>
         {
-            var existing = _history.FirstOrDefault(entry => entry.FilePath == path);
+            var existing = _history.FirstOrDefault(entry => string.Equals(entry.FilePath, path, StringComparison.OrdinalIgnoreCase));
             if (existing is not null)
             {
                 RefreshPreview(existing);
@@ -394,37 +401,47 @@ public sealed class App : IDisposable
         _main.Post(() =>
         {
             var removed = _history.RemoveAll(item => !File.Exists(item.FilePath));
+            if (removed != 0) _main.SweepDecoded();
 
             var known = _history.Select(item => item.FilePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var added = 0;
-
-            try
+            var folder = _settings.ScreenshotFolder;
+            _ = Task.Run(() =>
             {
-                foreach (var file in Directory.EnumerateFiles(_settings.ScreenshotFolder, "*.png"))
+                var candidates = new List<ScreenshotHistoryItem>();
+                try
                 {
-                    if (known.Contains(file)) continue;
-
-                    var (width, height) = ImageSurface.ReadSize(file);
-                    _history.Add(new ScreenshotHistoryItem
+                    foreach (var file in Directory.EnumerateFiles(folder, "*.png"))
                     {
-                        FilePath = file,
-                        CapturedAt = File.GetCreationTime(file),
-                        Width = width,
-                        Height = height,
-                    });
-                    added++;
+                        if (known.Contains(file)) continue;
+                        try
+                        {
+                            var (width, height) = ImageSurface.ReadSize(file);
+                            candidates.Add(new ScreenshotHistoryItem
+                            {
+                                FilePath = file,
+                                CapturedAt = File.GetCreationTime(file),
+                                Width = width,
+                                Height = height,
+                            });
+                        }
+                        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException) { }
+                    }
                 }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                Log.Error("history.sync_failed", exception);
-            }
-
-            if (removed == 0 && added == 0) return;
-
-            _history.Sort((a, b) => b.CapturedAt.CompareTo(a.CapturedAt));
-            _storage.SaveHistory(_history);
-            _main.Invalidate();
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    Log.Error("history.sync_failed", exception);
+                }
+                if (candidates.Count == 0 && removed == 0) return;
+                _main.Post(() =>
+                {
+                    var added = 0;
+                    foreach (var c in candidates) if (!known.Contains(c.FilePath)) { _history.Add(c); added++; known.Add(c.FilePath); }
+                    if (removed == 0 && added == 0) return;
+                    _history.Sort((a, b) => b.CapturedAt.CompareTo(a.CapturedAt));
+                    _storage.SaveHistory(_history);
+                    _main.Invalidate();
+                });
+            });
         });
     }
 

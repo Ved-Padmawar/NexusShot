@@ -24,12 +24,18 @@ public static class SystemTheme
     /// Resolve() runs at the top of every frame, and a registry read per frame is what made the
     /// theme feel sluggish. The value only changes on WM_SETTINGCHANGE, which invalidates this.
     /// </summary>
-    private static bool? _isDark;
+    private static volatile int _darkState = -1;
 
-    public static bool IsDark() => _isDark ??= ReadIsDark();
+    public static bool IsDark()
+    {
+        if (_darkState != -1) return _darkState == 1;
+        var v = ReadIsDark() ? 1 : 0;
+        _darkState = v;
+        return v == 1;
+    }
 
     /// <summary>Re-reads the OS theme. Called when WM_SETTINGCHANGE says it moved.</summary>
-    public static void Invalidate() => _isDark = null;
+    public static void Invalidate() => _darkState = -1;
 
     private static bool ReadIsDark()
     {

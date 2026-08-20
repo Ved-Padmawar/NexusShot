@@ -13,6 +13,24 @@ namespace NexusShot.Render;
 /// </summary>
 public static class Exporter
 {
+    /// <summary>One device for every export: building D3D11 + DXGI + D2D costs tens of
+    /// milliseconds, which is the whole latency budget for a Copy. Lives for the process.</summary>
+    private static readonly object _deviceLock = new();
+    private static IComObject<ID2D1Device>? _sharedDevice;
+
+    private static IComObject<ID2D1Device> GetSharedDevice()
+    {
+        lock (_deviceLock)
+        {
+            if (_sharedDevice is not null) return _sharedDevice;
+            var (device, factory) = D2DDevice.Create();
+
+            // The device holds its own reference to the factory that made it.
+            factory.Dispose();
+            return _sharedDevice = device;
+        }
+    }
+
     /// <summary>
     /// Renders the image plus its annotations, honouring the crop, and writes a PNG.
     ///
@@ -32,9 +50,7 @@ public static class Exporter
         var width = (uint)Math.Max(1, Math.Round(crop.Width));
         var height = (uint)Math.Max(1, Math.Round(crop.Height));
 
-        var (device, factory) = D2DDevice.Create();
-        using var _ = device;
-        using var __ = factory;
+        var device = GetSharedDevice();
         using var context = device.CreateDeviceContext();
 
         // D2D bitmaps are device resources: one realized on the editor's window target cannot be

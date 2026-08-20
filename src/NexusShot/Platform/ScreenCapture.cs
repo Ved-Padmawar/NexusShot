@@ -39,12 +39,14 @@ public static class ScreenCapture
     public static string CaptureActiveWindow()
     {
         var window = GetForegroundWindow();
-        if (window == IntPtr.Zero || !GetWindowRect(window, out var rect))
-            throw new InvalidOperationException("Could not determine the active window.");
-
-        return Capture(Intersect(
-            new RectInt(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top),
-            VirtualDesktop));
+        if (window == IntPtr.Zero) throw new InvalidOperationException("Could not determine the active window.");
+        RectInt winRect;
+        if (DwmGetWindowAttribute(window, 9, out var dwmRect, Marshal.SizeOf<RECT>()) == 0)
+            winRect = new RectInt(dwmRect.Left, dwmRect.Top, dwmRect.Right - dwmRect.Left, dwmRect.Bottom - dwmRect.Top);
+        else if (GetWindowRect(window, out var rect))
+            winRect = new RectInt(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+        else throw new InvalidOperationException("Could not determine the active window.");
+        return Capture(Intersect(winRect, VirtualDesktop));
     }
 
     /// <summary>Blits the region and writes it to a temp PNG. Returns the path.</summary>
@@ -129,6 +131,7 @@ public static class ScreenCapture
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out RECT rect);
+    [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr window, int attr, out RECT value, int size);
     [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr window);
     [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
 

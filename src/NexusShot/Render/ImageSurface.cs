@@ -14,6 +14,8 @@ public sealed record DecodedImage(byte[] Pixels, int Width, int Height);
 /// </summary>
 public sealed class ImageSurface : IDisposable
 {
+    private const long MaximumPixels = 268_435_456; // 1 GiB at 32bpp
+
     public required IComObject<ID2D1Bitmap> Bitmap { get; init; }
     public required int Width { get; init; }
     public required int Height { get; init; }
@@ -94,6 +96,8 @@ public sealed class ImageSurface : IDisposable
 
         var width = Math.Max(1, (int)Math.Round(sourceWidth * scale));
         var height = Math.Max(1, (int)Math.Round(sourceHeight * scale));
+        if ((long)width * height > MaximumPixels)
+            throw new InvalidOperationException("Image too large to decode.");
 
         using var scaler = WicImagingFactory.CreateBitmapScaler();
         scaler.Object.Initialize(
@@ -168,13 +172,19 @@ public sealed class ImageSurface : IDisposable
 
         converter.Object.GetSize(out var sourceWidth, out var sourceHeight).ThrowOnError();
 
+        var clampedX = Math.Clamp(x, 0, Math.Max(0, (int)sourceWidth - 1));
+        var clampedY = Math.Clamp(y, 0, Math.Max(0, (int)sourceHeight - 1));
+        var maxW = Math.Max(1, (int)sourceWidth - clampedX);
+        var maxH = Math.Max(1, (int)sourceHeight - clampedY);
         var rect = new WICRect
         {
-            X = Math.Clamp(x, 0, (int)sourceWidth),
-            Y = Math.Clamp(y, 0, (int)sourceHeight),
+            X = clampedX,
+            Y = clampedY,
         };
-        rect.Width = Math.Clamp(width, 1, (int)sourceWidth - rect.X);
-        rect.Height = Math.Clamp(height, 1, (int)sourceHeight - rect.Y);
+        rect.Width = Math.Clamp(width, 1, maxW);
+        rect.Height = Math.Clamp(height, 1, maxH);
+        if ((long)rect.Width * rect.Height > MaximumPixels)
+            throw new InvalidOperationException("Image region too large to decode.");
 
         var stride = rect.Width * 4;
         var pixels = new byte[stride * rect.Height];
@@ -215,6 +225,8 @@ public sealed class ImageSurface : IDisposable
             WICBitmapPaletteType.WICBitmapPaletteTypeCustom).ThrowOnError();
 
         converter.Object.GetSize(out var width, out var height).ThrowOnError();
+        if ((long)width * (long)height > MaximumPixels)
+            throw new InvalidOperationException("Image too large to decode.");
         var stride = (int)width * 4;
         var pixels = new byte[stride * (int)height];
 

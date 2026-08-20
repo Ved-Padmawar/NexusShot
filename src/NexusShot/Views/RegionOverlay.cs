@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
@@ -57,8 +57,12 @@ public sealed class RegionOverlay : D2DRenderWindow
     /// The result is cropped from the frozen snapshot, never re-captured from the live screen: the
     /// overlay's own activation dismisses any open menu, so a re-capture saves a changed desktop.
     /// </summary>
+    private static bool _isPicking;
+
     public static string? Pick()
     {
+        if (_isPicking) return null;
+        _isPicking = true;
         var desktop = ScreenCapture.VirtualDesktop;
         var snapshot = ScreenCapture.Capture(desktop);
 
@@ -72,13 +76,19 @@ public sealed class RegionOverlay : D2DRenderWindow
                 overlay.Show();
                 overlay.SetForeground();
 
-                // A private message loop: the overlay owns the desktop until it resolves. It ends
-                // when the window is destroyed, which Commit and Escape both do.
-                while (overlay.IsWindow && GetMessageW(out var message, IntPtr.Zero, 0, 0) > 0)
+                // Filtered at the API, not at dispatch: a non-matching message stays queued for the
+                // main pump rather than being dropped.
+                var result = 0;
+                while (overlay.IsWindow
+                    && (result = GetMessageW(out var message, overlay.Handle, 0, 0)) > 0)
                 {
                     TranslateMessage(ref message);
                     DispatchMessageW(ref message);
                 }
+
+                // WM_QUIT arrives regardless of the filter, so a tray Exit lands here: re-post it
+                // for the main loop. (-1 is an error and must not be treated as a quit.)
+                if (result == 0) PostQuitMessage(0);
                 selection = overlay.Selection;
             }
 
@@ -93,6 +103,7 @@ public sealed class RegionOverlay : D2DRenderWindow
         }
         finally
         {
+            _isPicking = false;
             try { File.Delete(snapshot); } catch (IOException) { /* a temp file we can leak */ }
         }
     }
@@ -265,6 +276,7 @@ public sealed class RegionOverlay : D2DRenderWindow
 
     [DllImport("user32.dll")] private static extern bool TranslateMessage(ref MSG message);
     [DllImport("user32.dll")] private static extern IntPtr DispatchMessageW(ref MSG message);
+    [DllImport("user32.dll")] private static extern void PostQuitMessage(int code);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MSG

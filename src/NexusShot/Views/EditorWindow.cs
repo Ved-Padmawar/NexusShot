@@ -138,7 +138,7 @@ public sealed class EditorWindow : CaptionWindow
         using var context = target.AsDeviceContext();
         if (context is null) return;
 
-        _image = ImageSurface.Load(_path, context, keepPixels: true);
+        _image = ImageSurface.Load(_path, context, keepPixels: false);
         _document.SetImageSize(_image.Width, _image.Height);
         _effects = new PixelEffectSource(_image, _resources);
     }
@@ -409,7 +409,7 @@ public sealed class EditorWindow : CaptionWindow
         _effects?.Dispose();
         _image?.Dispose();
 
-        _image = ImageSurface.Load(_path, context, keepPixels: true);
+        _image = ImageSurface.Load(_path, context, keepPixels: false);
         _effects = new PixelEffectSource(_image, _resources);
         _document.SetImageSize(_image.Width, _image.Height);
         Invalidate();

@@ -56,17 +56,27 @@ public sealed class Dropdown
 
     public void Close() => _openId = 0;
 
-    /// <summary>The open list. Called once, last in the frame, so it paints over everything.</summary>
-    public void DrawOpen(Ui ui)
+    /// <summary>The open list. Called once, last in the frame, so it paints over everything. A list
+    /// that would run past <paramref name="within"/>'s bottom opens upward instead.</summary>
+    public void DrawOpen(Ui ui, Rect within)
     {
         if (_openId == 0) return;
 
         var scale = ui.Scale;
         var rowHeight = 32 * scale;
         var padding = 4 * scale;
+        var gap = 4 * scale;
 
         var height = _options.Length * rowHeight + padding * 2;
-        var list = new Rect(_anchor.X, _anchor.Bottom + 4 * scale, _anchor.Width, height);
+
+        var below = _anchor.Bottom + gap;
+        var above = _anchor.Y - gap - height;
+
+        // Downward unless that overflows and there is room above. Clamped so an over-tall list pins.
+        var top = below + height <= within.Bottom || above < within.Y ? below : above;
+        top = Math.Clamp(top, within.Y, Math.Max(within.Y, within.Bottom - height));
+
+        var list = new Rect(_anchor.X, top, _anchor.Width, height);
 
         // Clicking away closes without choosing, and the click must not fall through to a row below.
         if (ui.PointerPressed && !list.Contains(ui.Pointer) && !_anchor.Contains(ui.Pointer))
