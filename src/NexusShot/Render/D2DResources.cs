@@ -79,6 +79,25 @@ public sealed class D2DResources : IDisposable
         return format;
     }
 
+    /// <summary>The rendered width of a string. Cached because measuring realises an
+    /// IDWriteTextLayout, and callers measure to centre or size a widget every frame.</summary>
+    public double MeasureText(string text, string family, float size, bool bold)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+
+        var key = (text, family, size, bold);
+        if (_measurements.TryGetValue(key, out var cached)) return cached;
+
+        var format = TextFormat(family, size, bold, italic: false);
+        using var layout = DWrite.CreateTextLayout(format, text);
+        layout.Object.GetMetrics(out var metrics);
+
+        _measurements[key] = metrics.width;
+        return metrics.width;
+    }
+
+    private readonly Dictionary<(string Text, string Family, float Size, bool Bold), double> _measurements = [];
+
     private IComObject<ID2D1StrokeStyle> CreateStroke(D2D1_STROKE_STYLE_PROPERTIES properties, float[]? dashes = null) =>
         Factory.CreateStrokeStyle(properties, dashes);
 
@@ -114,6 +133,7 @@ public sealed class D2DResources : IDisposable
         _brushes.Clear();
         _dashStyles.Clear();
         _formats.Clear();
+        _measurements.Clear();
         _roundStroke?.Dispose();
         _roundStroke = null;
         _dwrite?.Dispose();

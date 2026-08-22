@@ -1,4 +1,4 @@
-using NexusShot.Core;
+﻿using NexusShot.Core;
 
 namespace NexusShot.Render;
 
@@ -151,50 +151,6 @@ public sealed class ImageSurface : IDisposable
                 Pixels = null,
             };
         }
-    }
-
-    /// <summary>Decodes one rectangle of an image to premultiplied BGRA, clamped to the image
-    /// bounds. WIC copies just the requested rows, so the full bitmap is never allocated.</summary>
-    public static unsafe (byte[] Pixels, int Width, int Height) DecodeRegion(
-        string path, int x, int y, int width, int height)
-    {
-        using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
-        using var frame = decoder.GetFrame(0);
-        using var converter = WicImagingFactory.CreateFormatConverter();
-
-        converter.Object.Initialize(
-            frame.Object,
-            Constants.GUID_WICPixelFormat32bppPBGRA,
-            WICBitmapDitherType.WICBitmapDitherTypeNone,
-            null!,
-            0,
-            WICBitmapPaletteType.WICBitmapPaletteTypeCustom).ThrowOnError();
-
-        converter.Object.GetSize(out var sourceWidth, out var sourceHeight).ThrowOnError();
-
-        var clampedX = Math.Clamp(x, 0, Math.Max(0, (int)sourceWidth - 1));
-        var clampedY = Math.Clamp(y, 0, Math.Max(0, (int)sourceHeight - 1));
-        var maxW = Math.Max(1, (int)sourceWidth - clampedX);
-        var maxH = Math.Max(1, (int)sourceHeight - clampedY);
-        var rect = new WICRect
-        {
-            X = clampedX,
-            Y = clampedY,
-        };
-        rect.Width = Math.Clamp(width, 1, maxW);
-        rect.Height = Math.Clamp(height, 1, maxH);
-        if ((long)rect.Width * rect.Height > MaximumPixels)
-            throw new InvalidOperationException("Image region too large to decode.");
-
-        var stride = rect.Width * 4;
-        var pixels = new byte[stride * rect.Height];
-
-        fixed (byte* buffer = pixels)
-        {
-            converter.Object.CopyPixels(
-                (nint)(&rect), (uint)stride, (uint)pixels.Length, (nint)buffer).ThrowOnError();
-        }
-        return (pixels, rect.Width, rect.Height);
     }
 
     /// <summary>The image's dimensions, without decoding it. WIC reads the header only.</summary>

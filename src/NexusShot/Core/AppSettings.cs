@@ -107,8 +107,28 @@ public sealed class Storage
         }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
-            // A corrupt or unreadable file falls back to defaults rather than refusing to start.
+            // Defaults beat refusing to start, but the next save would overwrite the file that
+            // failed to parse - so it is kept aside first.
+            Log.Error("settings.read_failed", exception, Path.GetFileName(path));
+            Preserve(path);
             return null;
+        }
+    }
+
+    /// <summary>Copies an unreadable file to <c>.bak</c> so the next write does not destroy it. Kept
+    /// at one copy: a second failure means the first is the one worth having.</summary>
+    private static void Preserve(string path)
+    {
+        var backup = path + ".bak";
+        try
+        {
+            if (File.Exists(backup)) return;
+            File.Copy(path, backup);
+            Log.Info("settings.preserved", Path.GetFileName(backup));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log.Error("settings.preserve_failed", exception, Path.GetFileName(path));
         }
     }
 
@@ -124,9 +144,11 @@ public sealed class Storage
             // half-written one that will not parse.
             File.Move(temporary, path, overwrite: true);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Losing a settings write is survivable; crashing the app over it is not.
+            // Losing a write is survivable; crashing over it is not. Silently losing it is not
+            // either - a setting that will not persist should leave a trace of why.
+            Log.Error("settings.write_failed", exception, Path.GetFileName(path));
         }
     }
 }

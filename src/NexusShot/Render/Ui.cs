@@ -414,17 +414,9 @@ public sealed class Ui(D2DResources resources)
     }
 
     /// <summary>The rendered width of a string, so a caller can centre or size against it.</summary>
-    public double MeasureText(string text, double size, bool bold = false, bool monospace = false)
-    {
-        if (string.IsNullOrEmpty(text)) return 0;
-
-        var family = monospace ? Metrics.MonoFamily : Metrics.FontFamily;
-        var format = resources.TextFormat(family, (float)size, bold, italic: false);
-        using var layout = resources.DWrite.CreateTextLayout(format, text);
-
-        layout.Object.GetMetrics(out var metrics);
-        return metrics.width;
-    }
+    public double MeasureText(string text, double size, bool bold = false, bool monospace = false) =>
+        resources.MeasureText(
+            text, monospace ? Metrics.MonoFamily : Metrics.FontFamily, (float)size, bold);
 
     /// <summary>A small square toggle, for B / I / U.</summary>
     public bool Toggle(int id, Rect bounds, string label, bool on, bool bold = false, bool italic = false)

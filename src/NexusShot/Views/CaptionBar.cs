@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using NexusShot.Core;
+using NexusShot.Platform;
 using NexusShot.Render;
 
 namespace NexusShot.Views;
@@ -18,7 +19,12 @@ public abstract class CaptionWindow : D2DRenderWindow
     /// <summary>The caption's height in physical pixels: how far the client area now reaches up.</summary>
     public double CaptionHeight => 32 * DpiScale;
 
-    protected double DpiScale => Functions.GetDpiForWindow(Handle) / 96.0;
+    /// <summary>Cached: a syscall, read several times per frame, that only changes on
+    /// WM_DPICHANGED.</summary>
+    protected double DpiScale => _dpiScale ??= Functions.GetDpiForWindow(Handle) / 96.0;
+    private double? _dpiScale;
+
+    protected void InvalidateDpiScale() => _dpiScale = null;
 
     /// <summary>The width the three system buttons occupy at the top-right; content must not run
     /// under them.</summary>
@@ -37,7 +43,7 @@ public abstract class CaptionWindow : D2DRenderWindow
 
         // The frame is only recalculated on request, so ask for one now that we intend to handle
         // WM_NCCALCSIZE - otherwise the caption stays until the first resize.
-        SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+        WindowInterop.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
@@ -71,14 +77,14 @@ public abstract class CaptionWindow : D2DRenderWindow
         // Close alone gets the red hover, which is the one convention users actually rely on.
         if (CaptionButton(ui, CaptionIdBase + 2, new Rect(x, 0, button, height),
             Icons.CaptionClose, glyph, true))
-            PostMessageW(Handle, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            WindowInterop.PostMessageW(Handle, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
     }
 
     /// <summary>Defers state changes until the current WM_PAINT has completed. Calling ShowWindow
     /// here would synchronously send WM_SIZE while Direct2D is between BeginDraw and EndDraw, and
     /// resizing a render target in that state fails with D2DERR_WRONG_STATE.</summary>
     private void QueueSystemCommand(int command) =>
-        _ = PostMessageW(Handle, WM_SYSCOMMAND, new IntPtr(command), IntPtr.Zero);
+        _ = WindowInterop.PostMessageW(Handle, WM_SYSCOMMAND, new IntPtr(command), IntPtr.Zero);
 
     private static readonly Rgba CloseHover = new(0xC4, 0x2B, 0x1C, 0xFF);
     private static readonly Rgba ClosePressed = new(0xC8, 0x4B, 0x3F, 0xFF);
@@ -115,6 +121,12 @@ public abstract class CaptionWindow : D2DRenderWindow
 
             case WM_NCHITTEST:
                 return OnNcHitTest(lParam);
+
+            case WM_DPICHANGED:
+                // Dragged to a monitor at a different scale; every caption metric derives from it.
+                InvalidateDpiScale();
+                Invalidate();
+                break;
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
@@ -147,10 +159,10 @@ public abstract class CaptionWindow : D2DRenderWindow
     private LRESULT OnNcHitTest(LPARAM lParam)
     {
         var value = lParam.Value.ToInt64();
-        var screen = new POINT { X = (short)(value & 0xFFFF), Y = (short)((value >> 16) & 0xFFFF) };
+        var screen = new WindowInterop.POINT { X = (short)(value & 0xFFFF), Y = (short)((value >> 16) & 0xFFFF) };
 
         var point = screen;
-        ScreenToClient(Handle, ref point);
+        WindowInterop.ScreenToClient(Handle, ref point);
         GetClientRect(Handle, out var client);
 
         var border = (int)Math.Round(8 * DpiScale);
@@ -188,6 +200,7 @@ public abstract class CaptionWindow : D2DRenderWindow
     private const uint WM_ERASEBKGND = 0x0014;
     private const uint WM_NCCALCSIZE = 0x0083;
     private const uint WM_NCHITTEST = 0x0084;
+    private const uint WM_DPICHANGED = 0x02E0;
     private const uint WM_SYSCOMMAND = 0x0112;
     private const uint WM_CLOSE = 0x0010;
 
@@ -218,9 +231,6 @@ public abstract class CaptionWindow : D2DRenderWindow
     private struct RECT { public int Left, Top, Right, Bottom; }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X, Y; }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct NCCALCSIZE_PARAMS
     {
         public RECT rgrc0, rgrc1, rgrc2;
@@ -231,9 +241,6 @@ public abstract class CaptionWindow : D2DRenderWindow
     private static extern IntPtr DefWindowProcW(IntPtr window, uint msg, nuint wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
-    private static extern bool ScreenToClient(IntPtr window, ref POINT point);
-
-    [DllImport("user32.dll")]
     private static extern bool GetClientRect(IntPtr window, out RECT client);
 
     [DllImport("user32.dll", EntryPoint = "IsZoomed")]
@@ -241,11 +248,4 @@ public abstract class CaptionWindow : D2DRenderWindow
 
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int index);
-
-    [DllImport("user32.dll")]
-    private static extern bool PostMessageW(IntPtr window, uint msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(
-        IntPtr window, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }

@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Render;
 
@@ -34,9 +34,15 @@ public static class ScreenCapture
         GetSystemMetrics(SM_CXVIRTUALSCREEN),
         GetSystemMetrics(SM_CYVIRTUALSCREEN));
 
-    public static string CaptureFullScreen() => Capture(VirtualDesktop);
+    public static DecodedImage CaptureFullScreen() => Capture(VirtualDesktop);
 
-    public static string CaptureActiveWindow()
+    /// <summary>
+    /// Blits the foreground window.
+    ///
+    /// The DWM extended frame is preferred over <c>GetWindowRect</c>: the latter includes the drop
+    /// shadow, which lands as a band of desktop around the window.
+    /// </summary>
+    public static DecodedImage CaptureActiveWindow()
     {
         var window = GetForegroundWindow();
         if (window == IntPtr.Zero) throw new InvalidOperationException("Could not determine the active window.");
@@ -49,8 +55,16 @@ public static class ScreenCapture
         return Capture(Intersect(winRect, VirtualDesktop));
     }
 
-    /// <summary>Blits the region and writes it to a temp PNG. Returns the path.</summary>
-    public static unsafe string Capture(RectInt bounds)
+    /// <summary>
+    /// Blits the region and hands back the pixels, premultiplied BGRA and top-down - the format
+    /// both <see cref="PngWriter"/> and <see cref="ImageSurface.Upload"/> already take.
+    ///
+    /// Returning pixels rather than a path is deliberate: the region picker needs the same bitmap
+    /// three times over (to display, to crop, to encode), and routing it through a temp PNG meant
+    /// re-decoding a full virtual desktop for each one. Callers that want a file encode it
+    /// themselves, once.
+    /// </summary>
+    public static unsafe DecodedImage Capture(RectInt bounds)
     {
         if (bounds.Width <= 0 || bounds.Height <= 0)
             throw new ArgumentOutOfRangeException(nameof(bounds), "The capture area must have positive dimensions.");
@@ -103,9 +117,7 @@ public static class ScreenCapture
             // BitBlt leaves the alpha byte as garbage; the desktop is opaque, so force it.
             for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
 
-            var path = Path.Combine(Path.GetTempPath(), $"NexusShot_{Guid.NewGuid():N}.png");
-            PngWriter.Write(path, pixels, bounds.Width, bounds.Height);
-            return path;
+            return new DecodedImage(pixels, bounds.Width, bounds.Height);
         }
         finally
         {

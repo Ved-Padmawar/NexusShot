@@ -16,6 +16,10 @@ public sealed class MainWindow : CaptionWindow
     private const uint WmKeyDown = 0x0100;
     private const uint WmChar = 0x0102;
     private const uint WmMouseWheel = 0x020A;
+
+    /// <summary>One wheel notch. Touchpads report fractions of it, scrolled as they arrive -
+    /// quantizing them to notches makes a smooth drag land as jumps.</summary>
+    private const double WheelDelta = 120;
     private const uint WmClose = 0x0010;
 
     private readonly Storage _storage;
@@ -67,17 +71,9 @@ public sealed class MainWindow : CaptionWindow
     /// The folder watcher fires on a thread pool thread, and mutating the history from there would
     /// be doing it underneath a frame that is drawing it.
     /// </summary>
-    public void Post(Action work)
-    {
-        lock (_posted) _posted.Enqueue(work);
-        PostMessageW(Handle, WmRunPosted, IntPtr.Zero, IntPtr.Zero);
-    }
+    public void Post(Action work) => _dispatch.Post(work);
 
-    private readonly Queue<Action> _posted = new();
-    private const uint WmRunPosted = 0x0400 + 2;   // WM_APP + 2
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    private UiThreadDispatch _dispatch = null!;
 
     public event Action<CaptureMode>? CaptureRequested;
     public event Action<ScreenshotHistoryItem>? EditRequested;
@@ -103,6 +99,8 @@ public sealed class MainWindow : CaptionWindow
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
+
+        _dispatch = new UiThreadDispatch(Handle);
 
         // Alt+Tab and the taskbar get the icon; the caption itself shows neither icon nor title,
         // because the sidebar carries the brand and the caption is now our own pixels.
@@ -174,9 +172,8 @@ public sealed class MainWindow : CaptionWindow
         _ui ??= new Ui(_resources);
         _ui.Theme = SystemTheme.Resolve(_settings.Theme);
 
-        _scale = Functions.GetDpiForWindow(Handle) / 96.0;
+        _scale = DpiScale;
         _ui.Scale = _scale;
-        
 
         var client = ClientRect;
         var width = (double)client.Width;
@@ -598,7 +595,17 @@ public sealed class MainWindow : CaptionWindow
         // feel like one system rather than a stack of individually nudged controls.
         var width = Math.Min(S(640), body.Width - S(64));
         var x = body.X + (body.Width - width) / 2;
-        var y = body.Y - _settingsScroll;
+
+        // Settled before anything is positioned: clamping after the layout would draw one frame at
+        // the bad offset and snap back on the next.
+        _settingsScroll = Math.Clamp(
+            _settingsScroll, 0, Math.Max(0, _settingsHeight - _settingsViewport));
+
+        // Laid out from a fixed origin and shifted by the scroll, so the extent measured below is a
+        // property of the content alone - an extent that moved with the scroll position would feed
+        // back into the next frame's layout.
+        var top = body.Y - _settingsScroll;
+        var y = top;
 
         y = Section(ui, "CAPTURE", x, y, width);
 
@@ -715,8 +722,8 @@ public sealed class MainWindow : CaptionWindow
                     SaveSettings();
                 }));
 
-        // Last frame's extent: this frame's is not known until the rows below have been laid out,
-        // and it is the same number the wheel already clamps against.
+        // Last frame's extent, which the scroll position was clamped against above - so the thumb
+        // and the rows agree.
         ui.Scrollbar(body, _settingsHeight, _settingsScroll);
         ui.PopClip();
 
@@ -725,8 +732,10 @@ public sealed class MainWindow : CaptionWindow
         _captureModeBox.DrawOpen(ui, body);
         _themeBox.DrawOpen(ui, body);
 
-        // The scroll extent, so the wheel handler knows where the bottom is.
-        _settingsHeight = y + _settingsScroll - body.Y + S(32);
+        // The trailing margin is part of the content: added to the extent after measuring, it would
+        // buy scroll travel no pixel occupies.
+        y += S(32);
+        _settingsHeight = y - top;
     }
 
     private readonly Dropdown _captureModeBox = new();
@@ -1264,17 +1273,9 @@ public sealed class MainWindow : CaptionWindow
 
         switch (msg)
         {
-            case WmRunPosted:
-            {
-                Action[] work;
-                lock (_posted)
-                {
-                    work = [.. _posted];
-                    _posted.Clear();
-                }
-                foreach (var item in work) item();
+            case UiThreadDispatch.Message:
+                _dispatch.Drain();
                 return new LRESULT { Value = 0 };
-            }
 
             case SystemTheme.WM_SETTINGCHANGE:
                 // The only signal an unpackaged app gets that the user flipped the system theme.
@@ -1308,23 +1309,31 @@ public sealed class MainWindow : CaptionWindow
 
             case WmMouseWheel:
             {
+                // A notched mouse sends 120 at a time; a precision touchpad sends a stream of much
+                // smaller deltas. Acting on each one immediately turns a two-finger drag into a
+                // burst of sub-pixel scrolls, so the remainder is carried and only whole units spent.
                 var delta = (short)((wParam.Value.ToUInt64() >> 16) & 0xFFFF);
-                var step = delta / 120.0 * S(50);
+                var step = delta / WheelDelta * S(50);
 
                 // Whichever pane the pointer is over gets the wheel.
+                double before, after;
                 if (_settingsOpen && _pointer.X > S(248))
                 {
                     CloseDropdowns();
+                    before = _settingsScroll;
                     var maximum = Math.Max(0, _settingsHeight - _settingsViewport);
-                    _settingsScroll = Math.Clamp(_settingsScroll - step, 0, maximum);
+                    _settingsScroll = after = Math.Clamp(_settingsScroll - step, 0, maximum);
                 }
                 else
                 {
+                    before = _scroll;
                     var maximum = Math.Max(0, _historyHeight - _historyViewport);
-                    _scroll = Math.Clamp(_scroll - step, 0, maximum);
+                    _scroll = after = Math.Clamp(_scroll - step, 0, maximum);
                 }
 
-                Invalidate();
+                // A touchpad keeps sending deltas after the clamp has pinned the view at an end;
+                // repainting on those is what made the pane shake against its own bottom.
+                if (after != before) Invalidate();
                 return new LRESULT { Value = 0 };
             }
 

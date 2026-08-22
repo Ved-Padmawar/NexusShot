@@ -1,4 +1,4 @@
-using NexusShot.Core;
+﻿using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
 using NexusShot.Views;
@@ -21,14 +21,8 @@ public sealed class App : IDisposable
     private readonly MainWindow _main;
     private readonly TrayIcon _tray;
     private readonly Hotkeys _hotkeys;
+    private readonly CapturePipeline _pipeline;
     private FolderWatcher? _watcher;
-
-    /// <summary>Editors, keyed by the file they are editing, so a second Edit on the same capture
-    /// raises the window that is already open rather than opening another.</summary>
-    private readonly Dictionary<string, EditorWindow> _editors = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>The quick-access cards, newest first. They stack upward from the bottom-left.</summary>
-    private readonly List<FloatingPreview> _previews = [];
 
     public App()
     {
@@ -40,8 +34,8 @@ public sealed class App : IDisposable
         _history.RemoveAll(item => !File.Exists(item.FilePath));
 
         _main = new MainWindow(_storage, _settings, _history);
+        _pipeline = new CapturePipeline(_storage, _settings, _history, _main);
         _main.CaptureRequested += Capture;
-        _main.EditRequested += Edit;
         _main.HotkeysChanged += ApplyHotkeys;
         _main.RecordingChanged += SuspendHotkeys;
 
@@ -123,13 +117,7 @@ public sealed class App : IDisposable
     }
 
     /// <summary>
-    /// Takes a capture, files it, and does whatever the settings say to do with it.
-    ///
-    /// The main window hides first for a full-screen or window capture - otherwise NexusShot itself
-    /// would be in the screenshot, which is the sort of thing that is obvious only after you ship it.
-    /// </summary>
-    /// <summary>
-    /// Takes a capture, files it, and shows a quick-access card.
+    /// Takes a capture and hands it to the pipeline, which files it and shows a quick-access card.
     ///
     /// The shell is deliberately *not* hidden first: NexusShot's own window is a legitimate thing to
     /// capture, and a tool that ducks out of the way cannot screenshot itself.
@@ -138,23 +126,22 @@ public sealed class App : IDisposable
     {
         try
         {
-            var path = mode switch
+            // Full-screen and active-window blit straight to pixels, so the clipboard copy uses
+            // those instead of decoding the PNG back. Region already returns a path - its pixels are
+            // a crop of a snapshot the overlay owns, and that snapshot dies with the overlay.
+            DecodedImage? pixels = mode switch
             {
-                CaptureMode.Region => CaptureRegion(),
                 CaptureMode.FullScreen => ScreenCapture.CaptureFullScreen(),
                 CaptureMode.ActiveWindow => ScreenCapture.CaptureActiveWindow(),
                 _ => null,
             };
+
+            var path = pixels is not null ? WriteCapture(pixels)
+                : mode == CaptureMode.Region ? CaptureRegion()
+                : null;
             if (path is null) return;
 
-            var item = Store(path);
-            Log.Info("capture", $"{mode} {item.Width}x{item.Height}");
-
-            if (_settings.CopyToClipboardAutomatically)
-                _ = Task.Run(() => { try { ClipboardImage.Copy(item.FilePath); } catch { } });
-
-            _main.AddCapture(item);
-            ShowPreview(item);
+            _pipeline.Land(path, pixels);
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException
             or ArgumentOutOfRangeException)
@@ -166,182 +153,12 @@ public sealed class App : IDisposable
 
     private static string? CaptureRegion() => RegionOverlay.Pick();
 
-    /// <summary>Moves the temp capture into the screenshot folder and records it.</summary>
-    private ScreenshotHistoryItem Store(string temporaryPath)
+    /// <summary>Writes a freshly blitted capture to the temp PNG the pipeline expects to move.</summary>
+    private static string WriteCapture(DecodedImage image)
     {
-        // The header, not the pixels: this only needs the dimensions for the history row.
-        var (width, height) = ImageSurface.ReadSize(temporaryPath);
-
-        Directory.CreateDirectory(_settings.ScreenshotFolder);
-        var baseName = $"NexusShot {DateTime.Now:yyyy-MM-dd HH.mm.ss}";
-        var destination = Path.Combine(_settings.ScreenshotFolder, baseName + ".png");
-        if (_settings.SaveAutomatically)
-        {
-            var counter = 1;
-            while (File.Exists(destination))
-            {
-                destination = Path.Combine(_settings.ScreenshotFolder, $"{baseName}_{counter:D3}.png");
-                counter++;
-                if (counter > 999) { destination = Path.Combine(_settings.ScreenshotFolder, $"NexusShot {Guid.NewGuid():N}.png"); break; }
-            }
-            File.Move(temporaryPath, destination, overwrite: false);
-        }
-        else
-        {
-            destination = temporaryPath;
-        }
-
-        return new ScreenshotHistoryItem
-        {
-            FilePath = destination,
-            CapturedAt = DateTimeOffset.Now,
-            Width = width,
-            Height = height,
-        };
-    }
-
-    /// <summary>Updates the card showing a re-saved capture, or brings a new one up if that card was
-    /// already dismissed.</summary>
-    private void RefreshPreview(ScreenshotHistoryItem item)
-    {
-        var card = _previews.FirstOrDefault(preview =>
-            string.Equals(preview.FilePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
-
-        if (card is null)
-        {
-            ShowPreview(item);
-            return;
-        }
-
-        card.Refresh(item);
-        ReflowPreviews();
-    }
-
-    /// <summary>Shows a quick-access card for a fresh capture, and reflows the stack.</summary>
-    private void ShowPreview(ScreenshotHistoryItem item)
-    {
-        var preview = new FloatingPreview(item, _settings.PreviewDismissSeconds);
-
-        preview.EditRequested += Edit;
-        preview.PinnedChanged += ReflowPreviews;
-        preview.Dismissed += card =>
-        {
-            _previews.Remove(card);
-            ReflowPreviews();
-        };
-
-        // Newest at the bottom of the stack, so the most recent capture is nearest the corner and
-        // older ones ride up above it.
-        _previews.Insert(0, preview);
-        ReflowPreviews();
-        preview.Show();
-    }
-
-    /// <summary>
-    /// Lays the cards out from the bottom-left corner upward.
-    ///
-    /// Anything that runs off the top of the work area is dismissed rather than drawn off-screen -
-    /// a card you cannot see is a card you cannot act on, and it would sit there holding a bitmap.
-    /// </summary>
-    private void ReflowPreviews()
-    {
-        // The monitor the pointer is on, not the one the shell happens to be on: a capture belongs
-        // to the screen the user is looking at.
-        var work = Monitors.WorkAreaUnderCursor();
-        var scale = Monitors.DpiScaleUnderCursor(_main.Handle);
-
-        var offset = 0.0;
-        foreach (var preview in _previews.ToArray())
-        {
-            var height = preview.StackHeight(scale);
-
-            if (offset + height > work.Height * 0.8)
-            {
-                preview.Dismiss();
-                continue;
-            }
-
-            preview.PlaceAt(work, scale, offset);
-            offset += height;
-        }
-    }
-
-    private void Edit(ScreenshotHistoryItem item)
-    {
-        if (_editors.TryGetValue(item.FilePath, out var existing))
-        {
-            existing.Show();
-            existing.SetForeground();
-            return;
-        }
-
-        var editor = new EditorWindow(item.FilePath, _settings.Theme);
-        _editors[item.FilePath] = editor;
-
-        editor.Closed += () =>
-        {
-            // The editor releases its own device resources on destroy; this just drops our handle.
-            _editors.Remove(item.FilePath);
-
-            // The capture may have just been re-saved, so its cached bitmap is the old pixels.
-            _main.DropCache(item.FilePath);
-            _main.Invalidate();
-        };
-
-        // Save overwrites the capture, so its history row and its card are both showing stale pixels
-        // at a size a crop may have changed.
-        editor.Saved += path =>
-        {
-            var (width, height) = ImageSurface.ReadSize(path);
-
-            var entry = _history.FirstOrDefault(candidate => string.Equals(candidate.FilePath, path, StringComparison.OrdinalIgnoreCase));
-            if (entry is not null)
-            {
-                entry.Width = width;
-                entry.Height = height;
-                _storage.SaveHistory(_history);
-            }
-
-            _main.DropCache(path);
-            _main.Invalidate();
-
-            RefreshPreview(entry ?? new ScreenshotHistoryItem
-            {
-                FilePath = path,
-                CapturedAt = DateTimeOffset.Now,
-                Width = width,
-                Height = height,
-            });
-        };
-
-        // Save As writes a new file; it belongs in the history, and gets a card of its own.
-        editor.SavedAs += path =>
-        {
-            var existing = _history.FirstOrDefault(entry => string.Equals(entry.FilePath, path, StringComparison.OrdinalIgnoreCase));
-            if (existing is not null)
-            {
-                RefreshPreview(existing);
-                return;
-            }
-
-            var (width, height) = ImageSurface.ReadSize(path);
-            var item = new ScreenshotHistoryItem
-            {
-                FilePath = path,
-                CapturedAt = DateTimeOffset.Now,
-                Width = width,
-                Height = height,
-            };
-
-            _main.AddCapture(item);
-            ShowPreview(item);
-        };
-
-        var scale = Functions.GetDpiForWindow(editor.Handle) / 96.0;
-        editor.ResizeClient((int)(1180 * scale), (int)(820 * scale));
-        editor.Center();
-        editor.Show();
-        editor.SetForeground();
+        var path = Path.Combine(Path.GetTempPath(), $"NexusShot_{Guid.NewGuid():N}.png");
+        PngWriter.Write(path, image.Pixels, image.Width, image.Height);
+        return path;
     }
 
     private void Exit()
@@ -369,10 +186,7 @@ public sealed class App : IDisposable
     private void OnSettingsChanged() => WatchSaveFolder();
 
     /// <summary>Open editors follow the shell's theme rather than the one they were opened with.</summary>
-    private void RethemeEditors()
-    {
-        foreach (var editor in _editors.Values) editor.SetTheme(_settings.Theme);
-    }
+    private void RethemeEditors() => _pipeline.RethemeEditors();
 
     private void WatchSaveFolder()
     {
@@ -447,11 +261,7 @@ public sealed class App : IDisposable
 
     public void Dispose()
     {
-        foreach (var editor in _editors.Values) editor.Dispose();
-        _editors.Clear();
-
-        foreach (var preview in _previews) preview.Dispose();
-        _previews.Clear();
+        _pipeline.Dispose();
 
         _watcher?.Dispose();
         _hotkeys.Dispose();

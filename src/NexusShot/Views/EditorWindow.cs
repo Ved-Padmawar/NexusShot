@@ -92,6 +92,8 @@ public sealed class EditorWindow : CaptionWindow
         SystemTheme.ApplyFrame(Handle, SystemTheme.Resolve(_theme));
 
         _document.Changed += (_, _) => Invalidate();
+
+        _dispatch = new UiThreadDispatch(Handle);
     }
 
     /// <summary>Destroying the HWND does not release the D2D device or the bitmap - they are COM
@@ -100,7 +102,8 @@ public sealed class EditorWindow : CaptionWindow
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
         // Anything still queued outlived the window it was going to draw into.
-        _posted.Clear();
+        _dispatch.Clear();
+        SetAnimating(false);
 
         ReleaseResources();
         Closed?.Invoke();
@@ -215,7 +218,7 @@ public sealed class EditorWindow : CaptionWindow
         // image are all already physical, and letting D2D scale on top of that double-scales
         // everything. The chrome then scales itself; the canvas deliberately does not.
         target.Object.SetDpi(96, 96);
-        EditorChrome.Scale = Functions.GetDpiForWindow(Handle) / 96.0;
+        EditorChrome.Scale = DpiScale;
         EditorChrome.CaptionHeight = CaptionHeight;
 
         EnsureResources(target);
@@ -276,10 +279,11 @@ public sealed class EditorWindow : CaptionWindow
 
         ApplyChrome();
 
-        // Keep repainting while either confirmation is up, or while a caret is blinking, so each
-        // clears on time rather than on the next stray mouse move.
-        if (toast is not null || copied || _textEditor is not null || _ui.ClickedThisFrame)
-            Invalidate();
+        if (_ui.ClickedThisFrame) Invalidate();
+
+        // A toast clears itself and a caret blinks, neither driven by input. Re-invalidating from
+        // inside the frame would repaint at display rate to animate one glyph and one fade.
+        SetAnimating(toast is not null || copied || _textEditor is not null);
     }
 
     /// <summary>The frame around an open text box, in the annotation's own colour, so it is visible
@@ -432,22 +436,28 @@ public sealed class EditorWindow : CaptionWindow
     private const uint WmKeyDown = 0x0100;
     private const uint WmChar = 0x0102;
     private const uint WmSetCursor = 0x0020;
-    private const uint WmRunPosted = 0x0400 + 1;   // WM_APP + 1
+    private const uint WmTimer = 0x0113;
 
-    /// <summary>Runs <paramref name="work"/> once the frame has finished. The chrome reports its
-    /// presses during Render, and a modal picker, a resource reload, or a Saved handler's reflow all
-    /// resize a render target between BeginDraw and EndDraw - which fails with
-    /// D2DERR_WRONG_STATE.</summary>
-    private void Post(Action work)
+    /// <summary>Drives the caret blink and the toast fade.</summary>
+    private const nuint AnimationTimerId = 1;
+    private const uint AnimationIntervalMs = 16;
+    private bool _animating;
+
+    /// <summary>Starts or stops the repaint tick. Idempotent - called every frame.</summary>
+    private void SetAnimating(bool animating)
     {
-        _posted.Enqueue(work);
-        PostMessageW(Handle, WmRunPosted, IntPtr.Zero, IntPtr.Zero);
+        if (animating == _animating) return;
+        _animating = animating;
+
+        if (animating) WindowInterop.SetTimer(Handle, AnimationTimerId, AnimationIntervalMs, IntPtr.Zero);
+        else WindowInterop.KillTimer(Handle, AnimationTimerId);
     }
 
-    private readonly Queue<Action> _posted = new();
+    /// <summary>Runs <paramref name="work"/> once the frame has finished - the chrome reports presses
+    /// during Render, and resizing a render target mid-frame fails with D2DERR_WRONG_STATE.</summary>
+    private void Post(Action work) => _dispatch.Post(work);
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    private UiThreadDispatch _dispatch = null!;
 
     /// <summary>The WM_SETCURSOR hit-test that means the pointer is over the client area - the part
     /// the editor owns. Anything else is frame or caption, and belongs to DefWindowProc.</summary>
@@ -459,13 +469,13 @@ public sealed class EditorWindow : CaptionWindow
     {
         switch (msg)
         {
-            case WmRunPosted:
-            {
-                var work = _posted.ToArray();
-                _posted.Clear();
-                foreach (var item in work) item();
+            case UiThreadDispatch.Message:
+                _dispatch.Drain();
                 return Handled;
-            }
+
+            case WmTimer when (nuint)wParam.Value == AnimationTimerId:
+                Invalidate();
+                return Handled;
 
             case WmLButtonDown:
                 OnPointerPressed(ClientPoint(lParam));

@@ -124,13 +124,17 @@ src/NexusShot/
               Exporter            the same renderer, pointed at an offscreen target
               ImageSurface        WIC decode + GPU upload
   Platform/   Win32: capture, tray, hotkeys, clipboard, drag-out, single instance,
-              and the inline text EDIT
+              WindowInterop    the HWND calls more than one window needs
   Views/      CaptionWindow    content extended into the titlebar
               MainWindow       the shell: sidebar, detail pane, settings
               EditorWindow     canvas + EditorChrome (toolbar, footer)
               FloatingPreview  the quick-access card
               RegionOverlay    the frozen-snapshot region picker
-  App.cs      tray + hotkeys + capture pipeline
+              TextEditor       inline text: a D2D-drawn caret, not a Win32 EDIT
+              UiThreadDispatch defers work out of a frame or a modal loop
+  App.cs      tray + hotkeys + lifetime
+  CapturePipeline.cs  everything after the pixels exist: filing, cards,
+              editors, history sync
 ```
 
 The app is **immediate mode**: there is no retained visual tree. Input mutates the document and
@@ -280,6 +284,11 @@ Every format is placed **by value**. Delay-rendered clipboard data stays owned b
 process: the paste target has to come back and ask for it, which fails the moment the window that
 copied goes away — and the shell's Clipboard History (`Win`+`V`) never records the entry at all.
 
+The copy takes the pixels it is handed rather than a path, so the automatic copy after a capture
+builds its DIBs from the bitmap that was just blitted instead of decoding the PNG it had written
+moments earlier. The path overload remains for the editor, which is copying a file it did not
+capture. Either way the work happens off the hotkey thread.
+
 `FileDrag` has the mirror-image problem. `CF_HDROP` is what Explorer, browsers and mail clients read
 as "here is a file", but a text field cannot accept a file at all — so the path is also offered as
 `CF_UNICODETEXT`. That is what makes dropping a card onto an address bar or a chat box paste the
@@ -312,6 +321,11 @@ its own caption icon with `WS_EX_DLGMODALFRAME`, because the sidebar already car
   bitmap or a 52×34 chip. `ImageSurface` splits into `DecodeScaled` (CPU, any thread) and `Upload`
   (GPU, must be the thread that owns the device); thumbnails decode on the thread pool and fill in as
   they arrive. First frame went from **104 ms to 27 ms**.
+- **Capture never round-trips through a file.** `ScreenCapture` hands back pixels, not a path, so a
+  region pick uploads the frozen snapshot once and crops the selection straight out of memory. It
+  used to encode the whole virtual desktop to PNG, decode it again to display it, decode it a third
+  time to crop, then encode the result — five full-desktop passes where there are now two, and on a
+  dual-4K desktop each pass is ~63 MiB.
 - History thumbnails decode at thumbnail resolution and are held in a 200-entry LRU cache: a
   capture scrolled well past is evicted and re-decodes on demand, so memory stays flat as the
   history grows rather than climbing with it. The cap sits far above a screenful, so scrolling never

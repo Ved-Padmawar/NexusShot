@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using NexusShot.Render;
 
 namespace NexusShot.Platform;
@@ -29,18 +29,36 @@ internal static class ClipboardImage
     /// <summary>The shell registers "PNG" by name; the atom is stable for the session.</summary>
     private static readonly uint CF_PNG = RegisterClipboardFormatW("PNG");
 
+    /// <summary>Decodes the file, then copies it. For callers that only have a path.</summary>
     public static void Copy(string pngPath)
     {
-        byte[] pixels;
-        int width, height;
+        DecodedImage image;
         try
         {
-            (pixels, width, height) = ImageSurface.Decode(pngPath);
+            var (pixels, width, height) = ImageSurface.Decode(pngPath);
+            image = new DecodedImage(pixels, width, height);
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException)
         {
             return;
         }
+
+        Copy(image, pngPath);
+    }
+
+    /// <summary>
+    /// Copies pixels the caller already holds.
+    ///
+    /// The capture path has the bitmap in memory before it ever reaches a file, so decoding the PNG
+    /// back again just to build the DIBs was a full re-decode of every capture.
+    /// <paramref name="pngPath"/> is read only for the lossless "PNG" format; pass null to place
+    /// the DIBs alone.
+    /// </summary>
+    public static void Copy(DecodedImage image, string? pngPath)
+    {
+        var pixels = image.Pixels;
+        var width = image.Width;
+        var height = image.Height;
 
         if (width <= 0 || height <= 0) return;
 
@@ -49,7 +67,7 @@ internal static class ClipboardImage
         {
             EmptyClipboard();
 
-            if (CF_PNG != 0)
+            if (CF_PNG != 0 && pngPath is not null)
             {
                 try { Place(CF_PNG, File.ReadAllBytes(pngPath)); }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)

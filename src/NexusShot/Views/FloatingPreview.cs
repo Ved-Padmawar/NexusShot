@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
@@ -27,15 +27,11 @@ public sealed class FloatingPreview : D2DRenderWindow
     private const nuint DismissTimerId = 1;
     private const nuint DismissAnimationTimerId = 2;
 
-    /// <summary>Posted, never handled inline: these unwind into a reflow or a modal loop, and
-    /// neither may run inside DoDragDrop or this card's own Render. A reflow reaches SetWindowPos,
-    /// whose synchronous WM_SIZE resizes the render target - between BeginDraw and EndDraw that
-    /// fails with D2DERR_WRONG_STATE.</summary>
-    private const uint WmDropped = 0x0400 + 1;   // WM_APP + 1
-    private const uint WmDismiss = 0x0400 + 2;   // WM_APP + 2
-    private const uint WmPinChanged = 0x0400 + 3;   // WM_APP + 3
-    private const uint WmEditRequested = 0x0400 + 4;   // WM_APP + 4
-    private const uint WmSaveAs = 0x0400 + 5;   // WM_APP + 5
+    /// <summary>Card actions - save-as, edit, pin, dismiss - are posted rather than run inline: each
+    /// unwinds into a reflow or a modal loop, and neither may run inside DoDragDrop or this card's
+    /// own Render.</summary>
+    private UiThreadDispatch _dispatch = null!;
+    private void Post(Action work) => _dispatch.Post(work);
 
     // Design units; scaled per-monitor.
     private const double CardWidth = 168;
@@ -115,7 +111,7 @@ public sealed class FloatingPreview : D2DRenderWindow
             - (int)size.Height
             - (int)Math.Round(stackOffset);
 
-        SetWindowPos(Handle, HWND_TOPMOST, x, y, (int)size.Width, (int)size.Height,
+        WindowInterop.SetWindowPos(Handle, HWND_TOPMOST, x, y, (int)size.Width, (int)size.Height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
         // The first show can drop attributes set while the window was hidden, so the rounding is
@@ -129,6 +125,8 @@ public sealed class FloatingPreview : D2DRenderWindow
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
+
+        _dispatch = new UiThreadDispatch(Handle);
 
         ApplyDwmChrome();
 
@@ -276,13 +274,13 @@ public sealed class FloatingPreview : D2DRenderWindow
 
         if (ActionButton(ui, 2, new Rect(x, y, size, size), Icons.Save, glyph, false))
         {
-            PostMessageW(Handle, WmSaveAs, IntPtr.Zero, IntPtr.Zero);
+            Post(SaveAs);
         }
         x += size + spacing;
 
         if (ActionButton(ui, 3, new Rect(x, y, size, size), Icons.Edit, glyph, false))
         {
-            PostMessageW(Handle, WmEditRequested, IntPtr.Zero, IntPtr.Zero);
+            Post(RaiseEditRequested);
         }
         x += size + spacing;
 
@@ -291,8 +289,17 @@ public sealed class FloatingPreview : D2DRenderWindow
         {
             IsPinned = !IsPinned;
             _remaining = _dismissSeconds;
-            PostMessageW(Handle, WmPinChanged, IntPtr.Zero, IntPtr.Zero);
+            Post(() => PinnedChanged?.Invoke());
         }
+    }
+
+    /// <summary>Posted rather than handled inline from the button click: dismissing here must not
+    /// run underneath the frame that just drew the button.</summary>
+    private void RaiseEditRequested()
+    {
+        if (_dismissing) return;
+        EditRequested?.Invoke(_item);
+        Dismiss();
     }
 
     /// <summary>A circular overlay action button, washed a little lighter on hover and press.</summary>
@@ -328,6 +335,8 @@ public sealed class FloatingPreview : D2DRenderWindow
     /// somewhere permanent, so the card has done its job.</summary>
     private void SaveAs()
     {
+        if (_dismissing) return;
+
         // The picker pumps its own message loop, so the countdown keeps ticking behind it - and
         // would close the window while the user is still typing a filename.
         _remaining = _dismissSeconds;
@@ -365,7 +374,7 @@ public sealed class FloatingPreview : D2DRenderWindow
         _dismissing = true;
 
         KillTimer(Handle, DismissTimerId);
-        PostMessageW(Handle, WmDismiss, IntPtr.Zero, IntPtr.Zero);
+        Post(DismissCore);
     }
 
     /// <summary>Removed from the stack now, so the reflow closes the gap while this card is still
@@ -404,7 +413,7 @@ public sealed class FloatingPreview : D2DRenderWindow
         SetLayeredWindowAttributes(Handle, 0, (byte)(255 * (1 - eased)), LWA_ALPHA);
 
         var slide = (int)Math.Round(eased * S(8));
-        SetWindowPos(Handle, HWND_TOPMOST, _dismissOriginX - slide, _dismissOriginY, 0, 0,
+        WindowInterop.SetWindowPos(Handle, HWND_TOPMOST, _dismissOriginX - slide, _dismissOriginY, 0, 0,
             SWP_NOSIZE | SWP_NOACTIVATE);
 
         if (progress < 1) return;
@@ -432,7 +441,7 @@ public sealed class FloatingPreview : D2DRenderWindow
     private Point PointerInClient()
     {
         GetCursorPos(out var screen);
-        ScreenToClient(Handle, ref screen);
+        WindowInterop.ScreenToClient(Handle, ref screen);
         return new Point(screen.X, screen.Y);
     }
 
@@ -465,9 +474,9 @@ public sealed class FloatingPreview : D2DRenderWindow
                         if (GetCapture() == Handle) ReleaseCapture();
 
                         // A completed drop means the capture reached its destination, so the card is
-                        // done. Posted rather than called - see WmDropped.
+                        // done.
                         if (FileDrag.Start(_item.FilePath, BuildDragImage(origin)))
-                            PostMessageW(Handle, WmDropped, IntPtr.Zero, IntPtr.Zero);
+                            Post(Dismiss);
 
                         return new LRESULT { Value = 0 };
                     }
@@ -476,26 +485,8 @@ public sealed class FloatingPreview : D2DRenderWindow
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
-            case WmDropped:
-                Dismiss();
-                return new LRESULT { Value = 0 };
-
-            case WmDismiss:
-                DismissCore();
-                return new LRESULT { Value = 0 };
-
-            case WmPinChanged:
-                PinnedChanged?.Invoke();
-                return new LRESULT { Value = 0 };
-
-            case WmEditRequested:
-                if (_dismissing) return new LRESULT { Value = 0 };
-                EditRequested?.Invoke(_item);
-                Dismiss();
-                return new LRESULT { Value = 0 };
-
-            case WmSaveAs:
-                if (!_dismissing) SaveAs();
+            case UiThreadDispatch.Message:
+                _dispatch.Drain();
                 return new LRESULT { Value = 0 };
 
             case WmMouseLeave:
@@ -624,9 +615,6 @@ public sealed class FloatingPreview : D2DRenderWindow
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X, Y; }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
 
     [DllImport("user32.dll")]
@@ -642,20 +630,12 @@ public sealed class FloatingPreview : D2DRenderWindow
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr window, out RECT bounds);
 
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(
-        IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
-
-    [DllImport("user32.dll")]
-    private static extern bool PostMessageW(IntPtr window, uint msg, IntPtr wParam, IntPtr lParam);
-
     [DllImport("user32.dll")] private static extern IntPtr SetCapture(IntPtr window);
     [DllImport("user32.dll")] private static extern IntPtr GetCapture();
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();
 
     [DllImport("user32.dll")] private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT track);
-    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT point);
-    [DllImport("user32.dll")] private static extern bool ScreenToClient(IntPtr window, ref POINT point);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out WindowInterop.POINT point);
     [DllImport("user32.dll")] private static extern nuint SetTimer(IntPtr window, nuint id, uint elapse, IntPtr callback);
     [DllImport("user32.dll")] private static extern bool KillTimer(IntPtr window, nuint id);
 }
