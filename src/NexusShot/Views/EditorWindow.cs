@@ -43,8 +43,8 @@ public sealed class EditorWindow : CaptionWindow
     /// <summary>The grip under the pointer, if any. Drives the cursor shape.</summary>
     private ResizeHandle? _hoverHandle;
 
-    /// <summary>The inline text box, while one is open.</summary>
-    private TextEditor? _textEditor;
+    /// <summary>The inline text box: its lifecycle, keys and write-back.</summary>
+    private readonly TextBoxController _text;
 
     /// <summary>True while a drag inside the box is selecting text.</summary>
     private bool _caretDragging;
@@ -55,6 +55,7 @@ public sealed class EditorWindow : CaptionWindow
     {
         _path = path;
         _theme = theme;
+        _text = new TextBoxController(_document);
     }
 
     /// <summary>Follows the shell's theme. The Ui's theme is read per frame, so this only has to
@@ -117,7 +118,7 @@ public sealed class EditorWindow : CaptionWindow
         _image?.Dispose();
         _resources?.Dispose();
 
-        _textEditor = null;
+        _text.Abandon();
         _effects = null;
         _image = null;
         _resources = null;
@@ -249,12 +250,13 @@ public sealed class EditorWindow : CaptionWindow
 
         // While a text box is open it *is* the annotation: drawing the annotation too would show it
         // doubled behind the box.
-        _renderer.DrawAnnotations(target, _document, _effects, skip: _textEditor?.Annotation);
-        if (_textEditor is null) _renderer.DrawAdorners(target, _document, AdornerScale);
+        _renderer.DrawAnnotations(target, _document, _effects, skip: _text.Annotation);
 
-        if (_textEditor is { } editing)
+        // Editing is a sub-state of selection, so an open box keeps the grips that resize it.
+        _renderer.DrawAdorners(target, _document, AdornerScale);
+
+        if (_text.Editor is { } editing)
         {
-            DrawTextBoxFrame(target, editing.Annotation);
             _renderer.DrawTextEditor(
                 target, editing.Annotation, editing.Text,
                 editing.Caret, editing.SelectionStart, editing.SelectionEnd, editing.CaretVisible,
@@ -283,24 +285,7 @@ public sealed class EditorWindow : CaptionWindow
 
         // A toast clears itself and a caret blinks, neither driven by input. Re-invalidating from
         // inside the frame would repaint at display rate to animate one glyph and one fade.
-        SetAnimating(toast is not null || copied || _textEditor is not null);
-    }
-
-    /// <summary>The frame around an open text box, in the annotation's own colour, so it is visible
-    /// against any screenshot without obscuring what is under it.</summary>
-    private void DrawTextBoxFrame(IComObject<ID2D1RenderTarget> target, Annotation annotation)
-    {
-        if (_resources is null) return;
-
-        var pad = 2 * AdornerScale;
-        var box = annotation.Bounds;
-        var bounds = new Rect(box.X - pad, box.Y - pad, box.Width + pad * 2, box.Height + pad * 2);
-        var color = Palette.Parse(annotation.ColorHex);
-
-        target.DrawRectangle(
-            AnnotationRenderer.ToRect(bounds),
-            _resources.Brush(color),
-            (float)(1.5 * AdornerScale));
+        SetAnimating(toast is not null || copied || _text.IsOpen);
     }
 
     /// <summary>Applies what the chrome asked for. The chrome reports intent; the window owns the
@@ -553,6 +538,39 @@ public sealed class EditorWindow : CaptionWindow
             return true;
         }
 
+        var image = ToImage((int)client.X, (int)client.Y);
+
+        // A crop session owns the pointer, so the cursor answers only to the frame: the interior
+        // moves it, and everything outside is inert.
+        if (_document.PendingCrop is { } crop)
+        {
+            Functions.SetCursor(new HCURSOR
+            {
+                Value = crop.Contains(image) ? ToolCursors.Move : ToolCursors.Arrow,
+            });
+            return true;
+        }
+
+        // The cursor reads off the same split the press uses, so it cannot promise a move the
+        // input path will not perform.
+        if (_text.Editor is { } editing && editing.Annotation.HitTest(image))
+        {
+            Functions.SetCursor(new HCURSOR
+            {
+                Value = TextInterior(editing.Annotation).Contains(image)
+                    ? ToolCursors.Text
+                    : ToolCursors.Move,
+            });
+            return true;
+        }
+
+        // The selection's interior drags it, and its grips have already been answered above.
+        if (_document.Selected is { } selected && selected.HitTest(image))
+        {
+            Functions.SetCursor(new HCURSOR { Value = ToolCursors.Move });
+            return true;
+        }
+
         var cursor = _document.ActiveTool switch
         {
             EditorTool.Select => ToolCursors.Arrow,
@@ -582,6 +600,15 @@ public sealed class EditorWindow : CaptionWindow
         return ((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
     }
 
+    /// <summary>Where a press inside an open box types rather than grabbing the box.</summary>
+    private Rect TextInterior(Annotation annotation) =>
+        BoxGeometry.Interior(annotation.Bounds, HandleTolerance);
+
+    /// <summary>True when a press takes hold of the box itself - a grip, or the move band - rather
+    /// than reaching the text inside it.</summary>
+    private bool GrabsBox(Annotation annotation, Point point) =>
+        BoxGeometry.GrabsBox(annotation.Bounds, point, HandleTolerance);
+
     private void OnPointerPressed((int X, int Y) client)
     {
         _clientPointer = new Point(client.X, client.Y);
@@ -591,11 +618,13 @@ public sealed class EditorWindow : CaptionWindow
         { Invalidate(); return; }
 
         // A click inside the open box moves the caret rather than committing and reopening, which
-        // would reselect the whole string.
-        if (_textEditor is { } open
+        // would reselect the whole string. Grips are excluded: they sit on the bounds, so testing
+        // the box alone swallowed every resize.
+        if (_text.Editor is { } open
             && InCanvas(_clientPointer)
             && !(_ui?.WantsPointer ?? false)
-            && open.Annotation.Bounds.Contains(ToImage(client.X, client.Y)))
+            && _document.GetResizeHandleAt(open.Annotation, ToImage(client.X, client.Y), HandleTolerance) is null
+            && TextInterior(open.Annotation).Contains(ToImage(client.X, client.Y)))
         {
             PlaceCaret(open, ToImage(client.X, client.Y));
             _caretDragging = true;
@@ -615,20 +644,32 @@ public sealed class EditorWindow : CaptionWindow
             return;
         }
 
-        // A press on the canvas outside the box commits it, like every canvas editor.
-        CommitText();
-
         var point = ToImage(client.X, client.Y);
 
-        // An existing text annotation reopens for editing rather than being redrawn.
-        if (_document.ActiveTool is EditorTool.Select or EditorTool.Text
-            && _document.Annotations.LastOrDefault(a => a.Tool == EditorTool.Text && a.HitTest(point))
-                is { } existing)
+        // A press that grabs the open box keeps it, so the gesture below moves or resizes it. Only
+        // a press away from it ends the edit and discards a box that was never typed into.
+        var wasEditing = _text.Annotation;
+        _text.End(commit: wasEditing is not null && GrabsBox(wasEditing, point));
+
+        // Typing opens on a press inside a box that is already selected and not being grabbed. The
+        // press that merely selects a box stays free to drag it.
+        if (_document.Selected is { Tool: EditorTool.Text } text
+            && !ReferenceEquals(text, wasEditing)
+            && !GrabsBox(text, point)
+            && text.HitTest(point))
         {
-            _document.SelectAnnotation(existing);
-            BeginTextEdit(existing);
+            BeginTextEdit(text);
             Invalidate();
             return;
+        }
+
+        // The text tool reaches an unselected box by selecting it first, so the press after this
+        // one edits that box rather than drawing another over it.
+        if (_document.ActiveTool == EditorTool.Text
+            && _document.Selected is null
+            && _document.HitTestTopmost(point) is { Tool: EditorTool.Text } unselected)
+        {
+            _document.SelectAnnotation(unselected);
         }
 
         Functions.SetCapture(Handle);
@@ -646,7 +687,7 @@ public sealed class EditorWindow : CaptionWindow
         { Invalidate(); return; }
         var point = ToImage(client.X, client.Y);
 
-        if (_caretDragging && leftDown && _textEditor is { } selecting)
+        if (_caretDragging && leftDown && _text.Editor is { } selecting)
         {
             PlaceCaret(selecting, point, extend: true);
             Invalidate();
@@ -696,11 +737,13 @@ public sealed class EditorWindow : CaptionWindow
         {
             _dragging = false;
             Functions.ReleaseCapture();
+
+            // Read before EndGesture clears the draft: only a brand-new box opens for typing, or
+            // ending a move would reopen the editor over the box just dragged.
+            var created = _document.IsDrawGestureActive;
             _document.EndGesture(ToImage(client.X, client.Y));
 
-            // A freshly placed text box opens for typing immediately - placing one and then having
-            // to click it again would be a step nobody wants.
-            if (_document.Selected is { Tool: EditorTool.Text } placed && placed.Text.Length == 0)
+            if (created && _document.Selected is { Tool: EditorTool.Text } placed && placed.Text.Length == 0)
                 BeginTextEdit(placed);
         }
         Invalidate();
@@ -712,29 +755,18 @@ public sealed class EditorWindow : CaptionWindow
     /// on to the document and takes the box with it.</summary>
     private void Undo()
     {
-        if (_textEditor is { CanUndo: true } editor)
+        if (!_text.Undo())
         {
-            editor.Undo();
-            Invalidate();
-            return;
+            // Dropped, not committed: it is about to be undone away.
+            _text.Abandon();
+            _document.Undo();
         }
-
-        // Dropped, not committed: it is about to be undone away.
-        _textEditor = null;
-        _document.Undo();
         Invalidate();
     }
 
     private void Redo()
     {
-        if (_textEditor is { CanRedo: true } editor)
-        {
-            editor.Redo();
-            Invalidate();
-            return;
-        }
-
-        _document.Redo();
+        if (!_text.Redo()) _document.Redo();
         Invalidate();
     }
 
@@ -748,10 +780,8 @@ public sealed class EditorWindow : CaptionWindow
     /// <summary>Opens the inline box over an annotation.</summary>
     private void BeginTextEdit(Annotation annotation)
     {
-        CommitText();
         if (_image is null) return;
-
-        _textEditor = new TextEditor(annotation);
+        _text.Begin(annotation);
         Invalidate();
     }
 
@@ -766,111 +796,36 @@ public sealed class EditorWindow : CaptionWindow
             return true;
         }
 
-        if (_textEditor is not { } editor) return false;
-        if (char.IsControl(character) && character != '\r') return false;
-
-        editor.Insert(character == '\r' ? "\n" : character.ToString());
+        if (!_text.HandleChar(character)) return false;
         Invalidate();
         return true;
     }
 
-    /// <summary>Editing keys for an open box. An open box owns the keyboard: only Escape and
-    /// undo/redo pass through.</summary>
+    /// <summary>Editing keys for an open box, routed to the box; undo and redo come back here
+    /// because they reach past it into the document.</summary>
     private bool OnTextKey(VIRTUAL_KEY key)
     {
-        if (_textEditor is not { } editor) return false;
-
         var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
         var shift = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0;
 
-        switch (key)
+        switch (_text.HandleKey(key, control, shift))
         {
-            case VIRTUAL_KEY.VK_BACK:
-                editor.Backspace();
-                break;
-            case VIRTUAL_KEY.VK_DELETE:
-                editor.Delete();
-                break;
-            case VIRTUAL_KEY.VK_LEFT:
-                editor.Move(-1, shift, control);
-                break;
-            case VIRTUAL_KEY.VK_RIGHT:
-                editor.Move(1, shift, control);
-                break;
-            case VIRTUAL_KEY.VK_HOME:
-                editor.MoveToLineEdge(end: false, shift);
-                break;
-            case VIRTUAL_KEY.VK_END:
-                editor.MoveToLineEdge(end: true, shift);
-                break;
-
-            case VIRTUAL_KEY.VK_A when control:
-                editor.SelectAll();
-                break;
-
-            case VIRTUAL_KEY.VK_C when control:
-                if (editor.HasSelection) ClipboardText.Copy(editor.SelectedText);
-                break;
-
-            case VIRTUAL_KEY.VK_X when control:
-                if (editor.HasSelection)
-                {
-                    ClipboardText.Copy(editor.SelectedText);
-                    editor.Backspace();
-                }
-                break;
-
-            case VIRTUAL_KEY.VK_V when control:
-                if (ClipboardText.Paste() is { Length: > 0 } pasted) editor.Insert(pasted);
-                break;
-
-            // Enter is a newline in a text box, not a crop commit.
-            case VIRTUAL_KEY.VK_RETURN:
-                editor.Insert("\n");
-                break;
-
-            case VIRTUAL_KEY.VK_Z when control:
+            case TextKeyResult.Undo:
                 Undo();
-                break;
-            case VIRTUAL_KEY.VK_Y when control:
+                return true;
+            case TextKeyResult.Redo:
                 Redo();
-                break;
-
-            // Escape closes the box, so it is the one key that goes on to the window.
-            case VIRTUAL_KEY.VK_ESCAPE:
-                return false;
-
-            // Everything else is swallowed: the printable keys arrive again as WM_CHAR and are
-            // inserted there, and letting them through would run the tool shortcuts too.
-            default:
+                return true;
+            case TextKeyResult.Handled:
                 Invalidate();
                 return true;
+            default:
+                return false;
         }
-
-        Invalidate();
-        return true;
     }
 
-    /// <summary>
-    /// Writes the box's text back and closes it. An empty box for a brand-new annotation is
-    /// cancelled outright, so a stray click with the text tool leaves nothing behind - and takes its
-    /// undo entry with it.
-    /// </summary>
-    private void CommitText()
-    {
-        if (_textEditor is not { } editor) return;
-        _textEditor = null;
-
-        var annotation = editor.Annotation;
-        var text = editor.Text;
-
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            _document.CancelAnnotation(annotation);
-            return;
-        }
-        _document.SetTextContent(annotation, text, annotation.Bounds);
-    }
+    /// <summary>Writes the box's text back and closes it, discarding one that was never typed into.</summary>
+    private void CommitText() => _text.End(commit: false);
 
     /// <summary>True inside the image well - the region the canvas owns, between the bars.</summary>
     private bool InCanvas(Point client) => CanvasWell().Contains(client);
@@ -893,7 +848,7 @@ public sealed class EditorWindow : CaptionWindow
 
         // An open text box owns the keyboard: its keystrokes are text, not shortcuts, or typing
         // "rectangle" would switch tools eight times.
-        if (_textEditor is not null && OnTextKey(key)) return true;
+        if (_text.IsOpen && OnTextKey(key)) return true;
 
         var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
 
@@ -919,7 +874,7 @@ public sealed class EditorWindow : CaptionWindow
                 return true;
 
             case VIRTUAL_KEY.VK_ESCAPE:
-                if (_textEditor is not null) CommitText();
+                if (_text.IsOpen) CommitText();
                 else if (_document.IsCropSessionActive) _document.CancelCropSession();
                 else _document.SelectAnnotation(null);
                 Invalidate();
@@ -978,6 +933,8 @@ public sealed class EditorWindow : CaptionWindow
 
     private bool SelectTool(EditorTool tool)
     {
+        // Leaving the tool ends the edit, or the box would stay open under a tool that cannot type.
+        CommitText();
         if (tool != EditorTool.Crop) _document.CancelCropSession();
         _document.ActiveTool = tool;
         if (tool == EditorTool.Crop && _image is not null) _document.BeginCropSession();

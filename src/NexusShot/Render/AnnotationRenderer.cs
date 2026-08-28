@@ -329,11 +329,13 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             resources.Brush(Palette.IsLight(color) ? Rgba.Black : Rgba.White));
     }
 
-    /// <summary>Inset from the box's left edge, so the caret is not flush against the border. Shared
-    /// by drawing, editing and hit-testing, which must agree on the origin.</summary>
+    /// <summary>Padding between the box's border and its text, so neither the glyphs nor the caret
+    /// sit flush against the frame. Shared by drawing, editing and hit-testing, which must agree on
+    /// the origin.</summary>
     private const double TextInset = 4;
+    private const double TextInsetY = 3;
 
-    private static Point TextOrigin(Rect bounds) => new(bounds.X + TextInset, bounds.Y);
+    private static Point TextOrigin(Rect bounds) => new(bounds.X + TextInset, bounds.Y + TextInsetY);
 
     /// <summary>Text wraps to the annotation's box, so the preview matches the editing box and
     /// the export.</summary>
@@ -366,7 +368,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             format,
             text,
             maxWidth: (float)Math.Max(10, bounds.Width - TextInset * 2),
-            maxHeight: (float)Math.Max(10, bounds.Height));
+            maxHeight: (float)Math.Max(10, bounds.Height - TextInsetY * 2));
 
         if (annotation.IsUnderline && text.Length > 0)
         {
@@ -440,7 +442,8 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         layout.Object.HitTestTextPosition(
             (uint)position, false, out var x, out var y, out var metrics);
 
-        var width = Math.Max(1, adornerScale);
+        // Two device pixels: a hairline caret is easy to lose against a screenshot.
+        var width = Math.Max(1, 2 * adornerScale);
         return new Rect(origin.X + x, origin.Y + y, width, Math.Max(1, metrics.height));
     }
 
@@ -486,13 +489,17 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         {
             if (annotation.Tool != EditorTool.Text || annotation.Text.Length > 0) continue;
 
+            // The selection adorner already frames the selected box; a second frame on the same
+            // edges just doubles the stroke.
+            if (ReferenceEquals(annotation, document.Selected)) continue;
+
             var thickness = 1.5 * adornerScale;
             var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, thickness);
             if (bounds.IsEmpty) continue;
 
             target.DrawRectangle(
                 ToRect(bounds), resources.Brush(Palette.Parse(annotation.ColorHex).WithAlpha(180)),
-                (float)thickness, resources.DashStroke(3, 3));
+                (float)thickness);
         }
     }
 
@@ -509,11 +516,11 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 
         var adorner = AdornerGeometry.Selection(annotation, adornerScale);
 
-        if (adorner.DashedFrame is { } frame && !frame.IsEmpty)
+        if (adorner.Frame is { } frame && !frame.IsEmpty)
         {
             target.DrawRectangle(
                 ToRect(frame), resources.Brush(Palette.Selection),
-                (float)adorner.FrameThickness, resources.DashStroke(3, 3));
+                (float)adorner.FrameThickness);
         }
 
         if (EditorDocument.IsBoxResizable(annotation))
@@ -523,8 +530,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     private void DrawCropAdorner(
         IComObject<ID2D1RenderTarget> target, EditorDocument document, double adornerScale)
     {
-        // A live session draws the interactive frame; a committed crop keeps its passive
-        // dim-plus-dashed-frame presentation.
+        // A live session draws grips; a committed crop keeps a passive dimmed frame.
         if (document.PendingCrop is { } pending)
         {
             foreach (var band in AdornerGeometry.DimAround(pending, document.ImageWidth, document.ImageHeight))
@@ -549,7 +555,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         var frameBounds = AdornerGeometry.InsetForStroke(crop, thickness);
         if (frameBounds.IsEmpty) return;
         target.DrawRectangle(ToRect(frameBounds), resources.Brush(Palette.Selection),
-            thickness, resources.DashStroke(5, 3));
+            thickness);
     }
 
     /// <summary>L-shaped corner grips and short edge bars, drawn inside the bounds: a white stroke

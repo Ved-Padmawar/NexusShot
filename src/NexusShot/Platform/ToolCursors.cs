@@ -11,6 +11,7 @@ namespace NexusShot.Platform;
 public static partial class ToolCursors
 {
     private const int IDC_ARROW = 32512;
+    private const int IDC_IBEAM = 32513;
     private const int IDC_CROSS = 32515;
     private const int IDC_PEN = 32631;
     private const int IDC_SIZEALL = 32646;
@@ -24,6 +25,12 @@ public static partial class ToolCursors
 
     public static IntPtr Arrow => Standard(IDC_ARROW);
     public static IntPtr Cross => Standard(IDC_CROSS);
+
+    /// <summary>The four-way arrow, for an area that drags what is under it.</summary>
+    public static IntPtr Move => Standard(IDC_SIZEALL);
+
+    /// <summary>The text caret, for the inside of an open text box.</summary>
+    public static IntPtr Text => Standard(IDC_IBEAM);
 
     public static IntPtr Resize(ResizeHandle handle) => Standard(handle switch
     {

@@ -27,6 +27,19 @@ public static class BoxGeometry
         _ => throw new ArgumentOutOfRangeException(nameof(handle), handle, "Not a box handle."),
     };
 
+    /// <summary>
+    /// The part of a box that acts on its contents rather than on the box. The band just inside the
+    /// edge belongs to the box, so one whose contents fill it can still be grabbed and moved.
+    /// </summary>
+    public static Rect Interior(Rect bounds, double margin) =>
+        bounds.Deflate(Math.Min(margin, Math.Min(bounds.Width, bounds.Height) / 4));
+
+    /// <summary>True when a point takes hold of the box itself - a handle, or the move band -
+    /// rather than reaching the contents inside it.</summary>
+    public static bool GrabsBox(Rect bounds, Point point, double tolerance) =>
+        HitTestHandle(bounds, point, tolerance) is not null
+        || (bounds.Contains(point) && !Interior(bounds, tolerance).Contains(point));
+
     public static ResizeHandle? HitTestHandle(Rect bounds, Point point, double tolerance)
     {
         var toleranceSquared = tolerance * tolerance;

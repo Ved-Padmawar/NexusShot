@@ -159,7 +159,25 @@ public class GeometryTests
         };
 
         var adorner = AdornerGeometry.Selection(rectangle, 1);
-        Assert.Null(adorner.DashedFrame);
+        Assert.Null(adorner.Frame);
+    }
+
+    [Theory]
+    [InlineData(EditorTool.Text)]
+    [InlineData(EditorTool.Highlight)]
+    [InlineData(EditorTool.Spotlight)]
+    public void AnnotationsWithoutTheirOwnOutlineGetAFrame(EditorTool tool)
+    {
+        var annotation = new Annotation
+        {
+            Tool = tool,
+            Start = new Point(100, 100),
+            End = new Point(300, 180),
+        };
+
+        var adorner = AdornerGeometry.Selection(annotation, 1);
+        Assert.NotNull(adorner.Frame);
+        Assert.True(adorner.FrameThickness > 0);
     }
 
     [Fact]

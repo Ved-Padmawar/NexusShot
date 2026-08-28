@@ -54,7 +54,26 @@ public sealed class EditorDocument
     public bool TextBold { get; set; }
     public bool TextItalic { get; set; }
     public bool TextUnderline { get; set; }
-    public Annotation? Selected { get; private set; }
+    /// <summary>The selected annotation. Changing it closes any editor on a different annotation,
+    /// so the two cannot drift apart.</summary>
+    public Annotation? Selected
+    {
+        get;
+        private set
+        {
+            if (ReferenceEquals(field, value)) return;
+            field = value;
+            if (!ReferenceEquals(EditingText, value)) EditingText = null;
+        }
+    }
+
+    /// <summary>
+    /// The text annotation whose inline editor is open, or null - always either null or the
+    /// selection. The view used to own this alone, so render, input and the cursor each reached
+    /// their own conclusion about whether a box was open.
+    /// </summary>
+    public Annotation? EditingText { get; private set; }
+
     public Rect? CropBounds { get; private set; }
 
     /// <summary>Image dimensions in pixels; the crop frame is clamped to them.</summary>
@@ -165,24 +184,9 @@ public sealed class EditorDocument
             return;
         }
 
-        // A selected shape's handles win over everything: resizing stays possible while a drawing
-        // tool is active, so a shape can be adjusted right after it is placed.
-        if (Selected is not null && GetResizeHandleAt(Selected, point, handleTolerance) is { } handle)
-        {
-            _gesture = GestureKind.Resize;
-            _resizeHandle = handle;
-            _resizeOriginBounds = Selected.Bounds;
-            return;
-        }
-
-        if (ActiveTool == EditorTool.Select)
-        {
-            // Topmost annotation wins, matching paint order.
-            Selected = _annotations.LastOrDefault(a => a.HitTest(point));
-            _gesture = Selected is null ? GestureKind.None : GestureKind.Move;
-            Notify();
-            return;
-        }
+        // An existing object under the pointer is grabbed rather than drawn over: annotations are
+        // persistent objects, so create is what happens on empty canvas, not on top of one.
+        if (GrabExisting(point, handleTolerance)) return;
 
         Selected = null;
         PushUndo();
@@ -213,6 +217,45 @@ public sealed class EditorDocument
 
         Notify();
     }
+
+    /// <summary>
+    /// Starts a move or resize on an existing object, and reports whether it took the gesture:
+    /// handles resize, the interior moves, whatever tool is active.
+    ///
+    /// Only the select tool reaches an object that is not already selected. A creation tool must
+    /// leave the canvas under an existing object drawable, so it grabs one only once it is the
+    /// selection - that is what stops a drag on a text box from laying a second box over it.
+    /// </summary>
+    private bool GrabExisting(Point point, double handleTolerance)
+    {
+        if (Selected is { } selected && _annotations.Contains(selected))
+        {
+            if (GetResizeHandleAt(selected, point, handleTolerance) is { } handle)
+            {
+                _gesture = GestureKind.Resize;
+                _resizeHandle = handle;
+                _resizeOriginBounds = selected.Bounds;
+                return true;
+            }
+
+            if (selected.HitTest(point))
+            {
+                _gesture = GestureKind.Move;
+                return true;
+            }
+        }
+
+        if (ActiveTool != EditorTool.Select) return false;
+
+        Selected = HitTestTopmost(point);
+        _gesture = Selected is null ? GestureKind.None : GestureKind.Move;
+        Notify();
+        return true;
+    }
+
+    /// <summary>The frontmost annotation under a point: paint order is list order, so the last
+    /// match is the one on top.</summary>
+    public Annotation? HitTestTopmost(Point point) => _annotations.LastOrDefault(a => a.HitTest(point));
 
     /// <summary>Continues the active gesture.</summary>
     public void ContinueGesture(Point point) => ContinueGestureCore(point);
@@ -528,6 +571,7 @@ public sealed class EditorDocument
         if (!_annotations.Remove(annotation)) return;
         if (_createdUndoOwner == annotation) _undo.TryPop(out _);
         _createdUndoOwner = null;
+        if (ReferenceEquals(EditingText, annotation)) EditingText = null;
         if (Selected == annotation) Selected = null;
         Notify();
     }
@@ -536,6 +580,24 @@ public sealed class EditorDocument
     public void SelectAnnotation(Annotation? annotation)
     {
         Selected = annotation;
+        Notify();
+    }
+
+    /// <summary>Opens a text annotation for editing, selecting it: an open box is always the
+    /// selection, so its grips stay live while it is typed into.</summary>
+    public void BeginTextEdit(Annotation annotation)
+    {
+        if (annotation.Tool != EditorTool.Text || !_annotations.Contains(annotation)) return;
+        Selected = annotation;
+        EditingText = annotation;
+        Notify();
+    }
+
+    /// <summary>Closes the open editor, leaving the annotation selected.</summary>
+    public void EndTextEdit()
+    {
+        if (EditingText is null) return;
+        EditingText = null;
         Notify();
     }
 
@@ -735,6 +797,10 @@ public sealed class EditorDocument
         CropBounds = snapshot.CropBounds;
         PendingCrop = snapshot.PendingCrop;
         _strokeBounds.Clear();
+
+        // The restored annotations are fresh clones, so any open editor refers to an instance the
+        // document no longer holds. Reselecting by id installs the clone and closes the editor.
+        EditingText = null;
         Selected = selectedId is null ? null : _annotations.FirstOrDefault(a => a.Id == selectedId);
         _draft = null;
         _createdUndoOwner = null;

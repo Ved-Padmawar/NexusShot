@@ -20,7 +20,6 @@ public sealed class D2DResources : IDisposable
 
     private readonly IComObject<ID2D1RenderTarget> _target;
     private readonly LruCache<Rgba, IComObject<ID2D1SolidColorBrush>> _brushes = new(MaxBrushes);
-    private readonly Dictionary<(float On, float Off), IComObject<ID2D1StrokeStyle>> _dashStyles = [];
     private readonly LruCache<(
         string Family,
         float Size,
@@ -70,23 +69,6 @@ public sealed class D2DResources : IDisposable
         dashStyle = D2D1_DASH_STYLE.D2D1_DASH_STYLE_SOLID,
         miterLimit = 10,
     });
-
-    /// <summary>A dashed stroke. The dash array is in stroke-width units.</summary>
-    public IComObject<ID2D1StrokeStyle> DashStroke(float on, float off)
-    {
-        if (_dashStyles.TryGetValue((on, off), out var cached)) return cached;
-        var style = CreateStroke(new D2D1_STROKE_STYLE_PROPERTIES
-        {
-            startCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_FLAT,
-            endCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_FLAT,
-            lineJoin = D2D1_LINE_JOIN.D2D1_LINE_JOIN_MITER,
-            dashCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_FLAT,
-            dashStyle = D2D1_DASH_STYLE.D2D1_DASH_STYLE_CUSTOM,
-            miterLimit = 10,
-        }, [on, off]);
-        _dashStyles[(on, off)] = style;
-        return style;
-    }
 
     /// <summary>
     /// A text format for the given font and layout settings. Alignment and wrapping are part of the
@@ -170,10 +152,8 @@ public sealed class D2DResources : IDisposable
     public void Dispose()
     {
         foreach (var brush in _brushes.Values) brush.Dispose();
-        foreach (var style in _dashStyles.Values) style.Dispose();
         foreach (var format in _formats.Values) format.Dispose();
         _brushes.Clear();
-        _dashStyles.Clear();
         _formats.Clear();
         _measurements.Clear();
         _scratchBrush?.Dispose();

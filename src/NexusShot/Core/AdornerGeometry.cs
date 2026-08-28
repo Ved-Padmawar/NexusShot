@@ -75,7 +75,7 @@ public static class AdornerGeometry
     /// <summary>
     /// Where a selected annotation's grips sit. Shapes that draw their own outline get no extra
     /// frame - the counter's filled disc is as much an outline as a rectangle's stroke, and a box
-    /// around it just adds noise. Everything else has no outline of its own, so it gets a dashed
+    /// around it just adds noise. Everything else has no outline of its own, so it gets a solid
     /// frame and its grips ride that.
     /// </summary>
     public static SelectionAdorner Selection(Annotation annotation, double adornerScale)
@@ -87,7 +87,7 @@ public static class AdornerGeometry
             // Grips ride the shape's own painted stroke centreline, not a second inset past it.
             return new SelectionAdorner(
                 GripBounds: InsetForStroke(bounds, annotation.StrokeThickness),
-                DashedFrame: null,
+                Frame: null,
                 FrameThickness: 0);
         }
 
@@ -95,7 +95,7 @@ public static class AdornerGeometry
         var frameBounds = InsetForStroke(bounds, frameThickness);
         return new SelectionAdorner(
             GripBounds: frameBounds,
-            DashedFrame: frameBounds,
+            Frame: frameBounds,
             FrameThickness: frameThickness);
     }
 
@@ -113,7 +113,7 @@ public static class AdornerGeometry
 
 public readonly record struct GripMetrics(double Thickness, double UnderlayPad, double Arm, double Bar);
 
-/// <summary><paramref name="DashedFrame"/> is null for shapes that already draw their own outline.</summary>
-public readonly record struct SelectionAdorner(Rect GripBounds, Rect? DashedFrame, double FrameThickness);
+/// <summary><paramref name="Frame"/> is null for shapes that already draw their own outline.</summary>
+public readonly record struct SelectionAdorner(Rect GripBounds, Rect? Frame, double FrameThickness);
 
 public readonly record struct CropAdorner(Rect Frame, double FrameThickness, Rect GripBounds);

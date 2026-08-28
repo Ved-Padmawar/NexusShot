@@ -20,7 +20,7 @@ internal sealed class TextEditor
 
     /// <summary>Caret and selection anchor, as indices into <see cref="Text"/>.</summary>
     public int Caret { get; private set; }
-    public int Anchor { get; private set; }
+    private int Anchor { get; set; }
 
     public int SelectionStart => Math.Min(Anchor, Caret);
     public int SelectionEnd => Math.Max(Anchor, Caret);
