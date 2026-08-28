@@ -11,7 +11,7 @@ namespace NexusShot.Views;
 /// interrupt what you were doing. Hovering reveals the actions; auto-dismiss pauses under the
 /// pointer and while pinned.
 /// </summary>
-public sealed class FloatingPreview : D2DRenderWindow
+public sealed partial class FloatingPreview : D2DRenderWindow
 {
     private const uint WS_POPUP = 0x80000000;
     private const uint WS_EX_TOPMOST = 0x00000008;
@@ -131,7 +131,7 @@ public sealed class FloatingPreview : D2DRenderWindow
         ApplyDwmChrome();
 
         // Zero means "keep it until acted on", so no timer at all.
-        if (_dismissSeconds > 0) SetTimer(Handle, DismissTimerId, 1000, IntPtr.Zero);
+        if (_dismissSeconds > 0) WindowInterop.SetTimer(Handle, DismissTimerId, 1000, IntPtr.Zero);
     }
 
     /// <summary>Rounds the card at the frame. DWM clips the window itself, so the corners are cut
@@ -373,7 +373,7 @@ public sealed class FloatingPreview : D2DRenderWindow
         if (_dismissing) return;
         _dismissing = true;
 
-        KillTimer(Handle, DismissTimerId);
+        WindowInterop.KillTimer(Handle, DismissTimerId);
         Post(DismissCore);
     }
 
@@ -396,12 +396,12 @@ public sealed class FloatingPreview : D2DRenderWindow
         // A freshly layered window has no alpha set and may stop painting; pin it opaque first.
         SetLayeredWindowAttributes(Handle, 0, 255, LWA_ALPHA);
 
-        GetWindowRect(Handle, out var bounds);
+        WindowInterop.GetWindowRect(Handle, out var bounds);
         _dismissOriginX = bounds.Left;
         _dismissOriginY = bounds.Top;
         _dismissStarted = Environment.TickCount64;
 
-        SetTimer(Handle, DismissAnimationTimerId, 10, IntPtr.Zero);
+        WindowInterop.SetTimer(Handle, DismissAnimationTimerId, 10, IntPtr.Zero);
     }
 
     private void StepDismissAnimation()
@@ -418,7 +418,7 @@ public sealed class FloatingPreview : D2DRenderWindow
 
         if (progress < 1) return;
 
-        KillTimer(Handle, DismissAnimationTimerId);
+        WindowInterop.KillTimer(Handle, DismissAnimationTimerId);
         Close();
     }
 
@@ -440,7 +440,7 @@ public sealed class FloatingPreview : D2DRenderWindow
 
     private Point PointerInClient()
     {
-        GetCursorPos(out var screen);
+        WindowInterop.GetCursorPos(out var screen);
         WindowInterop.ScreenToClient(Handle, ref screen);
         return new Point(screen.X, screen.Y);
     }
@@ -471,7 +471,7 @@ public sealed class FloatingPreview : D2DRenderWindow
                         _pressOrigin = null;
 
                         // DoDragDrop needs the mouse; holding capture would starve it.
-                        if (GetCapture() == Handle) ReleaseCapture();
+                        if (WindowInterop.GetCapture() == Handle) WindowInterop.ReleaseCapture();
 
                         // A completed drop means the capture reached its destination, so the card is
                         // done.
@@ -505,14 +505,14 @@ public sealed class FloatingPreview : D2DRenderWindow
 
                 // Without capture the moves stop arriving the moment the cursor clears the card -
                 // which is exactly when a drag-out passes its threshold.
-                SetCapture(Handle);
+                WindowInterop.SetCapture(Handle);
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmLButtonUp:
                 _pointerDown = false;
                 _pressOrigin = null;
-                if (GetCapture() == Handle) ReleaseCapture();
+                if (WindowInterop.GetCapture() == Handle) WindowInterop.ReleaseCapture();
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
@@ -576,8 +576,8 @@ public sealed class FloatingPreview : D2DRenderWindow
 
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
-        KillTimer(Handle, DismissTimerId);
-        KillTimer(Handle, DismissAnimationTimerId);
+        WindowInterop.KillTimer(Handle, DismissTimerId);
+        WindowInterop.KillTimer(Handle, DismissAnimationTimerId);
         _thumbnail?.Dispose();
         _resources?.Dispose();
         _thumbnail = null;
@@ -601,8 +601,8 @@ public sealed class FloatingPreview : D2DRenderWindow
     /// <summary>DWMWA_COLOR_NONE: suppresses the frame's border entirely.</summary>
     private const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmSetWindowAttribute(
         IntPtr window, int attribute, ref int value, int size);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -614,28 +614,18 @@ public sealed class FloatingPreview : D2DRenderWindow
         public uint dwHoverTime;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    private static partial nint GetWindowLongPtrW(IntPtr window, int index);
 
-    [DllImport("user32.dll")]
-    private static extern nint GetWindowLongPtrW(IntPtr window, int index);
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static partial nint SetWindowLongPtrW(IntPtr window, int index, nint value);
 
-    [DllImport("user32.dll")]
-    private static extern nint SetWindowLongPtrW(IntPtr window, int index, nint value);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetLayeredWindowAttributes(
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetLayeredWindowAttributes(
         IntPtr window, uint key, byte alpha, uint flags);
 
-    [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr window, out RECT bounds);
-
-    [DllImport("user32.dll")] private static extern IntPtr SetCapture(IntPtr window);
-    [DllImport("user32.dll")] private static extern IntPtr GetCapture();
-    [DllImport("user32.dll")] private static extern bool ReleaseCapture();
-
-    [DllImport("user32.dll")] private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT track);
-    [DllImport("user32.dll")] private static extern bool GetCursorPos(out WindowInterop.POINT point);
-    [DllImport("user32.dll")] private static extern nuint SetTimer(IntPtr window, nuint id, uint elapse, IntPtr callback);
-    [DllImport("user32.dll")] private static extern bool KillTimer(IntPtr window, nuint id);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool TrackMouseEvent(ref TRACKMOUSEEVENT track);
 }

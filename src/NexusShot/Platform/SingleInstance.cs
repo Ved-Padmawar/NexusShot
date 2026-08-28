@@ -9,7 +9,7 @@ namespace NexusShot.Platform;
 /// take no global hotkey - the first already owns them all - and would then report every shortcut as
 /// belonging to another app. It asks the first to show itself instead, and exits.
 /// </summary>
-public static class SingleInstance
+public static partial class SingleInstance
 {
     private const string MutexName = @"Local\NexusShot.SingleInstance";
 
@@ -24,7 +24,8 @@ public static class SingleInstance
     /// </summary>
     public static bool Claim()
     {
-        try { _mutex = new Mutex(initiallyOwned: true, MutexName, out var created); if (created) return true; }
+        try
+        { _mutex = new Mutex(initiallyOwned: true, MutexName, out var created); if (created) return true; }
         catch (AbandonedMutexException) { _mutex = new Mutex(initiallyOwned: true, MutexName, out _); return true; }
 
         _mutex.Dispose();
@@ -46,9 +47,10 @@ public static class SingleInstance
 
     private static readonly IntPtr HWND_BROADCAST = new(0xFFFF);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern uint RegisterWindowMessageW(string message);
+    [LibraryImport("user32.dll", EntryPoint = "RegisterWindowMessageW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint RegisterWindowMessageW(string message);
 
-    [DllImport("user32.dll")]
-    private static extern bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    [LibraryImport("user32.dll", EntryPoint = "PostMessageW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 }

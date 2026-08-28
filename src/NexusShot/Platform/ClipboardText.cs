@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace NexusShot.Platform;
 
 /// <summary>Unicode text on the clipboard, for the inline text editor's cut/copy/paste.</summary>
-internal static class ClipboardText
+internal static partial class ClipboardText
 {
     private const uint CF_UNICODETEXT = 13;
     private const uint GMEM_MOVEABLE = 0x0002;
@@ -75,15 +75,38 @@ internal static class ClipboardText
         }
     }
 
-    [DllImport("user32.dll")] private static extern bool OpenClipboard(IntPtr owner);
-    [DllImport("user32.dll")] private static extern bool CloseClipboard();
-    [DllImport("user32.dll")] private static extern bool EmptyClipboard();
-    [DllImport("user32.dll")] private static extern bool IsClipboardFormatAvailable(uint format);
-    [DllImport("user32.dll")] private static extern IntPtr GetClipboardData(uint format);
-    [DllImport("user32.dll")] private static extern IntPtr SetClipboardData(uint format, IntPtr data);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool OpenClipboard(IntPtr owner);
 
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalLock(IntPtr memory);
-    [DllImport("kernel32.dll")] private static extern bool GlobalUnlock(IntPtr memory);
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalFree(IntPtr memory);
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CloseClipboard();
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool EmptyClipboard();
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool IsClipboardFormatAvailable(uint format);
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr GetClipboardData(uint format);
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr SetClipboardData(uint format, IntPtr data);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr GlobalLock(IntPtr memory);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GlobalUnlock(IntPtr memory);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr GlobalFree(IntPtr memory);
 }

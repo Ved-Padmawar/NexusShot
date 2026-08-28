@@ -37,14 +37,18 @@ public static partial class FolderPicker
             dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
 
             if (!string.IsNullOrEmpty(initial) && Directory.Exists(initial)
-                && SHCreateItemFromParsingName(initial, IntPtr.Zero, IID_IShellItem, out var start) == 0)
+                && ShellItems.FromPath(initial, IID_IShellItem) is { } start)
             {
-                dialog.SetFolder(start);
+                using (start)
+                    dialog.SetFolder(start.Item);
             }
 
             dialog.Show(owner);
-            dialog.GetResult(out var item);
-            item.GetDisplayName(SIGDN_FILESYSPATH, out var path);
+            dialog.GetResult(out var result);
+            if (result == IntPtr.Zero) return null;
+
+            using var selected = ShellItems.Adopt(result);
+            selected.Item.GetDisplayName(SIGDN_FILESYSPATH, out var path);
             return path;
         }
         catch (COMException exception) when (exception.HResult == ERROR_CANCELLED)
@@ -62,11 +66,6 @@ public static partial class FolderPicker
     [LibraryImport("ole32.dll")]
     private static partial int CoCreateInstance(
         in Guid clsid, IntPtr outer, uint context, in Guid iid, out IntPtr instance);
-
-    [LibraryImport("shell32.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int SHCreateItemFromParsingName(
-        string path, IntPtr bindContext, in Guid riid,
-        [MarshalUsing(typeof(ComInterfaceMarshaller<IShellItem>))] out IShellItem item);
 
     [GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
     [Guid("42f85136-db7e-439c-85f1-e4075d135fc8")]
@@ -89,7 +88,9 @@ public static partial class FolderPicker
         void SetTitle(string title);
         void SetOkButtonLabel(string text);
         void SetFileNameLabel(string label);
-        void GetResult(out IShellItem item);
+        // Raw pointer, not a marshalled IShellItem: the caller owns this reference and releases it
+        // through ShellItemRef.
+        void GetResult(out IntPtr item);
         void AddPlace(IShellItem place, int where);
         void SetDefaultExtension(string extension);
         void Close(int result);

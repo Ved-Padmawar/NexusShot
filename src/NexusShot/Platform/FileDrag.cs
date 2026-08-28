@@ -358,7 +358,8 @@ public static partial class FileDrag
     [Guid("00000103-0000-0000-C000-000000000046")]
     internal partial interface IEnumFORMATETC
     {
-        [PreserveSig] int Next(uint count,
+        [PreserveSig]
+        int Next(uint count,
             [MarshalUsing(CountElementName = nameof(count))] FORMATETC[] formats, out uint fetched);
         [PreserveSig] int Skip(uint count);
         [PreserveSig] int Reset();
@@ -429,27 +430,37 @@ public static partial class FileDrag
     [StructLayout(LayoutKind.Sequential)]
     internal struct POINT { public int x, y; }
 
-    [DllImport("ole32.dll")]
-    private static extern int CoCreateInstance(
+    [LibraryImport("ole32.dll")]
+    private static partial int CoCreateInstance(
         in Guid clsid, IntPtr outer, uint context, in Guid iid, out IntPtr instance);
 
-    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr handle);
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteObject(IntPtr handle);
 
-    [DllImport("ole32.dll")]
-    private static extern IntPtr OleDuplicateData(IntPtr src, ushort cfFormat, uint flags);
+    [LibraryImport("ole32.dll")]
+    private static partial IntPtr OleDuplicateData(IntPtr src, ushort cfFormat, uint flags);
 
-    [DllImport("ole32.dll")]
-    private static extern int DoDragDrop(IntPtr data, IntPtr source, uint allowed, out uint effect);
+    [LibraryImport("ole32.dll")]
+    private static partial int DoDragDrop(IntPtr data, IntPtr source, uint allowed, out uint effect);
 
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalAlloc(uint flags, nuint bytes);
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalLock(IntPtr memory);
-    [DllImport("kernel32.dll")] private static extern bool GlobalUnlock(IntPtr memory);
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalFree(IntPtr memory);
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr GlobalAlloc(uint flags, nuint bytes);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr GlobalLock(IntPtr memory);
+
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GlobalUnlock(IntPtr memory);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr GlobalFree(IntPtr memory);
 }
 
 /// <summary>The picture that follows the cursor during a drag. The shell takes ownership of the
 /// bitmap once the drag starts.</summary>
-public sealed record DragImage(IntPtr Bitmap, int Width, int Height, int HotspotX, int HotspotY)
+public sealed partial record DragImage(IntPtr Bitmap, int Width, int Height, int HotspotX, int HotspotY)
 {
     /// <summary>A 32-bit premultiplied-BGRA DIB section, which is what the drag helper wants: an
     /// ordinary bitmap drags as an opaque block with no alpha.</summary>
@@ -484,8 +495,8 @@ public sealed record DragImage(IntPtr Bitmap, int Width, int Height, int Hotspot
         public uint biClrUsed, biClrImportant;
     }
 
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateDIBSection(
+    [LibraryImport("gdi32.dll")]
+    private static partial IntPtr CreateDIBSection(
         IntPtr dc, ref BITMAPINFOHEADER header, uint usage, out IntPtr bits,
         IntPtr section, uint offset);
 }

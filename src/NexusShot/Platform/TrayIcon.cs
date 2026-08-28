@@ -128,6 +128,8 @@ public sealed class TrayIcon : IDisposable
         Shell_NotifyIconW(NIM_DELETE, ref data);
     }
 
+    /// <summary>The inline ByValTStr buffers are not blittable, so this file stays on DllImport:
+    /// LibraryImport cannot marshal them without disabling runtime marshalling assembly-wide.</summary>
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NOTIFYICONDATAW
     {

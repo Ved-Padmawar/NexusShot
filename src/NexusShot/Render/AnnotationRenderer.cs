@@ -29,6 +29,8 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         IPixelEffectSource? effects,
         Annotation? skip = null)
     {
+        effects?.PruneMasks(document.Annotations);
+
         foreach (var annotation in document.Annotations)
         {
             if (ReferenceEquals(annotation, skip)) continue;
@@ -45,7 +47,8 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         var has = new HashSet<Guid>(document.Annotations.Select(a => a.Id));
         var toRemove = new List<Guid>();
         foreach (var id in _erasedStrokes.Keys) if (!has.Contains(id)) toRemove.Add(id);
-        foreach (var id in toRemove) if (_erasedStrokes.Remove(id, out var cached)) cached.Geometry.Dispose();
+        foreach (var id in toRemove)
+            if (_erasedStrokes.Remove(id, out var cached)) cached.Geometry.Dispose();
     }
 
     public void DrawAnnotation(
@@ -59,20 +62,20 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         switch (annotation.Tool)
         {
             case EditorTool.Rectangle:
-            {
-                var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, annotation.StrokeThickness);
-                if (bounds.IsEmpty) break;
-                target.DrawRectangle(ToRect(bounds), resources.Brush(color), (float)annotation.StrokeThickness);
-                break;
-            }
+                {
+                    var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, annotation.StrokeThickness);
+                    if (bounds.IsEmpty) break;
+                    target.DrawRectangle(ToRect(bounds), resources.Brush(color), (float)annotation.StrokeThickness);
+                    break;
+                }
 
             case EditorTool.Ellipse:
-            {
-                var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, annotation.StrokeThickness);
-                if (bounds.IsEmpty) break;
-                target.DrawEllipse(ToEllipse(bounds), resources.Brush(color), (float)annotation.StrokeThickness);
-                break;
-            }
+                {
+                    var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, annotation.StrokeThickness);
+                    if (bounds.IsEmpty) break;
+                    target.DrawEllipse(ToEllipse(bounds), resources.Brush(color), (float)annotation.StrokeThickness);
+                    break;
+                }
 
             case EditorTool.Line:
                 target.DrawLine(
@@ -315,9 +318,10 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             resources.Brush(color));
 
         var label = annotation.CounterValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var format = resources.TextFormat("Segoe UI", (float)(diameter * 0.45), bold: true, italic: false);
-        format.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER);
-        format.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        var format = resources.TextFormat(
+            Metrics.FontFamily, (float)(diameter * 0.45), bold: true, italic: false,
+            alignment: DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER,
+            paragraphAlignment: DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
         var box = new Rect(annotation.Start.X - diameter / 2, annotation.Start.Y - diameter / 2, diameter, diameter);
         ID2D1RenderTargetExtensions.DrawText(
@@ -352,7 +356,11 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     public IComObject<IDWriteTextLayout> TextLayout(Annotation annotation, string text, Rect bounds)
     {
         var format = resources.TextFormat(
-            "Segoe UI", (float)Math.Max(8, annotation.FontSize), annotation.IsBold, annotation.IsItalic);
+            Metrics.FontFamily, (float)Math.Max(8, annotation.FontSize),
+            annotation.IsBold, annotation.IsItalic,
+            alignment: DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING,
+            paragraphAlignment: DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+            wordWrapping: DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_WRAP);
 
         var layout = resources.DWrite.CreateTextLayout(
             format,
@@ -603,8 +611,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         {
             sink.Object.BeginFigure(ToPoint(points[0]),
                 filled ? D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_FILLED : D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_HOLLOW);
-            for (var i = 1; i < points.Count; i++)
-                sink.Object.AddLine(ToPoint(points[i]));
+            for (var i = 1; i < points.Count; i++) sink.Object.AddLine(ToPoint(points[i]));
             sink.Object.EndFigure(filled ? D2D1_FIGURE_END.D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END.D2D1_FIGURE_END_OPEN);
             sink.Object.Close();
         }
@@ -613,8 +620,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 
     private static bool IsDab(IReadOnlyList<Point> points)
     {
-        for (var i = 1; i < points.Count; i++)
-            if (points[i] != points[0]) return false;
+        for (var i = 1; i < points.Count; i++) if (points[i] != points[0]) return false;
         return true;
     }
 
@@ -680,4 +686,7 @@ public static class ArrowGeometry
 public interface IPixelEffectSource
 {
     void DrawBrushEffect(IComObject<ID2D1DeviceContext> context, Annotation annotation);
+
+    /// <summary>Releases anything cached for annotations no longer in <paramref name="annotations"/>.</summary>
+    void PruneMasks(IReadOnlyList<Annotation> annotations);
 }

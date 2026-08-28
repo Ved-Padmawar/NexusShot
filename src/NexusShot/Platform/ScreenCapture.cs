@@ -10,10 +10,10 @@ namespace NexusShot.Platform;
 /// Coordinates are physical pixels: the manifest opts into PerMonitorV2, so the virtual desktop
 /// metrics and window rects are already unscaled and no DPI correction is needed anywhere here.
 ///
-/// The XAML build used System.Drawing for the blit and the PNG encode. This does the blit with
-/// GDI directly and the encode with WIC, which is one fewer dependency in a single-file AOT exe.
+/// The blit uses GDI directly and the encode uses WIC, which is one fewer dependency in a
+/// single-file AOT exe.
 /// </summary>
-public static class ScreenCapture
+public static partial class ScreenCapture
 {
     private const int SM_XVIRTUALSCREEN = 76;
     private const int SM_YVIRTUALSCREEN = 77;
@@ -45,7 +45,8 @@ public static class ScreenCapture
     public static DecodedImage CaptureActiveWindow()
     {
         var window = GetForegroundWindow();
-        if (window == IntPtr.Zero) throw new InvalidOperationException("Could not determine the active window.");
+        if (window == IntPtr.Zero)
+            throw new InvalidOperationException("Could not determine the active window.");
         RectInt winRect;
         if (DwmGetWindowAttribute(window, 9, out var dwmRect, Marshal.SizeOf<RECT>()) == 0)
             winRect = new RectInt(dwmRect.Left, dwmRect.Top, dwmRect.Right - dwmRect.Left, dwmRect.Bottom - dwmRect.Top);
@@ -72,14 +73,16 @@ public static class ScreenCapture
             throw new ArgumentOutOfRangeException(nameof(bounds), "The requested capture area is too large.");
 
         var screen = GetDC(IntPtr.Zero);
-        if (screen == IntPtr.Zero) throw new InvalidOperationException("Could not open a screen device context.");
+        if (screen == IntPtr.Zero)
+            throw new InvalidOperationException("Could not open a screen device context.");
 
         var memory = IntPtr.Zero;
         var bitmap = IntPtr.Zero;
         try
         {
             memory = CreateCompatibleDC(screen);
-            if (memory == IntPtr.Zero) throw new InvalidOperationException("Could not create a capture device context.");
+            if (memory == IntPtr.Zero)
+                throw new InvalidOperationException("Could not create a capture device context.");
 
             // A top-down 32bpp DIB, so the bits come back in the layout WIC wants without a flip.
             var header = new BITMAPINFOHEADER
@@ -140,30 +143,34 @@ public static class ScreenCapture
         return new RectInt(left, top, checked((int)(right - left)), checked((int)(bottom - top)));
     }
 
-    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
-    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr window, out RECT rect);
-    [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr window, int attr, out RECT value, int size);
-    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr window);
-    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
+    [LibraryImport("user32.dll", SetLastError = true)] private static partial int GetSystemMetrics(int index);
+    [LibraryImport("user32.dll", SetLastError = true)] private static partial IntPtr GetForegroundWindow();
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetWindowRect(IntPtr window, out WindowInterop.RECT rect);
+    [LibraryImport("dwmapi.dll", SetLastError = true)] private static partial int DwmGetWindowAttribute(IntPtr window, int attr, out WindowInterop.RECT value, int size);
+    [LibraryImport("user32.dll", SetLastError = true)] private static partial IntPtr GetDC(IntPtr window);
+    [LibraryImport("user32.dll", SetLastError = true)] private static partial int ReleaseDC(IntPtr window, IntPtr dc);
 
-    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr dc);
-    [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr dc);
-    [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
-    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr obj);
+    [LibraryImport("gdi32.dll", SetLastError = true)] private static partial IntPtr CreateCompatibleDC(IntPtr dc);
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteDC(IntPtr dc);
+    [LibraryImport("gdi32.dll", SetLastError = true)] private static partial IntPtr SelectObject(IntPtr dc, IntPtr obj);
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteObject(IntPtr obj);
 
-    [DllImport("gdi32.dll")]
-    private static extern bool BitBlt(
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool BitBlt(
         IntPtr destination, int x, int y, int width, int height,
         IntPtr source, int sourceX, int sourceY, int rop);
 
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateDIBSection(
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    private static partial IntPtr CreateDIBSection(
         IntPtr dc, ref BITMAPINFOHEADER header, uint usage,
         out IntPtr bits, IntPtr section, uint offset);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct BITMAPINFOHEADER

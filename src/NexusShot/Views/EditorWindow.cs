@@ -355,8 +355,7 @@ public sealed class EditorWindow : CaptionWindow
         _document.CommitCrop();
 
         var suggested = $"{Path.GetFileNameWithoutExtension(_path)}_edited.png";
-        if (FilePicker.SavePng(Handle, suggested, Path.GetDirectoryName(_path)) is not { } destination)
-            return;
+        if (FilePicker.SavePng(Handle, suggested, Path.GetDirectoryName(_path)) is not { } destination) return;
 
         Exporter.SavePng(_document, _path, destination);
 
@@ -381,7 +380,9 @@ public sealed class EditorWindow : CaptionWindow
         Exporter.SavePng(_document, _path, temporary, _document.PendingCrop);
 
         ClipboardImage.Copy(temporary);
-        try { File.Delete(temporary); } catch (IOException) { /* the clipboard may still hold it */ }
+        try
+        { File.Delete(temporary); }
+        catch (IOException) { /* the clipboard may still hold it */ }
 
         // The Copy button confirms this itself, by becoming a tick.
         _copiedUntil = DateTime.UtcNow.AddSeconds(2);
@@ -440,7 +441,9 @@ public sealed class EditorWindow : CaptionWindow
 
     /// <summary>Drives the caret blink and the toast fade.</summary>
     private const nuint AnimationTimerId = 1;
-    private const uint AnimationIntervalMs = 16;
+    /// <summary>Paced to the caret's 530 ms blink, not to the frame: nothing here animates at
+    /// display rate.</summary>
+    private const uint AnimationIntervalMs = 120;
     private bool _animating;
 
     /// <summary>Starts or stops the repaint tick. Idempotent - called every frame.</summary>
@@ -449,7 +452,8 @@ public sealed class EditorWindow : CaptionWindow
         if (animating == _animating) return;
         _animating = animating;
 
-        if (animating) WindowInterop.SetTimer(Handle, AnimationTimerId, AnimationIntervalMs, IntPtr.Zero);
+        if (animating)
+            WindowInterop.SetTimer(Handle, AnimationTimerId, AnimationIntervalMs, IntPtr.Zero);
         else WindowInterop.KillTimer(Handle, AnimationTimerId);
     }
 
@@ -583,7 +587,8 @@ public sealed class EditorWindow : CaptionWindow
         _clientPointer = new Point(client.X, client.Y);
         _pointerDown = true;
 
-        if (_image is null) { Invalidate(); return; }
+        if (_image is null)
+        { Invalidate(); return; }
 
         // A click inside the open box moves the caret rather than committing and reopening, which
         // would reselect the whole string.
@@ -637,7 +642,8 @@ public sealed class EditorWindow : CaptionWindow
         _clientPointer = new Point(client.X, client.Y);
         _pointerDown = leftDown;
 
-        if (_image is null) { Invalidate(); return; }
+        if (_image is null)
+        { Invalidate(); return; }
         var point = ToImage(client.X, client.Y);
 
         if (_caretDragging && leftDown && _textEditor is { } selecting)
@@ -779,14 +785,28 @@ public sealed class EditorWindow : CaptionWindow
 
         switch (key)
         {
-            case VIRTUAL_KEY.VK_BACK: editor.Backspace(); break;
-            case VIRTUAL_KEY.VK_DELETE: editor.Delete(); break;
-            case VIRTUAL_KEY.VK_LEFT: editor.Move(-1, shift, control); break;
-            case VIRTUAL_KEY.VK_RIGHT: editor.Move(1, shift, control); break;
-            case VIRTUAL_KEY.VK_HOME: editor.MoveToLineEdge(end: false, shift); break;
-            case VIRTUAL_KEY.VK_END: editor.MoveToLineEdge(end: true, shift); break;
+            case VIRTUAL_KEY.VK_BACK:
+                editor.Backspace();
+                break;
+            case VIRTUAL_KEY.VK_DELETE:
+                editor.Delete();
+                break;
+            case VIRTUAL_KEY.VK_LEFT:
+                editor.Move(-1, shift, control);
+                break;
+            case VIRTUAL_KEY.VK_RIGHT:
+                editor.Move(1, shift, control);
+                break;
+            case VIRTUAL_KEY.VK_HOME:
+                editor.MoveToLineEdge(end: false, shift);
+                break;
+            case VIRTUAL_KEY.VK_END:
+                editor.MoveToLineEdge(end: true, shift);
+                break;
 
-            case VIRTUAL_KEY.VK_A when control: editor.SelectAll(); break;
+            case VIRTUAL_KEY.VK_A when control:
+                editor.SelectAll();
+                break;
 
             case VIRTUAL_KEY.VK_C when control:
                 if (editor.HasSelection) ClipboardText.Copy(editor.SelectedText);
@@ -805,13 +825,20 @@ public sealed class EditorWindow : CaptionWindow
                 break;
 
             // Enter is a newline in a text box, not a crop commit.
-            case VIRTUAL_KEY.VK_RETURN: editor.Insert("\n"); break;
+            case VIRTUAL_KEY.VK_RETURN:
+                editor.Insert("\n");
+                break;
 
-            case VIRTUAL_KEY.VK_Z when control: Undo(); break;
-            case VIRTUAL_KEY.VK_Y when control: Redo(); break;
+            case VIRTUAL_KEY.VK_Z when control:
+                Undo();
+                break;
+            case VIRTUAL_KEY.VK_Y when control:
+                Redo();
+                break;
 
             // Escape closes the box, so it is the one key that goes on to the window.
-            case VIRTUAL_KEY.VK_ESCAPE: return false;
+            case VIRTUAL_KEY.VK_ESCAPE:
+                return false;
 
             // Everything else is swallowed: the printable keys arrive again as WM_CHAR and are
             // inserted there, and letting them through would run the tool shortcuts too.
@@ -827,7 +854,7 @@ public sealed class EditorWindow : CaptionWindow
     /// <summary>
     /// Writes the box's text back and closes it. An empty box for a brand-new annotation is
     /// cancelled outright, so a stray click with the text tool leaves nothing behind - and takes its
-    /// undo entry with it, exactly as the XAML build's CancelAnnotation did.
+    /// undo entry with it.
     /// </summary>
     private void CommitText()
     {
@@ -874,8 +901,12 @@ public sealed class EditorWindow : CaptionWindow
         {
             switch (key)
             {
-                case VIRTUAL_KEY.VK_Z: Undo(); return true;
-                case VIRTUAL_KEY.VK_Y: Redo(); return true;
+                case VIRTUAL_KEY.VK_Z:
+                    Undo();
+                    return true;
+                case VIRTUAL_KEY.VK_Y:
+                    Redo();
+                    return true;
             }
             return false;
         }
@@ -906,21 +937,36 @@ public sealed class EditorWindow : CaptionWindow
                 break;
 
             // B is Blur, not Brush; P is Pixelate, not Pen.
-            case VIRTUAL_KEY.VK_V: return SelectTool(EditorTool.Select);
-            case VIRTUAL_KEY.VK_R: return SelectTool(EditorTool.Rectangle);
-            case VIRTUAL_KEY.VK_E: return SelectTool(EditorTool.Ellipse);
-            case VIRTUAL_KEY.VK_A: return SelectTool(EditorTool.Arrow);
-            case VIRTUAL_KEY.VK_L: return SelectTool(EditorTool.Line);
-            case VIRTUAL_KEY.VK_D: return SelectTool(EditorTool.Pen);
-            case VIRTUAL_KEY.VK_M: return SelectTool(EditorTool.Brush);
-            case VIRTUAL_KEY.VK_X: return SelectTool(EditorTool.Eraser);
-            case VIRTUAL_KEY.VK_T: return SelectTool(EditorTool.Text);
-            case VIRTUAL_KEY.VK_N: return SelectTool(EditorTool.Counter);
-            case VIRTUAL_KEY.VK_H: return SelectTool(EditorTool.Highlight);
-            case VIRTUAL_KEY.VK_B: return SelectTool(EditorTool.Blur);
-            case VIRTUAL_KEY.VK_P: return SelectTool(EditorTool.Pixelate);
-            case VIRTUAL_KEY.VK_S: return SelectTool(EditorTool.Spotlight);
-            case VIRTUAL_KEY.VK_C: return SelectTool(EditorTool.Crop);
+            case VIRTUAL_KEY.VK_V:
+                return SelectTool(EditorTool.Select);
+            case VIRTUAL_KEY.VK_R:
+                return SelectTool(EditorTool.Rectangle);
+            case VIRTUAL_KEY.VK_E:
+                return SelectTool(EditorTool.Ellipse);
+            case VIRTUAL_KEY.VK_A:
+                return SelectTool(EditorTool.Arrow);
+            case VIRTUAL_KEY.VK_L:
+                return SelectTool(EditorTool.Line);
+            case VIRTUAL_KEY.VK_D:
+                return SelectTool(EditorTool.Pen);
+            case VIRTUAL_KEY.VK_M:
+                return SelectTool(EditorTool.Brush);
+            case VIRTUAL_KEY.VK_X:
+                return SelectTool(EditorTool.Eraser);
+            case VIRTUAL_KEY.VK_T:
+                return SelectTool(EditorTool.Text);
+            case VIRTUAL_KEY.VK_N:
+                return SelectTool(EditorTool.Counter);
+            case VIRTUAL_KEY.VK_H:
+                return SelectTool(EditorTool.Highlight);
+            case VIRTUAL_KEY.VK_B:
+                return SelectTool(EditorTool.Blur);
+            case VIRTUAL_KEY.VK_P:
+                return SelectTool(EditorTool.Pixelate);
+            case VIRTUAL_KEY.VK_S:
+                return SelectTool(EditorTool.Spotlight);
+            case VIRTUAL_KEY.VK_C:
+                return SelectTool(EditorTool.Crop);
 
             case VIRTUAL_KEY.VK_1:
                 _fitToViewport = !_fitToViewport;

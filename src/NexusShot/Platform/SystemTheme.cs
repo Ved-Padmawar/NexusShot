@@ -9,7 +9,7 @@ namespace NexusShot.Platform;
 /// lParam "ImmersiveColorSet"; the registry is the only place the answer lives. The windows paint
 /// their own captions, so DWM only needs telling about the frame it still draws around them.
 /// </summary>
-public static class SystemTheme
+public static partial class SystemTheme
 {
     public const uint WM_SETTINGCHANGE = 0x001A;
 
@@ -82,7 +82,7 @@ public static class SystemTheme
         DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, ref value, sizeof(int));
     }
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmSetWindowAttribute(
         IntPtr window, int attribute, ref int value, int size);
 }

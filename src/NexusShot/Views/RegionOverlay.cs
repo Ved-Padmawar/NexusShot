@@ -14,7 +14,7 @@ namespace NexusShot.Views;
 /// in the capture. The snapshot is taken before the window appears, so what the user selects is
 /// exactly what they get.
 /// </summary>
-public sealed class RegionOverlay : D2DRenderWindow
+public sealed partial class RegionOverlay : D2DRenderWindow
 {
     private const uint WS_POPUP = 0x80000000;
     private const uint WS_EX_TOPMOST = 0x00000008;
@@ -30,6 +30,7 @@ public sealed class RegionOverlay : D2DRenderWindow
     private readonly DecodedImage _snapshotPixels;
 
     private D2DResources? _resources;
+    private Ui? _ui;
     private ImageSurface? _snapshot;
 
     private Point _origin;
@@ -148,12 +149,13 @@ public sealed class RegionOverlay : D2DRenderWindow
         if (_resources is null)
         {
             _resources = new D2DResources(target);
+            _ui = new Ui(_resources) { Theme = Theme.Dark };
             using var context = target.AsDeviceContext();
             if (context is not null) _snapshot = ImageSurface.Upload(_snapshotPixels, context);
         }
 
-        if (_snapshot is null) return;
-        var ui = new Ui(_resources) { Theme = Theme.Dark };
+        if (_snapshot is null || _ui is null) return;
+        var ui = _ui;
         ui.BeginFrame(target, _cursor, _dragging);
 
         var full = new Rect(0, 0, _desktop.Width, _desktop.Height);
@@ -174,8 +176,7 @@ public sealed class RegionOverlay : D2DRenderWindow
         }
 
         // Dim everything except the selection, so the cut-out shows the true pixels.
-        foreach (var band in AdornerGeometry.DimAround(selection, full.Width, full.Height))
-            ui.FillRect(band, Rgba.Black.WithAlpha(110));
+        foreach (var band in AdornerGeometry.DimAround(selection, full.Width, full.Height)) ui.FillRect(band, Rgba.Black.WithAlpha(110));
 
         ui.StrokeRounded(selection, 0, Palette.Selection, 1.5f);
         DrawSizeBadge(ui, selection);
@@ -287,6 +288,7 @@ public sealed class RegionOverlay : D2DRenderWindow
     private void ReleaseResources()
     {
         _snapshot?.Dispose();
+        _ui = null;
         _resources?.Dispose();
         _snapshot = null;
         _resources = null;
@@ -299,12 +301,18 @@ public sealed class RegionOverlay : D2DRenderWindow
         base.Dispose(disposing);
     }
 
-    [DllImport("user32.dll")]
-    private static extern int GetMessageW(out MSG message, IntPtr window, uint min, uint max);
+    [LibraryImport("user32.dll", EntryPoint = "GetMessageW", SetLastError = true)]
+    private static partial int GetMessageW(out MSG message, IntPtr window, uint min, uint max);
 
-    [DllImport("user32.dll")] private static extern bool TranslateMessage(ref MSG message);
-    [DllImport("user32.dll")] private static extern IntPtr DispatchMessageW(ref MSG message);
-    [DllImport("user32.dll")] private static extern void PostQuitMessage(int code);
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool TranslateMessage(ref MSG message);
+
+    [LibraryImport("user32.dll", EntryPoint = "DispatchMessageW")]
+    private static partial IntPtr DispatchMessageW(ref MSG message);
+
+    [LibraryImport("user32.dll")]
+    private static partial void PostQuitMessage(int code);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MSG

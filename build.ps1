@@ -7,7 +7,7 @@
     .\build.ps1 dev          Same.
     .\build.ps1 release      Native AOT single exe -> dist\NexusShot.exe
     .\build.ps1 installer    Release, then the Inno installer -> dist\NexusShot-<version>.exe
-    .\build.ps1 test         Headless render + drag-timing check.
+    .\build.ps1 test         Unit tests, then a headless render + drag-timing check.
 
     There is one project and one output directory. The old build had several places an exe could
     appear and several commands that had to be run in the right order; this replaces all of that.
@@ -30,6 +30,7 @@ Set-StrictMode -Version Latest
 
 $root = $PSScriptRoot
 $project = Join-Path $root 'src\NexusShot\NexusShot.csproj'
+$tests = Join-Path $root 'src\NexusShot.Tests\NexusShot.Tests.csproj'
 $dist = Join-Path $root 'dist'
 
 function Assert-LastExitCode([string]$what) {
@@ -72,18 +73,24 @@ switch ($Mode) {
         dotnet build $project -c Release
         Assert-LastExitCode 'Build'
 
+        # Unit tests first: they cover the document, geometry and history without a GPU, so a
+        # failure here is faster to read than a bad pixel in the render check below.
+        dotnet test $tests -c Debug --nologo
+        Assert-LastExitCode 'Unit tests'
+
         # A generated test image, so the check needs nothing checked in.
         Add-Type -AssemblyName System.Drawing
         $sample = Join-Path $env:TEMP 'nexusshot-build-test.png'
         $bitmap = New-Object System.Drawing.Bitmap 1400, 900
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         $graphics.Clear([System.Drawing.Color]::White)
+        $font = New-Object System.Drawing.Font('Consolas', 13)
         for ($i = 0; $i -lt 20; $i++) {
             $graphics.DrawString(
                 "Line $i - the quick brown fox jumps over the lazy dog",
-                (New-Object System.Drawing.Font('Consolas', 13)),
-                [System.Drawing.Brushes]::DimGray, 70, (80 + $i * 38))
+                $font, [System.Drawing.Brushes]::DimGray, 70, (80 + $i * 38))
         }
+        $font.Dispose()
         $graphics.Dispose()
         $bitmap.Save($sample, [System.Drawing.Imaging.ImageFormat]::Png)
         $bitmap.Dispose()

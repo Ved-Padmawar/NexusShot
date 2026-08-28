@@ -155,6 +155,8 @@ public sealed class MainWindow : CaptionWindow
         if (_thumbnails.Remove(path, out var thumbnail)) thumbnail?.Dispose();
         _decoded.TryRemove(path, out _);
 
+        if (_pendingPreview?.Path == path) _pendingPreview = null;
+
         if (_previewPath != path) return;
         _preview?.Dispose();
         _preview = null;
@@ -479,8 +481,7 @@ public sealed class MainWindow : CaptionWindow
             new Rect(bounds.X + S(24), bounds.Y + S(34), bounds.Width * 0.5, S(16)),
             theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
 
-        // Actions, right-aligned. Buttons hug their content - 14px of padding either side, as the
-        // XAML style had - rather than being fixed-width blocks.
+        // Actions, right-aligned. Buttons hug their content rather than being fixed-width blocks.
         var y = bounds.Y + (bounds.Height - S(32)) / 2;
         var right = bounds.Right - S(24);
 
@@ -522,7 +523,7 @@ public sealed class MainWindow : CaptionWindow
             Deselect();
     }
 
-    /// <summary>A button sized to its content: 14px of padding either side, as the XAML style had.</summary>
+    /// <summary>A button sized to its content: 14px of padding either side.</summary>
     private double ButtonWidth(Ui ui, string label, double font, double glyph = 0)
     {
         var content = ui.MeasureText(label, font, bold: true);
@@ -1099,44 +1100,63 @@ public sealed class MainWindow : CaptionWindow
     /// rather than an upscaled thumbnail.
     /// </summary>
     private bool _previewLoading;
+
+    /// <summary>Pixels decoded off-thread, waiting for a render to upload them.</summary>
+    private (string Path, DecodedImage Image)? _pendingPreview;
+
+    /// <summary>
+    /// The full-resolution bitmap for the detail preview, decoded on a worker.
+    ///
+    /// The upload needs a live device, so it happens here - inside a render call - rather than from
+    /// the worker's completion: a render target handed to one frame can be resized or disposed
+    /// before an asynchronous callback would run.
+    /// </summary>
     private ImageSurface? GetFullBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
     {
-        if (_previewPath == item.FilePath && _preview is not null) return _preview;
-        if (_previewLoading) return null;
-        if (!File.Exists(item.FilePath)) return null;
+        var path = item.FilePath;
+
+        if (_pendingPreview is { } pending && pending.Path == path)
+        {
+            _pendingPreview = null;
+            using var context = target.AsDeviceContext();
+            if (context is not null)
+            {
+                _preview?.Dispose();
+                _preview = ImageSurface.Upload(pending.Image, context);
+                _previewPath = path;
+            }
+        }
+
+        if (_previewPath == path && _preview is not null) return _preview;
+        if (_previewLoading || !File.Exists(path)) return null;
 
         _previewLoading = true;
-        var path = item.FilePath;
         _ = Task.Run(() =>
         {
+            DecodedImage? decoded = null;
             try
             {
-                var decoded = ImageSurface.Decode(path);
-                Post(() =>
-                {
-                    if (_selected?.FilePath != path) { _previewLoading = false; return; }
-                    using var ctx = target.AsDeviceContext();
-                    if (ctx is null) { _previewLoading = false; return; }
-                    try
-                    {
-                        _preview?.Dispose();
-                        _preview = ImageSurface.Upload(new DecodedImage(decoded.Pixels, decoded.Width, decoded.Height), ctx);
-                        _previewPath = path;
-                    }
-                    catch { }
-                    _previewLoading = false;
-                    Invalidate();
-                });
+                var (pixels, width, height) = ImageSurface.Decode(path);
+                decoded = new DecodedImage(pixels, width, height);
             }
-            catch { Post(() => _previewLoading = false); }
+            catch { }
+
+            Post(() =>
+            {
+                _previewLoading = false;
+                if (decoded is null || _selected?.FilePath != path) return;
+                _pendingPreview = (path, decoded);
+                Invalidate();
+            });
         });
-        return _previewPath == path ? _preview : null;
+        return null;
     }
 
     /// <summary>Closes the capture back to the empty state, releasing its full-resolution bitmap.</summary>
     private void Deselect()
     {
         _selected = null;
+        _pendingPreview = null;
 
         _preview?.Dispose();
         _preview = null;

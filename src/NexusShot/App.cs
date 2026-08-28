@@ -88,12 +88,23 @@ public sealed class App : IDisposable
         {
             switch (_tray.OnMessage(lParam))
             {
-                case TrayIcon.Command.CaptureRegion: Capture(CaptureMode.Region); return true;
-                case TrayIcon.Command.CaptureFullScreen: Capture(CaptureMode.FullScreen); return true;
-                case TrayIcon.Command.CaptureWindow: Capture(CaptureMode.ActiveWindow); return true;
-                case TrayIcon.Command.OpenMain: ShowMain(); return true;
-                case TrayIcon.Command.Exit: Exit(); return true;
-                default: return true;
+                case TrayIcon.Command.CaptureRegion:
+                    Capture(CaptureMode.Region);
+                    return true;
+                case TrayIcon.Command.CaptureFullScreen:
+                    Capture(CaptureMode.FullScreen);
+                    return true;
+                case TrayIcon.Command.CaptureWindow:
+                    Capture(CaptureMode.ActiveWindow);
+                    return true;
+                case TrayIcon.Command.OpenMain:
+                    ShowMain();
+                    return true;
+                case TrayIcon.Command.Exit:
+                    Exit();
+                    return true;
+                default:
+                    return true;
             }
         }
 
@@ -101,10 +112,18 @@ public sealed class App : IDisposable
         {
             switch (_hotkeys.Resolve(wParam))
             {
-                case HotkeyId.CaptureRegion: Capture(CaptureMode.Region); return true;
-                case HotkeyId.CaptureFullScreen: Capture(CaptureMode.FullScreen); return true;
-                case HotkeyId.CaptureActiveWindow: Capture(CaptureMode.ActiveWindow); return true;
-                case HotkeyId.OpenMainWindow: ShowMain(); return true;
+                case HotkeyId.CaptureRegion:
+                    Capture(CaptureMode.Region);
+                    return true;
+                case HotkeyId.CaptureFullScreen:
+                    Capture(CaptureMode.FullScreen);
+                    return true;
+                case HotkeyId.CaptureActiveWindow:
+                    Capture(CaptureMode.ActiveWindow);
+                    return true;
+                case HotkeyId.OpenMainWindow:
+                    ShowMain();
+                    return true;
             }
         }
         return false;
@@ -214,6 +233,15 @@ public sealed class App : IDisposable
     {
         _main.Post(() =>
         {
+            // One scan at a time, with a rescan queued if the folder changes while it runs: two
+            // overlapping scans each admit files against their own snapshot of what was known.
+            if (_syncRunning)
+            {
+                _syncQueued = true;
+                return;
+            }
+            _syncRunning = true;
+
             var removed = _history.RemoveAll(item => !File.Exists(item.FilePath));
             if (removed != 0) _main.SweepDecoded();
 
@@ -245,19 +273,41 @@ public sealed class App : IDisposable
                 {
                     Log.Error("history.sync_failed", exception);
                 }
-                if (candidates.Count == 0 && removed == 0) return;
                 _main.Post(() =>
                 {
+                    // Admission is decided against the list as it stands now, not the snapshot the
+                    // scan started from, which may be several changes old by this point.
+                    var live = _history
+                        .Select(item => item.FilePath)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
                     var added = 0;
-                    foreach (var c in candidates) if (!known.Contains(c.FilePath)) { _history.Add(c); added++; known.Add(c.FilePath); }
-                    if (removed == 0 && added == 0) return;
-                    _history.Sort((a, b) => b.CapturedAt.CompareTo(a.CapturedAt));
-                    _storage.SaveHistory(_history);
-                    _main.Invalidate();
+                    foreach (var candidate in candidates)
+                    {
+                        if (!live.Add(candidate.FilePath)) continue;
+                        _history.Add(candidate);
+                        added++;
+                    }
+
+                    if (removed != 0 || added != 0)
+                    {
+                        _history.Sort((a, b) => b.CapturedAt.CompareTo(a.CapturedAt));
+                        _storage.SaveHistory(_history);
+                        _main.Invalidate();
+                    }
+
+                    _syncRunning = false;
+                    if (!_syncQueued) return;
+                    _syncQueued = false;
+                    SyncHistory();
                 });
             });
         });
     }
+
+    /// <summary>Single-flight state for <see cref="SyncHistory"/>. UI-thread only.</summary>
+    private bool _syncRunning;
+    private bool _syncQueued;
 
     public void Dispose()
     {

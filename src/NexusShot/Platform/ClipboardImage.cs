@@ -13,7 +13,7 @@ namespace NexusShot.Platform;
 /// Every format is placed by value. Delay-rendered data would stay owned by this process, and the
 /// shell's Clipboard History (Win+V) would never record the entry at all.
 /// </summary>
-internal static class ClipboardImage
+internal static partial class ClipboardImage
 {
     private const uint CF_DIB = 8;
     private const uint CF_DIBV5 = 17;
@@ -69,7 +69,8 @@ internal static class ClipboardImage
 
             if (CF_PNG != 0 && pngPath is not null)
             {
-                try { Place(CF_PNG, File.ReadAllBytes(pngPath)); }
+                try
+                { Place(CF_PNG, File.ReadAllBytes(pngPath)); }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
                     // Losing the lossless format still leaves the DIBs below.
@@ -98,7 +99,8 @@ internal static class ClipboardImage
             return;
         }
 
-        try { Marshal.Copy(bytes, 0, target, bytes.Length); }
+        try
+        { Marshal.Copy(bytes, 0, target, bytes.Length); }
         finally { GlobalUnlock(memory); }
 
         // The clipboard owns it on success; freeing it here would be a double free.
@@ -158,34 +160,34 @@ internal static class ClipboardImage
         return dib;
     }
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool OpenClipboard(IntPtr owner);
+    private static partial bool OpenClipboard(IntPtr owner);
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseClipboard();
+    private static partial bool CloseClipboard();
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EmptyClipboard();
+    private static partial bool EmptyClipboard();
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetClipboardData(uint format, IntPtr data);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    private static partial IntPtr SetClipboardData(uint format, IntPtr data);
 
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern uint RegisterClipboardFormatW(string format);
+    [LibraryImport("user32.dll", EntryPoint = "RegisterClipboardFormatW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint RegisterClipboardFormatW(string format);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr GlobalAlloc(uint flags, nuint bytes);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial IntPtr GlobalAlloc(uint flags, nuint bytes);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr GlobalLock(IntPtr memory);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial IntPtr GlobalLock(IntPtr memory);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GlobalUnlock(IntPtr memory);
+    private static partial bool GlobalUnlock(IntPtr memory);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr GlobalFree(IntPtr memory);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial IntPtr GlobalFree(IntPtr memory);
 }

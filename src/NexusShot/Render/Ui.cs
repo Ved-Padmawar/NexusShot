@@ -68,6 +68,11 @@ public sealed class Ui(D2DResources resources)
     public void FillRect(Rect rect, Rgba color) =>
         _target.FillRectangle(AnnotationRenderer.ToRect(rect), resources.Brush(color));
 
+    /// <summary>A fill for a colour that will not recur: the brush is reused, not cached. For the
+    /// gradient strips whose every pixel column is its own colour.</summary>
+    public void FillRectScratch(Rect rect, Rgba color) =>
+        _target.FillRectangle(AnnotationRenderer.ToRect(rect), resources.ScratchBrush(color));
+
     public void FillRounded(Rect rect, float radius, Rgba color) =>
         _target.FillRoundedRectangle(Rounded(rect, radius), resources.Brush(color));
 
@@ -154,8 +159,7 @@ public sealed class Ui(D2DResources resources)
             closed ? D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_FILLED
                    : D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_HOLLOW);
 
-        for (var i = 1; i < points.Count; i++)
-            sink.Object.AddLine(AnnotationRenderer.ToPoint(points[i]));
+        for (var i = 1; i < points.Count; i++) sink.Object.AddLine(AnnotationRenderer.ToPoint(points[i]));
 
         sink.Object.EndFigure(closed ? D2D1_FIGURE_END.D2D1_FIGURE_END_CLOSED
                                      : D2D1_FIGURE_END.D2D1_FIGURE_END_OPEN);
@@ -187,20 +191,20 @@ public sealed class Ui(D2DResources resources)
 
         // A hex readout is a number, and proportional digits make it jitter as it changes.
         var family = monospace ? Metrics.MonoFamily : Metrics.FontFamily;
-        var format = resources.TextFormat(family, size, bold, italic: false);
-
-        format.Object.SetWordWrapping(wrap
-            ? DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_WRAP
-            : DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
-        format.Object.SetTextAlignment(align switch
-        {
-            TextAlign.Center => DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER,
-            TextAlign.Right => DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_TRAILING,
-            _ => DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING,
-        });
-        format.Object.SetParagraphAlignment(middle
-            ? DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER
-            : DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        var format = resources.TextFormat(
+            family, size, bold, italic: false,
+            alignment: align switch
+            {
+                TextAlign.Center => DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER,
+                TextAlign.Right => DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_TRAILING,
+                _ => DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING,
+            },
+            paragraphAlignment: middle
+                ? DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER
+                : DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+            wordWrapping: wrap
+                ? DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_WRAP
+                : DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_NO_WRAP);
 
         ID2D1RenderTargetExtensions.DrawText(
             _target, text, format, AnnotationRenderer.ToRect(bounds), resources.Brush(color));
@@ -214,9 +218,10 @@ public sealed class Ui(D2DResources resources)
     /// </summary>
     public void Icon(string glyph, Rect bounds, Rgba color, double size)
     {
-        var format = resources.TextFormat(Icons.Family, (float)size, bold: false, italic: false);
-        format.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER);
-        format.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        var format = resources.TextFormat(
+            Icons.Family, (float)size, bold: false, italic: false,
+            alignment: DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER,
+            paragraphAlignment: DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
         ID2D1RenderTargetExtensions.DrawText(
             _target, glyph, format, AnnotationRenderer.ToRect(bounds), resources.Brush(color));
@@ -429,9 +434,10 @@ public sealed class Ui(D2DResources resources)
             : default;
         if (fill.A > 0) FillRounded(bounds, Metrics.RadiusControl, fill);
 
-        var format = resources.TextFormat(Metrics.FontFamily, Metrics.FontBody, bold, italic);
-        format.Object.SetTextAlignment(DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER);
-        format.Object.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        var format = resources.TextFormat(
+            Metrics.FontFamily, Metrics.FontBody, bold, italic,
+            alignment: DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER,
+            paragraphAlignment: DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         ID2D1RenderTargetExtensions.DrawText(
             _target, label, format, AnnotationRenderer.ToRect(bounds),
             resources.Brush(on ? Theme.TextPrimary : Theme.TextSecondary));

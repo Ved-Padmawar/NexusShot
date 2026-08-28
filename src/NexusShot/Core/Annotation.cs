@@ -36,6 +36,18 @@ public sealed class Annotation
     public List<Point> Points { get; init; } = [];
     public List<EraserMask> Erasures { get; init; } = [];
 
+    /// <summary>
+    /// Changes whenever the geometry does, so a cached mask keyed on it is invalidated without
+    /// re-hashing every point per frame. Process-wide rather than per annotation: undo restores
+    /// clones under the original id, so a per-annotation count could collide.
+    /// </summary>
+    public long GeometryVersion { get; private set; } = NextGeometryVersion();
+
+    public void InvalidateGeometry() => GeometryVersion = NextGeometryVersion();
+
+    private static long _geometryVersions;
+    private static long NextGeometryVersion() => Interlocked.Increment(ref _geometryVersions);
+
     /// <summary>True for tools painted as a stroke whose pixels get an effect, not a shape.</summary>
     public bool IsBrushEffect => Tool is EditorTool.Blur or EditorTool.Pixelate;
 
@@ -54,7 +66,19 @@ public sealed class Annotation
     public int CounterValue { get; set; }
 
     public string ColorHex { get; set; } = "#FF3B30";
-    public double StrokeThickness { get; set; } = 4;
+
+    /// <summary>Stroke width in image pixels. Also drives <see cref="BrushRadius"/>, so a change
+    /// invalidates any geometry cached from it.</summary>
+    public double StrokeThickness
+    {
+        get;
+        set
+        {
+            if (field == value) return;
+            field = value;
+            InvalidateGeometry();
+        }
+    } = 4;
 
     /// <summary>True when the tool is drawn as a freehand path rather than a two-point shape.</summary>
     public bool IsStrokeTool => Tool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser
@@ -109,10 +133,10 @@ public sealed class Annotation
     /// <summary>Shifts the annotation by a delta in image pixels.</summary>
     public void Translate(double dx, double dy)
     {
+        InvalidateGeometry();
         Start = new Point(Start.X + dx, Start.Y + dy);
         End = new Point(End.X + dx, End.Y + dy);
-        for (var i = 0; i < Points.Count; i++)
-            Points[i] = new Point(Points[i].X + dx, Points[i].Y + dy);
+        for (var i = 0; i < Points.Count; i++) Points[i] = new Point(Points[i].X + dx, Points[i].Y + dy);
         foreach (var mask in Erasures)
         {
             for (var i = 0; i < mask.Points.Count; i++)
@@ -125,11 +149,22 @@ public sealed class Annotation
     {
         if (Tool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser || IsBrushEffect)
         {
-            var reach = slack + (IsBrushEffect ? BrushRadius : 0);
-            return Points.Any(p => Math.Abs(p.X - point.X) <= reach && Math.Abs(p.Y - point.Y) <= reach);
+            if (Points.Count == 0) return false;
+
+            // Distance to the painted path, not to its samples: sparse samples leave gaps, and a
+            // per-sample box grabs at its corners where no paint was laid.
+            var reach = slack + (IsBrushEffect ? BrushRadius : StrokeThickness / 2);
+            if (Points.Count == 1) return point.DistanceTo(Points[0]) <= reach;
+
+            for (var i = 1; i < Points.Count; i++)
+            {
+                if (DistanceToSegment(point, Points[i - 1], Points[i]) <= reach) return true;
+            }
+            return false;
         }
 
-        if (IsLinear) return DistanceToSegment(point, Start, End) <= slack + StrokeThickness / 2;
+        if (IsLinear)
+            return DistanceToSegment(point, Start, End) <= slack + StrokeThickness / 2;
 
         var bounds = Bounds;
         return point.X >= bounds.Left - slack && point.X <= bounds.Right + slack

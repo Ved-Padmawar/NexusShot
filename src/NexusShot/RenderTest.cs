@@ -9,8 +9,7 @@ namespace NexusShot;
 ///
 /// Every annotation here is produced by driving real gestures through <see cref="EditorDocument"/>
 /// - the exact path a mouse takes - so this exercises the document, the renderer and the exporter
-/// together, and it can run without a window. It also times a rapid drag, which is the regression
-/// this rewrite exists to fix.
+/// together, without a window. It also times a rapid drag.
 /// </summary>
 internal static class RenderTest
 {
@@ -34,8 +33,7 @@ internal static class RenderTest
         Draw(document, EditorTool.Line, "#FFCC00", 4, (120, 360), (520, 360));
         Draw(document, EditorTool.Highlight, "#FFCC00", 4, (560, 350), (860, 400));
 
-        // A freehand pen stroke, then erase through its middle: exercises the geometry-subtraction
-        // path that replaced the software pixel mask.
+        // A freehand pen stroke, then erase through its middle: the geometry-subtraction path.
         Stroke(document, EditorTool.Pen, "#FF3B30", 8, Wave(120, 460, 400, 30));
         Stroke(document, EditorTool.Eraser, "#000000", 30, [new(250, 460), new(310, 460)]);
 
@@ -55,20 +53,26 @@ internal static class RenderTest
 
         Console.WriteLine($"annotations: {document.Annotations.Count}");
 
-        // The regression test: a fast drag. In the XAML build this got slower the faster you moved,
-        // because each move patched a retained visual tree. Here a frame is a pass over the list.
+        // The regression test: a fast drag. A frame is one pass over the annotation list, so the
+        // cost must not climb with pointer speed.
         var target = document.Annotations[0];
         document.SelectAnnotation(target);
         var frames = TimeDrag(document, context, image, target);
-        Console.WriteLine($"drag: {frames.Count} frames, median {Median(frames):F3} ms, max {frames.Max():F3} ms");
+
+        // The first frame carries one-off GPU work (effect shader compilation), so it is reported
+        // apart from the steady state rather than dominating the maximum.
+        var steady = frames.Skip(1).ToList();
+        Console.WriteLine(
+            $"drag: {frames.Count} frames, median {Median(frames):F3} ms, "
+            + $"p95 {Percentile(steady, 0.95):F3} ms, max {steady.Max():F3} ms "
+            + $"(first frame {frames[0]:F3} ms)");
 
         var output = Path.Combine(Path.GetDirectoryName(imagePath)!, "render-test.png");
         Exporter.SavePng(document, imagePath, output);
         Console.WriteLine($"exported {output}");
 
-        // Crop. The session opens on the whole image and is then resized by its handles, so this
-        // drags the bottom-right corner in to leave a 400x260 frame. Save must apply it - it was
-        // silently a no-op, which is the bug this asserts against.
+        // Crop. The session opens on the whole image and is resized by its handles, so this drags
+        // the bottom-right corner in to leave a 400x260 frame, which the export must apply.
         document.ActiveTool = EditorTool.Crop;
         document.BeginCropSession();
 
@@ -108,8 +112,7 @@ internal static class RenderTest
         var watch = new Stopwatch();
         for (var i = 0; i < 120; i++)
         {
-            // A deliberately violent path: big jumps, direction reversals - the "move fast, stop
-            // dead, move fast again" pattern that exposed the old lag.
+            // A deliberately violent path: big jumps and direction reversals.
             var x = origin.X + 10 + Math.Sin(i / 3.0) * 260;
             var y = origin.Y + 10 + Math.Cos(i / 5.0) * 160;
             document.ContinueGesture(new Point(x, y));
@@ -163,10 +166,13 @@ internal static class RenderTest
         return points;
     }
 
-    private static double Median(List<double> values)
+    private static double Median(List<double> values) => Percentile(values, 0.5);
+
+    private static double Percentile(List<double> values, double fraction)
     {
         var sorted = values.Order().ToList();
-        return sorted[sorted.Count / 2];
+        var index = Math.Clamp((int)(sorted.Count * fraction), 0, sorted.Count - 1);
+        return sorted[index];
     }
 
     private static IComObject<ID2D1Bitmap1> CreateOffscreen(

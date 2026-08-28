@@ -3,21 +3,32 @@ using NexusShot.Core;
 namespace NexusShot.Render;
 
 /// <summary>
-/// Per-render-target cache for brushes, stroke styles and text formats.
-///
-/// This exists because the whole point of the rewrite is that a frame must not allocate. The XAML
-/// renderer created a fresh SolidColorBrush for every shape on every pointer move; here a colour
-/// maps to one brush that lives as long as the render target. Resources are keyed by value, so
-/// callers just ask for what they want and get a cached instance.
+/// Per-render-target cache for brushes, stroke styles and text formats, so a frame does not
+/// allocate: a colour maps to one brush that lives as long as the render target. Resources are
+/// keyed by value, so callers ask for what they want and get a cached instance.
 ///
 /// The render target owns device resources, so this is rebuilt whenever the target is.
 /// </summary>
 public sealed class D2DResources : IDisposable
 {
+    /// <summary>Cache bounds. Dragging through the colour picker mints a distinct colour per frame,
+    /// and typed text a distinct measurement per keystroke, so these caches are capped rather than
+    /// left to grow with the length of the session.</summary>
+    private const int MaxBrushes = 128;
+    private const int MaxFormats = 64;
+    private const int MaxMeasurements = 512;
+
     private readonly IComObject<ID2D1RenderTarget> _target;
-    private readonly Dictionary<Rgba, IComObject<ID2D1SolidColorBrush>> _brushes = [];
+    private readonly LruCache<Rgba, IComObject<ID2D1SolidColorBrush>> _brushes = new(MaxBrushes);
     private readonly Dictionary<(float On, float Off), IComObject<ID2D1StrokeStyle>> _dashStyles = [];
-    private readonly Dictionary<(string Family, float Size, bool Bold, bool Italic), IComObject<IDWriteTextFormat>> _formats = [];
+    private readonly LruCache<(
+        string Family,
+        float Size,
+        bool Bold,
+        bool Italic,
+        DWRITE_TEXT_ALIGNMENT Alignment,
+        DWRITE_PARAGRAPH_ALIGNMENT ParagraphAlignment,
+        DWRITE_WORD_WRAPPING WordWrapping), IComObject<IDWriteTextFormat>> _formats = new(MaxFormats);
 
     private IComObject<ID2D1StrokeStyle>? _roundStroke;
     private IComObject<IDWriteFactory>? _dwrite;
@@ -31,10 +42,23 @@ public sealed class D2DResources : IDisposable
     public IComObject<ID2D1SolidColorBrush> Brush(Rgba color)
     {
         if (_brushes.TryGetValue(color, out var cached)) return cached;
+
         var brush = _target.CreateSolidColorBrush(ToD3D(color));
-        _brushes[color] = brush;
+        if (_brushes.Add(color, brush, out var evicted)) evicted.Dispose();
         return brush;
     }
+
+    /// <summary>One reusable brush, recoloured in place, for a caller that paints thousands of
+    /// distinct colours per frame: caching those would evict everything else. Valid only for the
+    /// draw it is fetched for.</summary>
+    public IComObject<ID2D1SolidColorBrush> ScratchBrush(Rgba color)
+    {
+        _scratchBrush ??= _target.CreateSolidColorBrush(ToD3D(color));
+        _scratchBrush.Object.SetColor(ToD3D(color));
+        return _scratchBrush;
+    }
+
+    private IComObject<ID2D1SolidColorBrush>? _scratchBrush;
 
     /// <summary>Round caps and joins: what a paint stroke and every grip is drawn with.</summary>
     public IComObject<ID2D1StrokeStyle> RoundStroke => _roundStroke ??= CreateStroke(new D2D1_STROKE_STYLE_PROPERTIES
@@ -47,8 +71,7 @@ public sealed class D2DResources : IDisposable
         miterLimit = 10,
     });
 
-    /// <summary>A dashed stroke. The dash array is in stroke-width units, matching XAML's
-    /// StrokeDashArray, so [3,3] and [5,3] keep the dash rhythm the old adorners had.</summary>
+    /// <summary>A dashed stroke. The dash array is in stroke-width units.</summary>
     public IComObject<ID2D1StrokeStyle> DashStroke(float on, float off)
     {
         if (_dashStyles.TryGetValue((on, off), out var cached)) return cached;
@@ -65,9 +88,22 @@ public sealed class D2DResources : IDisposable
         return style;
     }
 
-    public IComObject<IDWriteTextFormat> TextFormat(string family, float size, bool bold, bool italic)
+    /// <summary>
+    /// A text format for the given font and layout settings. Alignment and wrapping are part of the
+    /// key and applied once here: a cached format is shared, so mutating one afterwards would leak
+    /// those settings into unrelated draws, and into any layout built from it - CreateTextLayout
+    /// snapshots the format's state.
+    /// </summary>
+    public IComObject<IDWriteTextFormat> TextFormat(
+        string family,
+        float size,
+        bool bold,
+        bool italic,
+        DWRITE_TEXT_ALIGNMENT alignment = DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING,
+        DWRITE_PARAGRAPH_ALIGNMENT paragraphAlignment = DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+        DWRITE_WORD_WRAPPING wordWrapping = DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_WRAP)
     {
-        var key = (family, size, bold, italic);
+        var key = (family, size, bold, italic, alignment, paragraphAlignment, wordWrapping);
         if (_formats.TryGetValue(key, out var cached)) return cached;
 
         var format = DWrite.CreateTextFormat(
@@ -75,7 +111,12 @@ public sealed class D2DResources : IDisposable
             size,
             weight: bold ? DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_NORMAL,
             style: italic ? DWRITE_FONT_STYLE.DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE.DWRITE_FONT_STYLE_NORMAL);
-        _formats[key] = format;
+
+        format.Object.SetTextAlignment(alignment);
+        format.Object.SetParagraphAlignment(paragraphAlignment);
+        format.Object.SetWordWrapping(wordWrapping);
+
+        if (_formats.Add(key, format, out var evicted)) evicted.Dispose();
         return format;
     }
 
@@ -92,11 +133,12 @@ public sealed class D2DResources : IDisposable
         using var layout = DWrite.CreateTextLayout(format, text);
         layout.Object.GetMetrics(out var metrics);
 
-        _measurements[key] = metrics.width;
+        _measurements.Add(key, metrics.width, out _);
         return metrics.width;
     }
 
-    private readonly Dictionary<(string Text, string Family, float Size, bool Bold), double> _measurements = [];
+    private readonly LruCache<(string Text, string Family, float Size, bool Bold), double> _measurements =
+        new(MaxMeasurements);
 
     private IComObject<ID2D1StrokeStyle> CreateStroke(D2D1_STROKE_STYLE_PROPERTIES properties, float[]? dashes = null) =>
         Factory.CreateStrokeStyle(properties, dashes);
@@ -134,6 +176,8 @@ public sealed class D2DResources : IDisposable
         _dashStyles.Clear();
         _formats.Clear();
         _measurements.Clear();
+        _scratchBrush?.Dispose();
+        _scratchBrush = null;
         _roundStroke?.Dispose();
         _roundStroke = null;
         _dwrite?.Dispose();

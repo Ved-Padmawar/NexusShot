@@ -7,7 +7,7 @@ namespace NexusShot.Platform;
 /// needs both - setting only the small one leaves Alt+Tab blank. Loaded from the exe's own resource
 /// table, not a file path, which would depend on the working directory.
 /// </summary>
-public static class AppIcon
+public static partial class AppIcon
 {
     private const uint WM_SETICON = 0x0080;
     private const int ICON_SMALL = 0;
@@ -28,10 +28,10 @@ public static class AppIcon
     private const int IconResourceId = 32512;   // IDI_APPLICATION
 
     /// <summary>The tray-sized icon. Shared, so it must not be destroyed.</summary>
-    public static IntPtr Small { get; } = Load(GetSystemMetrics(SM_CXSMICON));
+    public static IntPtr Small { get; } = Load(WindowInterop.GetSystemMetrics(SM_CXSMICON));
 
     /// <summary>The Alt+Tab-sized icon.</summary>
-    public static IntPtr Large { get; } = Load(GetSystemMetrics(SM_CXICON));
+    public static IntPtr Large { get; } = Load(WindowInterop.GetSystemMetrics(SM_CXICON));
 
     /// <summary>
     /// Gives a window both icons.
@@ -66,7 +66,7 @@ public static class AppIcon
         SetWindowLongPtrW(window, GWL_EXSTYLE, style | WS_EX_DLGMODALFRAME);
 
         // Frame styles only take effect on a recomputed frame.
-        SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0,
+        WindowInterop.SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
@@ -83,18 +83,15 @@ public static class AppIcon
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_FRAMECHANGED = 0x0020;
 
-    [DllImport("user32.dll")]
-    private static extern nint GetWindowLongPtrW(IntPtr window, int index);
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static partial nint GetWindowLongPtrW(IntPtr window, int index);
 
-    [DllImport("user32.dll")]
-    private static extern nint SetWindowLongPtrW(IntPtr window, int index, nint value);
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static partial nint SetWindowLongPtrW(IntPtr window, int index, nint value);
 
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(
-        IntPtr window, IntPtr after, int x, int y, int cx, int cy, uint flags);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern bool SetWindowTextW(IntPtr window, string text);
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowTextW", StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWindowTextW(IntPtr window, string text);
 
     private static IntPtr Load(int size)
     {
@@ -105,16 +102,13 @@ public static class AppIcon
         return LoadImageW(module, IconResourceId, IMAGE_ICON, size, size, LR_SHARED);
     }
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr SendMessageW(IntPtr window, uint message, int wParam, IntPtr lParam);
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
+    private static partial IntPtr SendMessageW(IntPtr window, uint message, int wParam, IntPtr lParam);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr LoadImageW(
+    [LibraryImport("user32.dll", EntryPoint = "LoadImageW")]
+    private static partial IntPtr LoadImageW(
         IntPtr instance, nint name, int type, int cx, int cy, uint flags);
 
-    [DllImport("user32.dll")]
-    private static extern int GetSystemMetrics(int index);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr GetModuleHandleW(string? name);
+    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial IntPtr GetModuleHandleW(string? name);
 }

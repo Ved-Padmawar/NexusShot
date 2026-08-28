@@ -31,7 +31,7 @@ public abstract class CaptionWindow : D2DRenderWindow
     public double CaptionButtonsWidth => 3 * 46 * DpiScale;
 
     /// <summary>True while the window is maximised, which changes the restore glyph and the insets.</summary>
-    protected bool IsMaximised => IsZoomedWindow(Handle);
+    protected bool IsMaximised => WindowInterop.IsZoomedWindow(Handle);
 
     /// <summary>Whether a client point falls in the region that drags the window. Everything that is
     /// not a control in the top strip should be draggable, so each window says which is which.</summary>
@@ -140,13 +140,13 @@ public abstract class CaptionWindow : D2DRenderWindow
         var original = parameters->rgrc0;
 
         // Let the default frame compute the borders, then give the caption back.
-        _ = DefWindowProcW(Handle, WM_NCCALCSIZE, 1, lParam.Value);
+        _ = WindowInterop.DefWindowProcW(Handle, WM_NCCALCSIZE, 1, lParam.Value);
 
         parameters->rgrc0.Top = original.Top;
 
         if (IsMaximised)
         {
-            var border = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+            var border = WindowInterop.GetSystemMetrics(SM_CYSIZEFRAME) + WindowInterop.GetSystemMetrics(SM_CXPADDEDBORDER);
             parameters->rgrc0.Top += border;
         }
 
@@ -163,7 +163,7 @@ public abstract class CaptionWindow : D2DRenderWindow
 
         var point = screen;
         WindowInterop.ScreenToClient(Handle, ref point);
-        GetClientRect(Handle, out var client);
+        WindowInterop.GetClientRect(Handle, out var client);
 
         var border = (int)Math.Round(8 * DpiScale);
 
@@ -228,24 +228,9 @@ public abstract class CaptionWindow : D2DRenderWindow
     private const uint SWP_FRAMECHANGED = 0x0020;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct NCCALCSIZE_PARAMS
     {
-        public RECT rgrc0, rgrc1, rgrc2;
+        public WindowInterop.RECT rgrc0, rgrc1, rgrc2;
         public IntPtr lppos;
     }
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr DefWindowProcW(IntPtr window, uint msg, nuint wParam, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetClientRect(IntPtr window, out RECT client);
-
-    [DllImport("user32.dll", EntryPoint = "IsZoomed")]
-    private static extern bool IsZoomedWindow(IntPtr window);
-
-    [DllImport("user32.dll")]
-    private static extern int GetSystemMetrics(int index);
 }

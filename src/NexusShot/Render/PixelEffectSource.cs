@@ -11,9 +11,24 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
     private IComObject<ID2D1Effect>? _blur;
     private IComObject<ID2D1Effect>? _downscale;
     private IComObject<ID2D1Effect>? _upscale;
-    /// <summary>One mask per annotation, stamped with the geometry that built it. Point count alone
-    /// is not enough: moving a stroke rewrites coordinates without changing how many there are.</summary>
+    /// <summary>One mask per annotation, stamped with the geometry version it was built from.</summary>
     private readonly Dictionary<Guid, (long Stamp, IComObject<ID2D1PathGeometry> Mask)> _maskCache = [];
+
+    /// <summary>Drops masks for annotations that are no longer in the document; without this a
+    /// deleted stroke's geometry lives until the whole source is disposed.</summary>
+    public void PruneMasks(IReadOnlyList<Annotation> annotations)
+    {
+        if (_maskCache.Count == 0) return;
+
+        var live = new HashSet<Guid>(annotations.Count);
+        foreach (var annotation in annotations) live.Add(annotation.Id);
+
+        foreach (var id in _maskCache.Keys.Where(id => !live.Contains(id)).ToArray())
+        {
+            _maskCache[id].Mask.Dispose();
+            _maskCache.Remove(id);
+        }
+    }
 
     public void DrawBrushEffect(IComObject<ID2D1DeviceContext> context, Annotation annotation)
     {
@@ -106,7 +121,7 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
     private IComObject<ID2D1PathGeometry>? WidenedStroke(Annotation annotation)
     {
         var points = annotation.Points;
-        var stamp = GeometryStamp(points, annotation.BrushRadius);
+        var stamp = annotation.GeometryVersion;
         if (_maskCache.TryGetValue(annotation.Id, out var cached))
         {
             if (cached.Stamp == stamp) return cached.Mask;
@@ -119,8 +134,7 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
         {
             sink.Object.BeginFigure(
                 AnnotationRenderer.ToPoint(points[0]), D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_HOLLOW);
-            for (var i = 1; i < points.Count; i++)
-                sink.Object.AddLine(AnnotationRenderer.ToPoint(points[i]));
+            for (var i = 1; i < points.Count; i++) sink.Object.AddLine(AnnotationRenderer.ToPoint(points[i]));
             sink.Object.EndFigure(D2D1_FIGURE_END.D2D1_FIGURE_END_OPEN);
             sink.Object.Close();
         }
@@ -136,20 +150,6 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
         }
         _maskCache[annotation.Id] = (stamp, widened);
         return widened;
-    }
-
-    /// <summary>Order-sensitive hash of what the mask was widened from.</summary>
-    private static long GeometryStamp(List<Point> points, double radius)
-    {
-        var hash = new HashCode();
-        hash.Add(points.Count);
-        hash.Add(radius);
-        foreach (var point in points)
-        {
-            hash.Add(point.X);
-            hash.Add(point.Y);
-        }
-        return hash.ToHashCode();
     }
 
     internal static readonly D2D_RECT_F InfiniteRect =

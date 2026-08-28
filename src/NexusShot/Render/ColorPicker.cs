@@ -299,7 +299,7 @@ public sealed class ColorPicker
             for (var j = 0; j < rows; j++)
             {
                 var value = 1 - j / (double)rows;
-                ui.FillRect(
+                ui.FillRectScratch(
                     new Rect(field.X + i, field.Y + j * (field.Height / rows),
                         1.5, field.Height / rows + 1),
                     Scale(top, value));
@@ -329,7 +329,7 @@ public sealed class ColorPicker
         for (var i = 0; i < columns; i++)
         {
             var hue = i / (double)columns * 360;
-            ui.FillRect(new Rect(rail.X + i, rail.Y, 1.5, rail.Height), FromHsv(hue, 1, 1));
+            ui.FillRectScratch(new Rect(rail.X + i, rail.Y, 1.5, rail.Height), FromHsv(hue, 1, 1));
         }
         ui.StrokeRounded(rail, 0, ui.Theme.StrokeSubtle);
 

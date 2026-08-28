@@ -8,7 +8,7 @@ namespace NexusShot.Platform;
 /// ring drawn into the scene: Windows composites the cursor, so it tracks the pointer exactly, where
 /// anything the app paints arrives a frame late and trails. Cached - building one allocates a DIB.
 /// </summary>
-public static class ToolCursors
+public static partial class ToolCursors
 {
     private const int IDC_ARROW = 32512;
     private const int IDC_CROSS = 32515;
@@ -52,6 +52,8 @@ public static class ToolCursors
     /// </summary>
     private const int MaxCircle = 256;
 
+    /// <summary>Cursor handles kept alive at once. Eviction is insertion-order, not least-recently
+    /// used - with a bound this small the difference costs at most one rebuild.</summary>
     private const int MaxCircles = 16;
 
     public static IntPtr Circle(double diameter, Rgba fill)
@@ -88,20 +90,22 @@ public static class ToolCursors
         var outer = size / 2.0;
 
         for (var y = 0; y < size; y++)
-        for (var x = 0; x < size; x++)
-        {
-            var distance = Math.Sqrt(Square(x - centre) + Square(y - centre));
+            for (var x = 0; x < size; x++)
+            {
+                var distance = Math.Sqrt(Square(x - centre) + Square(y - centre));
 
-            // Two concentric strokes plus a translucent fill, matching the on-canvas footprint.
-            uint colour;
-            if (distance > outer) continue;
-            else if (distance > outer - 1.2) colour = Pack(Rgba.Black.WithAlpha(190));
-            else if (distance > outer - 2.4) colour = Pack(Rgba.White.WithAlpha(230));
-            else colour = Pack(fill);
+                // Two concentric strokes plus a translucent fill, matching the on-canvas footprint.
+                uint colour;
+                if (distance > outer) continue;
+                else if (distance > outer - 1.2)
+                    colour = Pack(Rgba.Black.WithAlpha(190));
+                else if (distance > outer - 2.4)
+                    colour = Pack(Rgba.White.WithAlpha(230));
+                else colour = Pack(fill);
 
-            if (colour == 0) continue;
-            pixels[y * size + x] = colour;
-        }
+                if (colour == 0) continue;
+                pixels[y * size + x] = colour;
+            }
 
         return FromPixels(pixels, size, size, size / 2, size / 2);
     }
@@ -139,7 +143,7 @@ public static class ToolCursors
 
             var info = new ICONINFO
             {
-                fIcon = false,        // a cursor, not an icon
+                fIcon = 0,            // a cursor, not an icon
                 xHotspot = hotX,
                 yHotspot = hotY,
                 hbmMask = mask,
@@ -205,25 +209,38 @@ public static class ToolCursors
     [StructLayout(LayoutKind.Sequential)]
     private struct ICONINFO
     {
-        [MarshalAs(UnmanagedType.Bool)] public bool fIcon;
+        /// <summary>Win32 BOOL as an int, keeping the struct blittable.</summary>
+        public int fIcon;
         public int xHotspot;
         public int yHotspot;
         public IntPtr hbmMask;
         public IntPtr hbmColor;
     }
 
-    [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr icon);
-    [DllImport("user32.dll")] private static extern IntPtr LoadCursorW(IntPtr instance, nint name);
-    [DllImport("user32.dll")] private static extern IntPtr CreateIconIndirect(ref ICONINFO info);
-    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr window);
-    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr window, IntPtr dc);
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyIcon(IntPtr icon);
 
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateDIBSection(
+    [LibraryImport("user32.dll", EntryPoint = "LoadCursorW")]
+    private static partial IntPtr LoadCursorW(IntPtr instance, nint name);
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr CreateIconIndirect(ref ICONINFO info);
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr GetDC(IntPtr window);
+
+    [LibraryImport("user32.dll")]
+    private static partial int ReleaseDC(IntPtr window, IntPtr dc);
+
+    [LibraryImport("gdi32.dll")]
+    private static partial IntPtr CreateDIBSection(
         IntPtr dc, ref BITMAPV5HEADER header, uint usage, out IntPtr bits, IntPtr section, uint offset);
 
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateBitmap(int width, int height, uint planes, uint bits, IntPtr data);
+    [LibraryImport("gdi32.dll")]
+    private static partial IntPtr CreateBitmap(int width, int height, uint planes, uint bits, IntPtr data);
 
-    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr obj);
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeleteObject(IntPtr obj);
 }

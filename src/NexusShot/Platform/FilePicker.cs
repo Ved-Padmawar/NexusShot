@@ -42,14 +42,18 @@ public static partial class FilePicker
                 dialog.SetFileName(suggestedName);
 
                 if (!string.IsNullOrEmpty(initialFolder) && Directory.Exists(initialFolder)
-                    && SHCreateItemFromParsingName(initialFolder, IntPtr.Zero, IID_IShellItem, out var start) == 0)
+                    && ShellItems.FromPath(initialFolder, IID_IShellItem) is { } start)
                 {
-                    dialog.SetFolder(start);
+                    using (start)
+                        dialog.SetFolder(start.Item);
                 }
 
                 dialog.Show(owner);
-                dialog.GetResult(out var item);
-                item.GetDisplayName(SIGDN_FILESYSPATH, out var path);
+                dialog.GetResult(out var result);
+                if (result == IntPtr.Zero) return null;
+
+                using var selected = ShellItems.Adopt(result);
+                selected.Item.GetDisplayName(SIGDN_FILESYSPATH, out var path);
                 return path;
             }
             finally
@@ -78,12 +82,6 @@ public static partial class FilePicker
     [LibraryImport("ole32.dll")]
     private static partial int CoCreateInstance(
         in Guid clsid, IntPtr outer, uint context, in Guid iid, out IntPtr instance);
-
-    [LibraryImport("shell32.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial int SHCreateItemFromParsingName(
-        string path, IntPtr bindContext, in Guid riid,
-        [MarshalUsing(typeof(ComInterfaceMarshaller<FolderPicker.IShellItem>))]
-        out FolderPicker.IShellItem item);
 
     [GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
     [Guid("84bccd23-5fde-4cdb-aea4-af64b83d78ab")]

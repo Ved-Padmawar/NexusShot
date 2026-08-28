@@ -1,13 +1,11 @@
 namespace NexusShot.Core;
 
 /// <summary>
-/// The exact geometry of selection and crop adorners, as pure maths. This is the precision the
-/// Kept framework-free so the renderer cannot drift from it.
+/// The exact geometry of selection and crop adorners, as pure maths, kept framework-free so the
+/// renderer cannot drift from it.
 ///
-/// Note on stroke alignment: XAML shapes always centre their stroke on the layout bounds, so the
-/// old renderer had to inset every rect by half a stroke to keep the paint inside the shape.
-/// Direct2D centres strokes on the geometry too, so the same inset applies and the visual result
-/// is identical.
+/// Direct2D centres a stroke on its geometry, so every rect is inset by half a stroke to keep the
+/// paint inside the shape.
 /// </summary>
 public static class AdornerGeometry
 {

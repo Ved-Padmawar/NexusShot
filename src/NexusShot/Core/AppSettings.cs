@@ -75,11 +75,22 @@ public sealed class Storage
 {
     private readonly string _directory;
 
+    /// <summary>Locates the settings directory, creating it when possible. A profile that cannot
+    /// be written to must not stop the app starting: reads fall back to defaults, and writes
+    /// already log and continue.</summary>
     public Storage()
     {
         _directory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NexusShot");
-        Directory.CreateDirectory(_directory);
+
+        try
+        {
+            Directory.CreateDirectory(_directory);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log.Error("settings.directory_failed", exception, _directory);
+        }
     }
 
     public string SettingsPath => Path.Combine(_directory, "settings.json");

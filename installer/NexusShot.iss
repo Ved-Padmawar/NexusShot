@@ -2,7 +2,7 @@
 ; Build via `.\build.ps1 installer`, which publishes the app and passes these defines; the
 ; fallbacks below only exist so the script also compiles directly from the Inno Setup IDE.
 #ifndef AppVersion
-  #define AppVersion "0.1.4"
+  #define AppVersion "0.1.5"
 #endif
 #ifndef PublishDir
   #define PublishDir "..\dist"

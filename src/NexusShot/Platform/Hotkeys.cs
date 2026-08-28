@@ -18,7 +18,7 @@ public enum HotkeyId
 /// Registration is best-effort - if the user picks a combination another application already owns,
 /// that one binding fails and the rest still work, rather than the whole set being lost.
 /// </summary>
-public sealed class Hotkeys(IntPtr window) : IDisposable
+public sealed partial class Hotkeys(IntPtr window) : IDisposable
 {
     public const uint WM_HOTKEY = 0x0312;
     private const uint MOD_NOREPEAT = 0x4000;
@@ -63,9 +63,11 @@ public sealed class Hotkeys(IntPtr window) : IDisposable
 
     public void Dispose() => UnregisterAll();
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool UnregisterHotKey(IntPtr window, int id);
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool UnregisterHotKey(IntPtr window, int id);
 }

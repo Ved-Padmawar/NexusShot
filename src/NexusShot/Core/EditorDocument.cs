@@ -26,6 +26,10 @@ public sealed class EditorDocument
     // would fill the undo stack with identical states every time the user merely clicks a shape.
     private bool _gestureUndoPushed;
     private bool _eraserChanged;
+
+    /// <summary>The annotation whose creation pushed the newest undo entry, while that entry is
+    /// still the newest. Lets a cancelled creation retract its own entry and no other.</summary>
+    private Annotation? _createdUndoOwner;
     private readonly Dictionary<Annotation, EraserMask> _activeEraserMasks = [];
 
     public IReadOnlyList<Annotation> Annotations => _annotations;
@@ -196,7 +200,11 @@ public sealed class EditorDocument
             IsUnderline = TextUnderline,
         };
         if (_draft.IsStrokeTool) _draft.Points.Add(point);
-        if (ActiveTool != EditorTool.Eraser) _annotations.Add(_draft);
+        if (ActiveTool != EditorTool.Eraser)
+        {
+            _annotations.Add(_draft);
+            _createdUndoOwner = _draft;
+        }
         _gesture = GestureKind.Draw;
 
         // The eraser bites on the press, not only on the drag: it mutates masks rather than being an
@@ -348,7 +356,8 @@ public sealed class EditorDocument
         if (isDegenerate)
         {
             _annotations.Remove(_draft);
-            _undo.TryPop(out _);
+            if (_createdUndoOwner == _draft) _undo.TryPop(out _);
+            _createdUndoOwner = null;
         }
         else
         {
@@ -388,8 +397,7 @@ public sealed class EditorDocument
     /// <summary>The eight box handle positions, for hit testing and for the view's adorners.</summary>
     public static IEnumerable<(ResizeHandle Handle, Point Position)> BoxHandlePositions(Rect bounds)
     {
-        foreach (var handle in BoxGeometry.Handles)
-            yield return (handle, BoxGeometry.HandlePosition(bounds, handle));
+        foreach (var handle in BoxGeometry.Handles) yield return (handle, BoxGeometry.HandlePosition(bounds, handle));
     }
 
     private void ApplyResize(Annotation annotation, Point point)
@@ -410,6 +418,7 @@ public sealed class EditorDocument
             new Rect(0, 0, ImageWidth, ImageHeight));
         annotation.Start = new Point(resized.Left, resized.Top);
         annotation.End = new Point(resized.Right, resized.Bottom);
+        annotation.InvalidateGeometry();
         _strokeBounds.Remove(annotation.Id);
     }
 
@@ -433,9 +442,15 @@ public sealed class EditorDocument
     {
         switch (ActiveTool)
         {
-            case EditorTool.Brush: BrushThickness = thickness; return;
-            case EditorTool.Eraser: EraserThickness = thickness; return;
-            case EditorTool.Text: SetFontSize(thickness, isAdjusting); return;
+            case EditorTool.Brush:
+                BrushThickness = thickness;
+                return;
+            case EditorTool.Eraser:
+                EraserThickness = thickness;
+                return;
+            case EditorTool.Text:
+                SetFontSize(thickness, isAdjusting);
+                return;
         }
 
         StrokeThickness = thickness;
@@ -461,7 +476,7 @@ public sealed class EditorDocument
     }
 
     /// <summary>Commits an inline editor's text and final box (clamped to the image) as one undo
-    /// step — the single write-back for a text edit.</summary>
+    /// step - the single write-back for a text edit.</summary>
     public void SetTextContent(Annotation annotation, string text, Rect bounds)
     {
         var clamped = ClampTextBounds(bounds);
@@ -501,13 +516,18 @@ public sealed class EditorDocument
     }
 
     /// <summary>
-    /// Removes a just-created annotation together with the undo entry its creation pushed, as if
-    /// it was never placed. Used when text entry is dismissed empty.
+    /// Removes a just-created annotation as if it was never placed. Used when text entry is
+    /// dismissed empty.
+    ///
+    /// The creation's undo entry goes with it only when nothing has been pushed since: once another
+    /// edit is on the stack, the newest entry belongs to that edit, and popping it would discard
+    /// unrelated history.
     /// </summary>
     public void CancelAnnotation(Annotation annotation)
     {
         if (!_annotations.Remove(annotation)) return;
-        _undo.TryPop(out _);
+        if (_createdUndoOwner == annotation) _undo.TryPop(out _);
+        _createdUndoOwner = null;
         if (Selected == annotation) Selected = null;
         Notify();
     }
@@ -542,8 +562,11 @@ public sealed class EditorDocument
         Restore(next);
     }
 
+    /// <summary>Restores the full image, undoably.</summary>
     public void ClearCrop()
     {
+        if (CropBounds is null) return;
+        PushUndo();
         CropBounds = null;
         Notify();
     }
@@ -557,6 +580,7 @@ public sealed class EditorDocument
         _redo.Clear();
         _strokeBounds.Clear();
         _draft = null;
+        _createdUndoOwner = null;
         _gesture = GestureKind.None;
         Selected = null;
         CropBounds = null;
@@ -598,8 +622,7 @@ public sealed class EditorDocument
 
         // A later re-entry starts a new mask rather than drawing an erasing bridge across an
         // area where this stroke was not under the cursor.
-        foreach (var stroke in _activeEraserMasks.Keys.Where(stroke => !hitNow.Contains(stroke)).ToArray())
-            _activeEraserMasks.Remove(stroke);
+        foreach (var stroke in _activeEraserMasks.Keys.Where(stroke => !hitNow.Contains(stroke)).ToArray()) _activeEraserMasks.Remove(stroke);
         return changed;
     }
 
@@ -620,7 +643,8 @@ public sealed class EditorDocument
             if (Math.Max(a.X, b.X) + reach >= bounds.Left
                 && Math.Min(a.X, b.X) - reach <= bounds.Right
                 && Math.Max(a.Y, b.Y) + reach >= bounds.Top
-                && Math.Min(a.Y, b.Y) - reach <= bounds.Bottom) return true;
+                && Math.Min(a.Y, b.Y) - reach <= bounds.Bottom)
+                return true;
         }
         return false;
     }
@@ -630,6 +654,7 @@ public sealed class EditorDocument
         if (stroke.Points.Count == 0)
         {
             stroke.Points.Add(point);
+            stroke.InvalidateGeometry();
             return;
         }
 
@@ -638,7 +663,10 @@ public sealed class EditorDocument
         var dy = point.Y - previous.Y;
         // Hardware can report several samples inside the same subpixel. They add model size and
         // render work without changing the visible path.
-        if (dx * dx + dy * dy >= 0.25) stroke.Points.Add(point);
+        if (dx * dx + dy * dy < 0.25) return;
+
+        stroke.Points.Add(point);
+        stroke.InvalidateGeometry();
     }
 
     /// <summary>
@@ -669,7 +697,8 @@ public sealed class EditorDocument
     private int NextCounterValue()
     {
         var max = 0;
-        foreach (var a in _annotations) if (a.Tool == EditorTool.Counter && a.CounterValue > max) max = a.CounterValue;
+        foreach (var a in _annotations)
+            if (a.Tool == EditorTool.Counter && a.CounterValue > max) max = a.CounterValue;
         return max + 1;
     }
 
@@ -683,12 +712,15 @@ public sealed class EditorDocument
 
     private void PushUndo()
     {
+        _createdUndoOwner = null;
         _undo.Push(Snapshot());
         if (_undo.Count > MaxUndo)
         {
-            var trimmed = _undo.Reverse().Skip(1).Reverse().ToList();
+            // Stack enumerates newest-first, so Take keeps the newest entries; the reverse then
+            // restores oldest-first for re-pushing, which is what puts the newest back on top.
+            var kept = _undo.Take(MaxUndo).Reverse().ToList();
             _undo.Clear();
-            foreach (var s in trimmed) _undo.Push(s);
+            foreach (var snapshot in kept) _undo.Push(snapshot);
         }
         _redo.Clear();
     }
@@ -705,6 +737,7 @@ public sealed class EditorDocument
         _strokeBounds.Clear();
         Selected = selectedId is null ? null : _annotations.FirstOrDefault(a => a.Id == selectedId);
         _draft = null;
+        _createdUndoOwner = null;
         _gesture = GestureKind.None;
         Notify();
     }
