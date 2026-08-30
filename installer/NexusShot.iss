@@ -1,8 +1,11 @@
 ; Inno Setup script for NexusShot.
-; Build via `.\build.ps1 installer`, which publishes the app and passes these defines; the
-; fallbacks below only exist so the script also compiles directly from the Inno Setup IDE.
+; Build via `.\build.ps1 installer`, which publishes the app and passes these defines.
+;
+; The version is required rather than defaulted: a fallback here is a second declaration of it, and
+; a stale one silently ships an installer whose name and version disagree with the exe inside it.
+; build.ps1 reads it from the csproj, which is the one place it is declared.
 #ifndef AppVersion
-  #define AppVersion "0.1.6"
+  #error AppVersion is not set - build with `.\build.ps1 installer`, or pass /DAppVersion=x.y.z
 #endif
 #ifndef PublishDir
   #define PublishDir "..\dist"

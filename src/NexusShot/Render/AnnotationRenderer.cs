@@ -19,17 +19,16 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 
     private readonly Dictionary<Guid, ErasedGeometry> _erasedStrokes = [];
 
-    /// <summary>Draws every annotation in paint order. Adorners are the caller's business, so
-    /// the exporter can reuse this without drawing selection handles into the file.</summary>
-    /// <summary><paramref name="skip"/> omits one annotation, for when a live editor is standing in
-    /// for it on screen.</summary>
+    /// <summary>Draws every annotation in paint order. Adorners are the caller's business, so the
+    /// exporter can reuse this without drawing selection handles into the file.</summary>
+    /// <param name="skip">Omits one annotation, for when a live editor stands in for it on screen.</param>
     public void DrawAnnotations(
         IComObject<ID2D1RenderTarget> target,
         EditorDocument document,
         IPixelEffectSource? effects,
         Annotation? skip = null)
     {
-        effects?.PruneMasks(document.Annotations);
+        effects?.PruneMasks(document.Annotations, document.AnnotationGeneration);
 
         foreach (var annotation in document.Annotations)
         {
@@ -40,14 +39,26 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         PruneErasedStrokes(document);
     }
 
+    /// <summary>The generation the cache was last pruned against; nothing can have been removed
+    /// while it is unchanged, so the usual frame skips the scan entirely.</summary>
+    private long _prunedGeneration = -1;
+
     /// <summary>Drops cached geometry for strokes no longer in the document.</summary>
     private void PruneErasedStrokes(EditorDocument document)
     {
+        if (_prunedGeneration == document.AnnotationGeneration) return;
+        _prunedGeneration = document.AnnotationGeneration;
+
         if (_erasedStrokes.Count == 0) return;
-        var has = new HashSet<Guid>(document.Annotations.Select(a => a.Id));
-        var toRemove = new List<Guid>();
-        foreach (var id in _erasedStrokes.Keys) if (!has.Contains(id)) toRemove.Add(id);
-        foreach (var id in toRemove)
+
+        var live = new HashSet<Guid>(document.Annotations.Count);
+        foreach (var annotation in document.Annotations) live.Add(annotation.Id);
+
+        List<Guid>? dead = null;
+        foreach (var id in _erasedStrokes.Keys) if (!live.Contains(id)) (dead ??= []).Add(id);
+        if (dead is null) return;
+
+        foreach (var id in dead)
             if (_erasedStrokes.Remove(id, out var cached)) cached.Geometry.Dispose();
     }
 
@@ -57,7 +68,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         EditorDocument document,
         IPixelEffectSource? effects)
     {
-        var color = Palette.Parse(annotation.ColorHex);
+        var color = annotation.Color;
 
         switch (annotation.Tool)
         {
@@ -253,7 +264,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     {
         if (points.Count == 0) return null;
 
-        using var line = CreatePath(points, filled: false);
+        using var line = resources.CreatePath(points, closed: false);
         var widened = resources.CreatePathGeometry();
         using (var sink = widened.Open())
         {
@@ -287,7 +298,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             return;
         }
 
-        using var geometry = CreatePath(points, filled: false);
+        using var geometry = resources.CreatePath(points, closed: false);
         target.DrawGeometry(geometry, brush, width, resources.RoundStroke);
     }
 
@@ -391,7 +402,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         double adornerScale, Rgba selection)
     {
         var bounds = annotation.Bounds;
-        var color = Palette.Parse(annotation.ColorHex);
+        var color = annotation.Color;
 
         using var layout = TextLayout(annotation, text, bounds);
         var origin = TextOrigin(bounds);
@@ -498,7 +509,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             if (bounds.IsEmpty) continue;
 
             target.DrawRectangle(
-                ToRect(bounds), resources.Brush(Palette.Parse(annotation.ColorHex).WithAlpha(180)),
+                ToRect(bounds), resources.Brush(annotation.Color.WithAlpha(180)),
                 (float)thickness);
         }
     }
@@ -570,7 +581,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             var path = AdornerGeometry.GripPath(handle, bounds, metrics.Arm, metrics.Bar, inset: 0);
             if (path is null) continue;
 
-            using var geometry = CreatePath(path, filled: false);
+            using var geometry = resources.CreatePath(path, closed: false);
             target.DrawGeometry(geometry, resources.Brush(Rgba.Black.WithAlpha(170)),
                 (float)(metrics.Thickness + metrics.UnderlayPad * 2), resources.RoundStroke);
             target.DrawGeometry(geometry, resources.Brush(Rgba.White),
@@ -587,41 +598,12 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         target.DrawEllipse(ellipse, resources.Brush(Palette.Selection), (float)(2 * adornerScale));
     }
 
-    /// <summary>The brush/eraser cursor preview: a ring showing the exact footprint that will be
-    /// painted or erased. Drawn in image space so it scales with the zoom, like the stroke will.</summary>
-    public void DrawBrushCursor(
-        IComObject<ID2D1RenderTarget> target, Point center, double thickness, double adornerScale)
-    {
-        var radius = (float)PaintStrokeGeometry.Radius(thickness);
-        var ellipse = new D2D1_ELLIPSE { point = ToPoint(center), radiusX = radius, radiusY = radius };
-        target.DrawEllipse(ellipse, resources.Brush(Rgba.Black.WithAlpha(160)), (float)(2.5 * adornerScale));
-        target.DrawEllipse(ellipse, resources.Brush(Rgba.White.WithAlpha(230)), (float)(1.2 * adornerScale));
-    }
-
     // ============================  PRIMITIVES  ============================
 
     private void FillPolygon(IComObject<ID2D1RenderTarget> target, IReadOnlyList<Point> points, Rgba color)
     {
-        using var geometry = CreatePath(points, filled: true);
+        using var geometry = resources.CreatePath(points, closed: true);
         target.FillGeometry(geometry, resources.Brush(color));
-    }
-
-    /// <summary>Builds a path geometry. Geometries are cheap to create and are freed immediately;
-    /// the expensive resources (brushes, stroke styles) are the cached ones.</summary>
-    /// <summary>Path geometries come from the shared factory, not the render target: they are
-    /// factory resources, so one instance serves every window and the exporter.</summary>
-    private IComObject<ID2D1PathGeometry> CreatePath(IReadOnlyList<Point> points, bool filled)
-    {
-        var geometry = resources.CreatePathGeometry();
-        using (var sink = geometry.Open())
-        {
-            sink.Object.BeginFigure(ToPoint(points[0]),
-                filled ? D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_FILLED : D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_HOLLOW);
-            for (var i = 1; i < points.Count; i++) sink.Object.AddLine(ToPoint(points[i]));
-            sink.Object.EndFigure(filled ? D2D1_FIGURE_END.D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END.D2D1_FIGURE_END_OPEN);
-            sink.Object.Close();
-        }
-        return geometry;
     }
 
     private static bool IsDab(IReadOnlyList<Point> points)
@@ -694,5 +676,5 @@ public interface IPixelEffectSource
     void DrawBrushEffect(IComObject<ID2D1DeviceContext> context, Annotation annotation);
 
     /// <summary>Releases anything cached for annotations no longer in <paramref name="annotations"/>.</summary>
-    void PruneMasks(IReadOnlyList<Annotation> annotations);
+    void PruneMasks(IReadOnlyList<Annotation> annotations, long generation);
 }

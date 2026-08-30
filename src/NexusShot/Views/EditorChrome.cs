@@ -297,13 +297,13 @@ public sealed class EditorChrome(Ui ui)
         var font = S(Metrics.FontBody);
         var glyph = S(13);
 
-        var save = Width(ui, "Save", font, glyph);
+        var save = ui.ButtonWidth("Save", font, glyph);
         right -= save;
         if (ui.Button(9020, new Rect(right, y, save, S(32)), "Save",
             primary: true, glyph: Icons.Save, glyphSize: glyph, fontSize: font))
             SavePressed = true;
 
-        var saveAs = Width(ui, "Save as…", font);
+        var saveAs = ui.ButtonWidth("Save as…", font);
         right -= saveAs + S(8);
         // Not 9022: the toolbar's Undo tile owns that, and a shared id lights both up.
         if (ui.Button(9025, new Rect(right, y, saveAs, S(32)), "Save as…", fontSize: font))
@@ -311,7 +311,7 @@ public sealed class EditorChrome(Ui ui)
 
         // The copy confirms itself: the icon becomes a tick and the label reads "Copied".
         var copyLabel = _copied ? "Copied" : "Copy";
-        var copy = Width(ui, copyLabel, font, glyph);
+        var copy = ui.ButtonWidth(copyLabel, font, glyph);
         right -= copy + S(8);
 
         if (ui.Button(9021, new Rect(right, y, copy, S(32)), copyLabel,
@@ -328,14 +328,6 @@ public sealed class EditorChrome(Ui ui)
     }
 
     private bool _copied;
-
-    /// <summary>A button sized to its content: 14px of padding either side.</summary>
-    private static double Width(Ui ui, string label, double font, double glyph = 0)
-    {
-        var content = ui.MeasureText(label, font, bold: true);
-        if (glyph > 0) content += glyph + glyph * 0.55;
-        return Math.Round(content + S(28));
-    }
 
     private static string Glyph(EditorTool tool) => tool switch
     {

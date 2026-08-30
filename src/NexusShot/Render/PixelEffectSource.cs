@@ -14,16 +14,27 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
     /// <summary>One mask per annotation, stamped with the geometry version it was built from.</summary>
     private readonly Dictionary<Guid, (long Stamp, IComObject<ID2D1PathGeometry> Mask)> _maskCache = [];
 
+    /// <summary>The generation this cache was last pruned against.</summary>
+    private long _prunedGeneration = -1;
+
     /// <summary>Drops masks for annotations that are no longer in the document; without this a
-    /// deleted stroke's geometry lives until the whole source is disposed.</summary>
-    public void PruneMasks(IReadOnlyList<Annotation> annotations)
+    /// deleted stroke's geometry lives until the whole source is disposed. Skipped while the
+    /// document's annotation set is unchanged, which is every frame of a plain drag.</summary>
+    public void PruneMasks(IReadOnlyList<Annotation> annotations, long generation)
     {
+        if (_prunedGeneration == generation) return;
+        _prunedGeneration = generation;
+
         if (_maskCache.Count == 0) return;
 
         var live = new HashSet<Guid>(annotations.Count);
         foreach (var annotation in annotations) live.Add(annotation.Id);
 
-        foreach (var id in _maskCache.Keys.Where(id => !live.Contains(id)).ToArray())
+        List<Guid>? dead = null;
+        foreach (var id in _maskCache.Keys) if (!live.Contains(id)) (dead ??= []).Add(id);
+        if (dead is null) return;
+
+        foreach (var id in dead)
         {
             _maskCache[id].Mask.Dispose();
             _maskCache.Remove(id);

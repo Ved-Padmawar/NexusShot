@@ -29,10 +29,10 @@ public static partial class ScreenCapture
     private const long MaximumPixels = 268_435_456;
 
     public static RectInt VirtualDesktop => new(
-        GetSystemMetrics(SM_XVIRTUALSCREEN),
-        GetSystemMetrics(SM_YVIRTUALSCREEN),
-        GetSystemMetrics(SM_CXVIRTUALSCREEN),
-        GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        WindowInterop.GetSystemMetrics(SM_XVIRTUALSCREEN),
+        WindowInterop.GetSystemMetrics(SM_YVIRTUALSCREEN),
+        WindowInterop.GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        WindowInterop.GetSystemMetrics(SM_CYVIRTUALSCREEN));
 
     public static DecodedImage CaptureFullScreen() => Capture(VirtualDesktop);
 
@@ -50,7 +50,7 @@ public static partial class ScreenCapture
         RectInt winRect;
         if (DwmGetWindowAttribute(window, 9, out var dwmRect, Marshal.SizeOf<RECT>()) == 0)
             winRect = new RectInt(dwmRect.Left, dwmRect.Top, dwmRect.Right - dwmRect.Left, dwmRect.Bottom - dwmRect.Top);
-        else if (GetWindowRect(window, out var rect))
+        else if (WindowInterop.GetWindowRect(window, out var rect))
             winRect = new RectInt(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
         else throw new InvalidOperationException("Could not determine the active window.");
         return Capture(Intersect(winRect, VirtualDesktop));
@@ -143,11 +143,7 @@ public static partial class ScreenCapture
         return new RectInt(left, top, checked((int)(right - left)), checked((int)(bottom - top)));
     }
 
-    [LibraryImport("user32.dll", SetLastError = true)] private static partial int GetSystemMetrics(int index);
     [LibraryImport("user32.dll", SetLastError = true)] private static partial IntPtr GetForegroundWindow();
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetWindowRect(IntPtr window, out WindowInterop.RECT rect);
     [LibraryImport("dwmapi.dll", SetLastError = true)] private static partial int DwmGetWindowAttribute(IntPtr window, int attr, out WindowInterop.RECT value, int size);
     [LibraryImport("user32.dll", SetLastError = true)] private static partial IntPtr GetDC(IntPtr window);
     [LibraryImport("user32.dll", SetLastError = true)] private static partial int ReleaseDC(IntPtr window, IntPtr dc);

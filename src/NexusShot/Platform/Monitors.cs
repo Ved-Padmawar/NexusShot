@@ -75,10 +75,12 @@ public static partial class Monitors
 
     private static bool TryGetDpiForMonitor(IntPtr monitor, out uint dpi)
     {
+        if (GetDpiForMonitor(monitor, 0, out var dpiX, out _) == 0)
+        {
+            dpi = dpiX;
+            return true;
+        }
         dpi = 96;
-        try
-        { var hr = GetDpiForMonitor(monitor, 0, out var dx, out _); if (hr == 0) { dpi = dx; return true; } }
-        catch { }
         return false;
     }
 

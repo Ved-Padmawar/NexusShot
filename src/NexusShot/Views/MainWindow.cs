@@ -258,37 +258,47 @@ public sealed class MainWindow : CaptionWindow
         return version is null ? string.Empty : $"{version.Major}.{version.Minor}.{version.Build}";
     }
 
+    /// <summary>The mark's points in client pixels, and the bounds they were laid out for.</summary>
+    private sealed record BrandMarkPoints(
+        Rect Bounds, float Radius, float Thickness,
+        Point[] Diagonal, Point[] UpperMark, Point[] LowerMark);
+
+    private BrandMarkPoints? _brandMark;
+
     /// <summary>The app mark, drawn rather than loaded: a slate tile split by a 135° diagonal, and
-    /// two crop marks, on the 960-unit grid of the icon source.</summary>
+    /// two crop marks, on the 960-unit grid of the icon source.
+    ///
+    /// The point arrays are laid out once per size: the mark is redrawn every frame, and only a
+    /// resize or a DPI change moves any of it.</summary>
     private void DrawBrandMark(Ui ui, Rect bounds)
     {
-        const double unit = 960;
-        var k = bounds.Width / unit;
+        if (_brandMark is not { } mark || mark.Bounds != bounds)
+        {
+            const double unit = 960;
+            var k = bounds.Width / unit;
 
-        double X(double u) => bounds.X + u * k;
-        double Y(double u) => bounds.Y + u * k;
+            double X(double u) => bounds.X + u * k;
+            double Y(double u) => bounds.Y + u * k;
 
-        var radius = 220 * k;
+            mark = new BrandMarkPoints(
+                bounds,
+                Radius: (float)(220 * k),
+                // Crop marks: corners on the diagonal, so each arm crosses both halves.
+                Thickness: (float)(84 * k),
+                Diagonal: [new Point(X(0), Y(0)), new Point(X(unit), Y(0)), new Point(X(0), Y(unit))],
+                UpperMark: [new Point(X(268), Y(488)), new Point(X(268), Y(268)), new Point(X(488), Y(268))],
+                LowerMark: [new Point(X(472), Y(692)), new Point(X(692), Y(692)), new Point(X(692), Y(472))]);
+
+            _brandMark = mark;
+        }
 
         // The slate tile, then the half above the 135° diagonal in cyan - intersected with the tile,
         // so it inherits the rounded corners rather than overhanging them.
-        ui.FillRounded(bounds, (float)radius, Tile);
+        ui.FillRounded(bounds, mark.Radius, Tile);
+        ui.FillRoundedRegion(bounds, mark.Radius, mark.Diagonal, Cyan);
 
-        ui.FillRoundedRegion(bounds, (float)radius,
-            [
-                new Point(X(0), Y(0)),
-                new Point(X(unit), Y(0)),
-                new Point(X(0), Y(unit)),
-            ],
-            Cyan);
-
-        // Crop marks: corners on the diagonal, so each arm crosses both halves.
-        var thickness = (float)(84 * k);
-
-        ui.Polyline([new Point(X(268), Y(488)), new Point(X(268), Y(268)), new Point(X(488), Y(268))],
-            Marks, thickness);
-        ui.Polyline([new Point(X(472), Y(692)), new Point(X(692), Y(692)), new Point(X(692), Y(472))],
-            Marks, thickness);
+        ui.Polyline(mark.UpperMark, Marks, mark.Thickness);
+        ui.Polyline(mark.LowerMark, Marks, mark.Thickness);
     }
 
     private static readonly Rgba Tile = new(0x3A, 0x46, 0x52, 0xFF);
@@ -459,7 +469,7 @@ public sealed class MainWindow : CaptionWindow
         {
             // Inset from the well, then fill it: the image floats inside the frame rather than
             // touching it, but a small capture still uses the space it was given.
-            var fit = Fit(bitmap.Width, bitmap.Height, well.Deflate(S(20)), enlarge: true);
+            var fit = well.Deflate(S(20)).Fit(new Size(bitmap.Width, bitmap.Height), enlarge: true);
             target.DrawBitmap(
                 bitmap.Bitmap, 1f,
                 D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
@@ -489,13 +499,13 @@ public sealed class MainWindow : CaptionWindow
         var glyph = S(14);
 
         // Edit carries the accent: it is what this pane is for.
-        var edit = ButtonWidth(ui, "Edit", font, glyph);
+        var edit = ui.ButtonWidth("Edit", font, glyph);
         right -= edit;
         if (ui.Button(23, new Rect(right, y, edit, S(32)), "Edit",
             primary: true, glyph: Icons.Edit, glyphSize: glyph, fontSize: font))
             Post(() => EditRequested?.Invoke(item));
 
-        var copy = ButtonWidth(ui, "Copy", font, glyph);
+        var copy = ui.ButtonWidth("Copy", font, glyph);
         right -= copy + S(8);
         if (ui.Button(22, new Rect(right, y, copy, S(32)), "Copy",
             glyph: Icons.Copy, glyphSize: glyph, fontSize: font))
@@ -521,14 +531,6 @@ public sealed class MainWindow : CaptionWindow
         if (ui.Tile(24, new Rect(right, iconY, icon, icon), false, Icons.Close, iconGlyph,
             "Close  (Esc)"))
             Deselect();
-    }
-
-    /// <summary>A button sized to its content: 14px of padding either side.</summary>
-    private double ButtonWidth(Ui ui, string label, double font, double glyph = 0)
-    {
-        var content = ui.MeasureText(label, font, bold: true);
-        if (glyph > 0) content += glyph + glyph * 0.55;
-        return Math.Round(content + S(28));
     }
 
     /// <summary>The pane with nothing shown. What it says depends on whether the history is empty:
@@ -1011,7 +1013,7 @@ public sealed class MainWindow : CaptionWindow
 
         // Aspect-fill, clipped to the chip. A letterboxed thumbnail in a 52x34 cell is mostly empty
         // background; filling it makes the row scannable, which is the whole job of a thumbnail.
-        var fit = Cover(bitmap.Width, bitmap.Height, slot);
+        var fit = slot.Cover(new Size(bitmap.Width, bitmap.Height));
 
         target.Object.PushAxisAlignedClip(
             AnnotationRenderer.ToRect(slot), D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1082,6 +1084,7 @@ public sealed class MainWindow : CaptionWindow
             catch (Exception exception) when (exception is IOException or InvalidOperationException)
             {
                 // A capture that will not decode simply has no thumbnail.
+                Log.Error("thumbnail.decode", exception, path);
             }
 
             Post(() =>
@@ -1139,7 +1142,11 @@ public sealed class MainWindow : CaptionWindow
                 var (pixels, width, height) = ImageSurface.Decode(path);
                 decoded = new DecodedImage(pixels, width, height);
             }
-            catch { }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException)
+            {
+                // A capture that will not decode shows the empty preview rather than failing the frame.
+                Log.Error("preview.decode", exception, path);
+            }
 
             Post(() =>
             {
@@ -1226,48 +1233,6 @@ public sealed class MainWindow : CaptionWindow
         {
             // Explorer not opening is not worth taking the app down for.
         }
-    }
-
-    /// <summary>
-    /// Aspect-preserving fit, centred.
-    ///
-    /// <paramref name="enlarge"/> lets a small capture grow to fill its container. The preview well
-    /// wants that - a 600x350 capture pinned at 1:1 in a 1400px pane is a postage stamp adrift in
-    /// empty space. It costs nothing in sharpness here because the GPU is upscaling the real bitmap,
-    /// not a pre-scaled thumbnail; the editor is where 1:1 actually matters, and it opts out.
-    /// </summary>
-    private static Rect Fit(double imageWidth, double imageHeight, Rect bounds, bool enlarge = false)
-    {
-        if (imageWidth <= 0 || imageHeight <= 0 || bounds.IsEmpty) return bounds;
-
-        var scale = Math.Min(bounds.Width / imageWidth, bounds.Height / imageHeight);
-        if (!enlarge) scale = Math.Min(1, scale);
-
-        var width = imageWidth * scale;
-        var height = imageHeight * scale;
-
-        return new Rect(
-            Math.Round(bounds.X + (bounds.Width - width) / 2),
-            Math.Round(bounds.Y + (bounds.Height - height) / 2),
-            Math.Round(width),
-            Math.Round(height));
-    }
-
-    /// <summary>Aspect-preserving *fill*: covers the bounds entirely, overflowing on one axis. The
-    /// caller clips. This is `Stretch="UniformToFill"`.</summary>
-    private static Rect Cover(double imageWidth, double imageHeight, Rect bounds)
-    {
-        if (imageWidth <= 0 || imageHeight <= 0 || bounds.IsEmpty) return bounds;
-
-        var scale = Math.Max(bounds.Width / imageWidth, bounds.Height / imageHeight);
-        var width = imageWidth * scale;
-        var height = imageHeight * scale;
-
-        return new Rect(
-            bounds.X + (bounds.Width - width) / 2,
-            bounds.Y + (bounds.Height - height) / 2,
-            width,
-            height);
     }
 
     private static string Truncate(string text, int limit) =>

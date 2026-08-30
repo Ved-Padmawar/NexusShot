@@ -47,6 +47,9 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private Ui? _ui;
     private ImageSurface? _thumbnail;
 
+    /// <summary>The CPU copy behind <see cref="_thumbnail"/>, kept so a drag does not re-decode.</summary>
+    private DecodedImage? _thumbnailPixels;
+
     private bool _hovered;
     private int _remaining;
 
@@ -78,6 +81,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
         _thumbnail?.Dispose();
         _thumbnail = null;
+        _thumbnailPixels = null;
 
         _remaining = _dismissSeconds;
         Invalidate();
@@ -166,8 +170,11 @@ public sealed partial class FloatingPreview : D2DRenderWindow
             if (context is null) return;
             try
             {
-                _thumbnail = ImageSurface.LoadScaled(_item.FilePath, context,
+                // Decoded in two halves rather than via LoadScaled: the pixels are kept so a drag
+                // can build its picture from them instead of decoding the file a second time.
+                _thumbnailPixels = ImageSurface.DecodeScaled(_item.FilePath,
                     maxWidth: (int)(CardWidth * 2), maxHeight: (int)(MaxCardHeight * 2));
+                _thumbnail = ImageSurface.Upload(_thumbnailPixels, context);
             }
             catch (Exception exception) when (exception is IOException or InvalidOperationException)
             {
@@ -184,7 +191,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         target.DrawBitmap(
             _thumbnail.Bitmap, 1f,
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-            AnnotationRenderer.ToRect(Cover(card)));
+            AnnotationRenderer.ToRect(card.Cover(new Size(_thumbnail.Width, _thumbnail.Height))));
         _ui.PopClip();
 
         if (IsPinned && !_hovered) DrawPin(_ui, card);
@@ -198,26 +205,6 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         _ui.EndFrame();
 
         if (_ui.ClickedThisFrame) Invalidate();
-    }
-
-    /// <summary>The rect to draw the thumbnail into so it covers the card at its own aspect ratio,
-    /// centred - the overflow on the long axis is clipped away.</summary>
-    private Rect Cover(Rect card)
-    {
-        if (_thumbnail is null || _thumbnail.Width <= 0 || _thumbnail.Height <= 0) return card;
-
-        var scale = Math.Max(
-            card.Width / _thumbnail.Width,
-            card.Height / _thumbnail.Height);
-
-        var width = _thumbnail.Width * scale;
-        var height = _thumbnail.Height * scale;
-
-        return new Rect(
-            card.Center.X - width / 2,
-            card.Center.Y - height / 2,
-            width,
-            height);
     }
 
     private static readonly Rgba ActionBackground = new(0x20, 0x20, 0x24, 0xE6);
@@ -541,24 +528,20 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     /// press landed, so the image stays under the finger rather than jumping.</summary>
     private DragImage? BuildDragImage(Point press)
     {
-        try
-        {
-            var size = CardSize(_item, _scale);
-            var width = Math.Max(1, (int)size.Width);
-            var height = Math.Max(1, (int)size.Height);
+        // The pixels the card is already drawn from, rather than a second decode of the file: this
+        // runs on the UI thread, between the press and the drag actually starting.
+        if (_thumbnailPixels is not { } decoded) return null;
 
-            var decoded = ImageSurface.DecodeScaled(_item.FilePath, width, height);
+        // The press is in card space and the thumbnail is decoded at its own size, so the hotspot
+        // is carried across rather than used raw.
+        var card = CardSize(_item, _scale);
+        var x = card.Width > 0 ? press.X / card.Width * decoded.Width : 0;
+        var y = card.Height > 0 ? press.Y / card.Height * decoded.Height : 0;
 
-            return DragImage.FromPixels(
-                decoded.Pixels, decoded.Width, decoded.Height,
-                Math.Clamp((int)press.X, 0, decoded.Width),
-                Math.Clamp((int)press.Y, 0, decoded.Height));
-        }
-        catch (Exception exception) when (exception is IOException or InvalidOperationException)
-        {
-            // No picture is better than no drag.
-            return null;
-        }
+        return DragImage.FromPixels(
+            decoded.Pixels, decoded.Width, decoded.Height,
+            Math.Clamp((int)x, 0, decoded.Width),
+            Math.Clamp((int)y, 0, decoded.Height));
     }
 
     /// <summary>Asks for WM_MOUSELEAVE, which Windows does not send unless a window opts in.</summary>

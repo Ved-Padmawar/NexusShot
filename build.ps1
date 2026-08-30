@@ -22,7 +22,9 @@ param(
     [ValidateSet('dev', 'release', 'installer', 'test')]
     [string]$Mode = 'dev',
 
-    [string]$Version = '0.1.6'
+    # Defaults to the csproj's <Version>. Left unset so there is one declared version, not a copy
+    # here that silently disagrees with what the exe is stamped with.
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,6 +34,12 @@ $root = $PSScriptRoot
 $project = Join-Path $root 'src\NexusShot\NexusShot.csproj'
 $tests = Join-Path $root 'src\NexusShot.Tests\NexusShot.Tests.csproj'
 $dist = Join-Path $root 'dist'
+
+if (-not $Version) {
+    $Version = ([xml](Get-Content $project)).Project.PropertyGroup.Version |
+        Where-Object { $_ } | Select-Object -First 1
+    if (-not $Version) { throw "No <Version> found in $project." }
+}
 
 function Assert-LastExitCode([string]$what) {
     if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)." }

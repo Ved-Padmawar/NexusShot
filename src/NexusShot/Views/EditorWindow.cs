@@ -36,8 +36,6 @@ public sealed class EditorWindow : CaptionWindow
     private double _offsetX;
     private double _offsetY;
 
-    /// <summary>The live brush/eraser footprint under the cursor, in image pixels.</summary>
-    private Point? _brushCursor;
     private bool _dragging;
 
     /// <summary>The grip under the pointer, if any. Drives the cursor shape.</summary>
@@ -405,10 +403,6 @@ public sealed class EditorWindow : CaptionWindow
         Invalidate();
     }
 
-    private static bool IsPaintTool(EditorTool tool) =>
-        tool is EditorTool.Brush or EditorTool.Eraser or EditorTool.Pen
-            or EditorTool.Blur or EditorTool.Pixelate;
-
     // ============================  INPUT  ============================
     //
     // Input mutates the document and invalidates. There is no per-event render, no buffering of
@@ -418,7 +412,6 @@ public sealed class EditorWindow : CaptionWindow
     private const uint WmMouseMove = 0x0200;
     private const uint WmLButtonDown = 0x0201;
     private const uint WmLButtonUp = 0x0202;
-    private const uint WmMouseLeave = 0x02A3;
     private const uint WmKeyDown = 0x0100;
     private const uint WmChar = 0x0102;
     private const uint WmSetCursor = 0x0020;
@@ -477,14 +470,6 @@ public sealed class EditorWindow : CaptionWindow
             case WmLButtonUp:
                 OnPointerReleased(ClientPoint(lParam));
                 return Handled;
-
-            case WmMouseLeave:
-                if (_brushCursor is not null)
-                {
-                    _brushCursor = null;
-                    Invalidate();
-                }
-                break;
 
             case WmSetCursor:
                 // Only the client area is ours; DefWindowProc owns the frame's resize arrows.
@@ -712,8 +697,6 @@ public sealed class EditorWindow : CaptionWindow
                         : null;
         }
 
-        _brushCursor = IsPaintTool(_document.ActiveTool) && InCanvas(_clientPointer) ? point : null;
-
 
         // The chrome is immediate: hover states only update when something repaints, so every move
         // invalidates. A frame is ~1 ms, and Windows coalesces WM_PAINT, so this is not a hot loop.
@@ -938,7 +921,6 @@ public sealed class EditorWindow : CaptionWindow
         if (tool != EditorTool.Crop) _document.CancelCropSession();
         _document.ActiveTool = tool;
         if (tool == EditorTool.Crop && _image is not null) _document.BeginCropSession();
-        _brushCursor = null;
         RefreshCursor();
         Invalidate();
         return true;

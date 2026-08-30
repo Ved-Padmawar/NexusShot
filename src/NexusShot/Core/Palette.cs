@@ -15,14 +15,42 @@ public static class Palette
     /// <summary>Selection blue, shared by adorners, the crop frame and focus rings.</summary>
     public static readonly Rgba Selection = new(10, 132, 255, 255);
 
+    /// <summary>What a malformed hex string resolves to. Named, so the fallback is a deliberate
+    /// value rather than whichever swatch happens to be first.</summary>
+    public static readonly Rgba Fallback = new(255, 59, 48, 255);
+
+    public static bool TryParse(string? hex, out Rgba color)
+    {
+        color = Fallback;
+        if (hex is null) return false;
+
+        var value = hex.AsSpan().TrimStart('#');
+        if (value.Length != 6
+            || !int.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out var rgb))
+            return false;
+
+        color = new Rgba((byte)((rgb >> 16) & 0xFF), (byte)((rgb >> 8) & 0xFF), (byte)(rgb & 0xFF), 255);
+        return true;
+    }
+
+    /// <summary>
+    /// Parses a hex colour, falling back rather than throwing: this is on the paint path, and a bad
+    /// string in settings must not take the editor down mid-frame.
+    ///
+    /// Reported once per distinct string - the same annotation repaints every frame, so logging
+    /// unconditionally would fill the log at the display rate.
+    /// </summary>
     public static Rgba Parse(string hex)
     {
-        var value = hex.AsSpan().TrimStart('#');
-        if (value.Length == 6
-            && int.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out var rgb))
-            return new Rgba((byte)((rgb >> 16) & 0xFF), (byte)((rgb >> 8) & 0xFF), (byte)(rgb & 0xFF), 255);
-        return new Rgba(255, 59, 48, 255);
+        if (TryParse(hex, out var color)) return color;
+
+        lock (ReportedBadHex)
+            if (ReportedBadHex.Add(hex ?? "<null>")) Log.Info("palette.bad-hex", hex);
+
+        return Fallback;
     }
+
+    private static readonly HashSet<string> ReportedBadHex = [];
 
     /// <summary>Perceptual lightness test, used to pick readable text over a filled badge.</summary>
     public static bool IsLight(Rgba color) =>

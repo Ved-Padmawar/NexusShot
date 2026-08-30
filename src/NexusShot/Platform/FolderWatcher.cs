@@ -30,12 +30,17 @@ public sealed class FolderWatcher : IDisposable
 
         _watcher.Created += OnChanged;
         _watcher.Deleted += OnChanged;
-        _watcher.Renamed += OnChanged;
+        _watcher.Renamed += OnRenamed;
         _watcher.Changed += OnChanged;
         _watcher.Error += OnError;
     }
 
     private void OnChanged(object? sender, FileSystemEventArgs e) => Schedule();
+
+    /// <summary>Renamed carries its own delegate type. Subscribed as itself rather than relying on
+    /// a conversion, so Dispose can actually detach it - a converted handler is a different
+    /// delegate instance, and -= would silently not match.</summary>
+    private void OnRenamed(object? sender, RenamedEventArgs e) => Schedule();
 
     /// <summary>
     /// The watcher's internal buffer overflowed, or the handle was lost: the events it dropped are
@@ -78,7 +83,13 @@ public sealed class FolderWatcher : IDisposable
     {
         _disposed = true;
         _watcher.EnableRaisingEvents = false;
+
+        _watcher.Created -= OnChanged;
+        _watcher.Deleted -= OnChanged;
+        _watcher.Renamed -= OnRenamed;
+        _watcher.Changed -= OnChanged;
         _watcher.Error -= OnError;
+
         _watcher.Dispose();
         _debounce.Dispose();
     }

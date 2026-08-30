@@ -281,30 +281,20 @@ public sealed class ColorPicker
     /// <summary>
     /// The saturation/value field: full-saturation hue in the corner, white across, black down.
     ///
-    /// Drawn as vertical strips rather than a gradient mesh - a 200px field is 200 fills, which is
-    /// nothing on a GPU, and it avoids standing up a gradient brush per frame.
+    /// Two gradients, not a fill per cell. The field is the standard HSV square - white to hue
+    /// horizontally, multiplied by black vertically - which is exactly what a transparent-to-black
+    /// gradient over the hue ramp produces, and the GPU interpolates both.
     /// </summary>
     private bool DrawSpectrum(Ui ui, Rect field)
     {
         var hue = FromHsv(_hue, 1, 1);
-        var columns = Math.Max(1, (int)field.Width);
 
-        for (var i = 0; i < columns; i++)
-        {
-            var saturation = i / (double)columns;
-            var top = Lerp(Rgba.White, hue, saturation);
+        ui.FillRectGradient(field, Rgba.White, hue,
+            new Point(field.X, field.Y), new Point(field.Right, field.Y));
 
-            // Each column runs from its saturated top colour down to black.
-            var rows = Math.Max(1, (int)(field.Height / 2));
-            for (var j = 0; j < rows; j++)
-            {
-                var value = 1 - j / (double)rows;
-                ui.FillRectScratch(
-                    new Rect(field.X + i, field.Y + j * (field.Height / rows),
-                        1.5, field.Height / rows + 1),
-                    Scale(top, value));
-            }
-        }
+        // Straight alpha over the ramp: the value axis darkens whatever saturation is beneath it.
+        ui.FillRectGradient(field, Rgba.Black.WithAlpha(0), Rgba.Black,
+            new Point(field.X, field.Y), new Point(field.X, field.Bottom));
 
         ui.StrokeRounded(field, 0, ui.Theme.StrokeSubtle);
 
@@ -344,16 +334,6 @@ public sealed class ColorPicker
         _hue = Math.Clamp((ui.Pointer.X - rail.X) / rail.Width, 0, 1) * 360;
         return true;
     }
-
-    private static Rgba Lerp(Rgba a, Rgba b, double t) => new(
-        (byte)(a.R + (b.R - a.R) * t),
-        (byte)(a.G + (b.G - a.G) * t),
-        (byte)(a.B + (b.B - a.B) * t));
-
-    private static Rgba Scale(Rgba color, double value) => new(
-        (byte)(color.R * value),
-        (byte)(color.G * value),
-        (byte)(color.B * value));
 
     public static Rgba FromHsv(double hue, double saturation, double value)
     {

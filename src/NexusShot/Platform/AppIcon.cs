@@ -62,8 +62,8 @@ public static partial class AppIcon
         // explicitly while leaving ICON_BIG available to Alt+Tab and the taskbar.
         SendMessageW(window, WM_SETICON, ICON_SMALL, IntPtr.Zero);
 
-        var style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-        SetWindowLongPtrW(window, GWL_EXSTYLE, style | WS_EX_DLGMODALFRAME);
+        var style = WindowInterop.GetWindowLongPtrW(window, GWL_EXSTYLE);
+        WindowInterop.SetWindowLongPtrW(window, GWL_EXSTYLE, style | WS_EX_DLGMODALFRAME);
 
         // Frame styles only take effect on a recomputed frame.
         WindowInterop.SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0,
@@ -82,12 +82,6 @@ public static partial class AppIcon
     private const uint SWP_NOMOVE = 0x0002;
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_FRAMECHANGED = 0x0020;
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static partial nint GetWindowLongPtrW(IntPtr window, int index);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static partial nint SetWindowLongPtrW(IntPtr window, int index, nint value);
 
     [LibraryImport("user32.dll", EntryPoint = "SetWindowTextW", StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -14,7 +14,6 @@ public sealed class EditorDocument
     private readonly Stack<DocumentSnapshot> _undo = new();
     private readonly Stack<DocumentSnapshot> _redo = new();
     private const int MaxUndo = 100;
-    private readonly Dictionary<Guid, Rect> _strokeBounds = [];
 
     private Annotation? _draft;
     private Point _dragOrigin;
@@ -33,6 +32,40 @@ public sealed class EditorDocument
     private readonly Dictionary<Annotation, EraserMask> _activeEraserMasks = [];
 
     public IReadOnlyList<Annotation> Annotations => _annotations;
+
+    /// <summary>
+    /// Changes whenever the set of annotations does - added, removed, or replaced wholesale by undo.
+    /// Render-side caches key their prune off this, so they only rebuild when an annotation could
+    /// actually have gone away.
+    ///
+    /// Not a count: undo swaps every annotation for a fresh clone with new identities while leaving
+    /// the count untouched, and a cache keyed on count would keep the dead geometry.
+    /// </summary>
+    public long AnnotationGeneration { get; private set; }
+
+    // The only writers of _annotations. Every shape change goes through one of these, so the
+    // generation cannot be left behind by a caller that adds or removes the list directly.
+
+    private void AddAnnotation(Annotation annotation)
+    {
+        _annotations.Add(annotation);
+        AnnotationGeneration++;
+    }
+
+    private bool RemoveAnnotation(Annotation annotation)
+    {
+        if (!_annotations.Remove(annotation)) return false;
+        AnnotationGeneration++;
+        return true;
+    }
+
+    private void ReplaceAnnotations(IReadOnlyList<Annotation>? annotations)
+    {
+        _annotations.Clear();
+        if (annotations is not null) _annotations.AddRange(annotations);
+        AnnotationGeneration++;
+    }
+
     public EditorTool ActiveTool { get; set; } = EditorTool.Select;
     public string ColorHex { get; set; } = "#FF3B30";
     public double StrokeThickness { get; set; } = 4;
@@ -206,7 +239,7 @@ public sealed class EditorDocument
         if (_draft.IsStrokeTool) _draft.Points.Add(point);
         if (ActiveTool != EditorTool.Eraser)
         {
-            _annotations.Add(_draft);
+            AddAnnotation(_draft);
             _createdUndoOwner = _draft;
         }
         _gesture = GestureKind.Draw;
@@ -258,41 +291,7 @@ public sealed class EditorDocument
     public Annotation? HitTestTopmost(Point point) => _annotations.LastOrDefault(a => a.HitTest(point));
 
     /// <summary>Continues the active gesture.</summary>
-    public void ContinueGesture(Point point) => ContinueGestureCore(point);
-
-    /// <summary>
-    /// Adds coalesced pointer samples as one document update. Freehand geometry keeps the input
-    /// fidelity while the view repaints once for the batch.
-    /// </summary>
-    public void ContinueGesture(IReadOnlyList<Point> points)
-    {
-        if (points.Count == 0) return;
-
-        if (_gesture == GestureKind.Draw && _draft is { Tool: EditorTool.Eraser } eraser)
-        {
-            ContinueEraserBatch(eraser, points);
-            return;
-        }
-        foreach (var point in points) ContinueGestureCore(point);
-        Notify();
-    }
-
-    private void ContinueEraserBatch(Annotation eraser, IReadOnlyList<Point> points)
-    {
-        var path = new List<Point>(points.Count + 1) { eraser.Points[^1] };
-        foreach (var point in points)
-        {
-            eraser.End = point;
-            var count = eraser.Points.Count;
-            AppendStrokePoint(eraser, point);
-            if (eraser.Points.Count > count) path.Add(eraser.Points[^1]);
-        }
-        if (path.Count == 1) path.Add(path[0]);
-        _eraserChanged |= ApplyEraserPath(path, PaintStrokeGeometry.Radius(eraser.StrokeThickness));
-        Notify();
-    }
-
-    private void ContinueGestureCore(Point point)
+    public void ContinueGesture(Point point)
     {
         switch (_gesture)
         {
@@ -300,10 +299,6 @@ public sealed class EditorDocument
                 EnsureGestureUndo();
                 var (moveX, moveY) = ClampDeltaToImage(Selected, point.X - _dragOrigin.X, point.Y - _dragOrigin.Y);
                 Selected.Translate(moveX, moveY);
-                if (_strokeBounds.TryGetValue(Selected.Id, out var cachedBounds))
-                    _strokeBounds[Selected.Id] = new Rect(
-                        cachedBounds.X + moveX, cachedBounds.Y + moveY,
-                        cachedBounds.Width, cachedBounds.Height);
                 _dragOrigin = point;
                 break;
 
@@ -398,7 +393,7 @@ public sealed class EditorDocument
 
         if (isDegenerate)
         {
-            _annotations.Remove(_draft);
+            RemoveAnnotation(_draft);
             if (_createdUndoOwner == _draft) _undo.TryPop(out _);
             _createdUndoOwner = null;
         }
@@ -462,7 +457,6 @@ public sealed class EditorDocument
         annotation.Start = new Point(resized.Left, resized.Top);
         annotation.End = new Point(resized.Right, resized.Bottom);
         annotation.InvalidateGeometry();
-        _strokeBounds.Remove(annotation.Id);
     }
 
     public void SetColor(string colorHex)
@@ -568,7 +562,7 @@ public sealed class EditorDocument
     /// </summary>
     public void CancelAnnotation(Annotation annotation)
     {
-        if (!_annotations.Remove(annotation)) return;
+        if (!RemoveAnnotation(annotation)) return;
         if (_createdUndoOwner == annotation) _undo.TryPop(out _);
         _createdUndoOwner = null;
         if (ReferenceEquals(EditingText, annotation)) EditingText = null;
@@ -605,7 +599,7 @@ public sealed class EditorDocument
     {
         if (Selected is null) return;
         PushUndo();
-        _annotations.Remove(Selected);
+        RemoveAnnotation(Selected);
         Selected = null;
         Notify();
     }
@@ -637,10 +631,9 @@ public sealed class EditorDocument
     /// baked into the file now; tool/colour/formatting defaults survive.</summary>
     public void ResetAfterSave()
     {
-        _annotations.Clear();
+        ReplaceAnnotations(null);
         _undo.Clear();
         _redo.Clear();
-        _strokeBounds.Clear();
         _draft = null;
         _createdUndoOwner = null;
         _gesture = GestureKind.None;
@@ -663,9 +656,12 @@ public sealed class EditorDocument
         var changed = false;
         var hitNow = new HashSet<Annotation>();
 
-        foreach (var stroke in _annotations.Where(a => a.Tool is EditorTool.Pen or EditorTool.Brush))
+        // Indexed, not LINQ: this runs on every eraser sample, and the closures allocate per drag move.
+        foreach (var stroke in _annotations)
         {
-            var bounds = GetStrokeBounds(stroke);
+            if (stroke.Tool is not (EditorTool.Pen or EditorTool.Brush)) continue;
+
+            var bounds = stroke.Bounds;
             if (!PathMayTouchBounds(path, bounds, radius + stroke.StrokeThickness / 2)) continue;
             hitNow.Add(stroke);
             if (!_activeEraserMasks.TryGetValue(stroke, out var mask))
@@ -683,17 +679,16 @@ public sealed class EditorDocument
         }
 
         // A later re-entry starts a new mask rather than drawing an erasing bridge across an
-        // area where this stroke was not under the cursor.
-        foreach (var stroke in _activeEraserMasks.Keys.Where(stroke => !hitNow.Contains(stroke)).ToArray()) _activeEraserMasks.Remove(stroke);
-        return changed;
-    }
+        // area where this stroke was not under the cursor. Collected first: the dictionary cannot be
+        // written while it is being walked. Usually empty, so the list is only built when one drops.
+        List<Annotation>? left = null;
+        foreach (var stroke in _activeEraserMasks.Keys)
+            if (!hitNow.Contains(stroke)) (left ??= []).Add(stroke);
 
-    private Rect GetStrokeBounds(Annotation stroke)
-    {
-        if (_strokeBounds.TryGetValue(stroke.Id, out var bounds)) return bounds;
-        bounds = stroke.Bounds;
-        _strokeBounds[stroke.Id] = bounds;
-        return bounds;
+        if (left is not null)
+            foreach (var stroke in left) _activeEraserMasks.Remove(stroke);
+
+        return changed;
     }
 
     private static bool PathMayTouchBounds(IReadOnlyList<Point> path, Rect bounds, double reach)
@@ -792,11 +787,9 @@ public sealed class EditorDocument
     private void Restore(DocumentSnapshot snapshot)
     {
         var selectedId = Selected?.Id;
-        _annotations.Clear();
-        _annotations.AddRange(snapshot.Annotations);
+        ReplaceAnnotations(snapshot.Annotations);
         CropBounds = snapshot.CropBounds;
         PendingCrop = snapshot.PendingCrop;
-        _strokeBounds.Clear();
 
         // The restored annotations are fresh clones, so any open editor refers to an instance the
         // document no longer holds. Reselecting by id installs the clone and closes the editor.

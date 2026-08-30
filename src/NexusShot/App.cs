@@ -311,6 +311,14 @@ public sealed class App : IDisposable
 
     public void Dispose()
     {
+        // Detached before the window goes: a handler that outlives its subscriber can still be
+        // reached from a late message, and would run against disposed hotkeys or a dead tray icon.
+        _main.CaptureRequested -= Capture;
+        _main.HotkeysChanged -= ApplyHotkeys;
+        _main.RecordingChanged -= SuspendHotkeys;
+        _main.SettingsChanged -= OnSettingsChanged;
+        _main.ThemeChanged -= RethemeEditors;
+
         _pipeline.Dispose();
 
         _watcher?.Dispose();

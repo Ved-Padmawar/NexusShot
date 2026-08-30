@@ -24,9 +24,17 @@ public static partial class SingleInstance
     /// </summary>
     public static bool Claim()
     {
-        try
-        { _mutex = new Mutex(initiallyOwned: true, MutexName, out var created); if (created) return true; }
-        catch (AbandonedMutexException) { _mutex = new Mutex(initiallyOwned: true, MutexName, out _); return true; }
+        // Ownership comes from the wait, not the constructor: an instance that was killed leaves the
+        // mutex abandoned but still named, so construction reports created: false and only the wait
+        // reports the abandonment. That wait is a success - the owner is gone, and this process
+        // inherits the mutex it was handed rather than constructing a second one.
+        _mutex = new Mutex(initiallyOwned: false, MutexName);
+
+        bool owned;
+        try { owned = _mutex.WaitOne(TimeSpan.Zero, exitContext: false); }
+        catch (AbandonedMutexException) { owned = true; }
+
+        if (owned) return true;
 
         _mutex.Dispose();
         _mutex = null;
@@ -39,9 +47,16 @@ public static partial class SingleInstance
         return false;
     }
 
+    /// <summary>Releases ownership before disposing. Disposing alone leaves the mutex abandoned, and
+    /// the next instance would take it through the exception path rather than cleanly.</summary>
     public static void Release()
     {
-        _mutex?.Dispose();
+        if (_mutex is null) return;
+
+        try { _mutex.ReleaseMutex(); }
+        catch (ApplicationException) { } // Not the owner - already released, or claimed on another thread.
+
+        _mutex.Dispose();
         _mutex = null;
     }
 

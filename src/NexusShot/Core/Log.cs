@@ -34,7 +34,7 @@ public static class Log
         {
             lock (Gate)
             {
-                System.IO.Directory.CreateDirectory(Directory);
+                EnsureDirectory();
                 Rotate();
 
                 var line = JsonSerializer.Serialize(new LogEntry
@@ -51,9 +51,23 @@ public static class Log
         }
         catch (Exception failure) when (failure is IOException or UnauthorizedAccessException)
         {
-            // Logging must never be the thing that takes the app down.
+            // Logging must never be the thing that takes the app down. This may be the write that
+            // discovered the directory had gone, so the next one re-checks.
+            _directoryReady = false;
         }
     }
+
+    /// <summary>Creates the log directory once, not on every line. The flag is cleared when a write
+    /// fails, so a directory deleted underneath us is recreated rather than losing every line after
+    /// it.</summary>
+    private static void EnsureDirectory()
+    {
+        if (_directoryReady) return;
+        System.IO.Directory.CreateDirectory(Directory);
+        _directoryReady = true;
+    }
+
+    private static bool _directoryReady;
 
     private static void Rotate()
     {

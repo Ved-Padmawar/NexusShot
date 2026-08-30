@@ -48,6 +48,12 @@ public static partial class WindowInterop
     [LibraryImport("user32.dll", SetLastError = true)]
     public static partial int GetSystemMetrics(int index);
 
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    public static partial nint GetWindowLongPtrW(IntPtr window, int index);
+
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    public static partial nint SetWindowLongPtrW(IntPtr window, int index, nint value);
+
     [LibraryImport("user32.dll", SetLastError = true)]
     public static partial IntPtr SetCapture(IntPtr window);
 

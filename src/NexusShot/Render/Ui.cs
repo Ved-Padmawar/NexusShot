@@ -59,7 +59,7 @@ public sealed class Ui(D2DResources resources)
     /// able to leave one open.</summary>
     public void EndFrame()
     {
-        while (_clips.Count > 0) Pop();
+        while (_clips.Count > 0) PopClip();
         if (_pointerReleasedThisFrame) Active = 0;
     }
 
@@ -68,10 +68,15 @@ public sealed class Ui(D2DResources resources)
     public void FillRect(Rect rect, Rgba color) =>
         _target.FillRectangle(AnnotationRenderer.ToRect(rect), resources.Brush(color));
 
-    /// <summary>A fill for a colour that will not recur: the brush is reused, not cached. For the
-    /// gradient strips whose every pixel column is its own colour.</summary>
+    /// <summary>A fill for a colour that will not recur: the brush is reused, not cached.</summary>
     public void FillRectScratch(Rect rect, Rgba color) =>
         _target.FillRectangle(AnnotationRenderer.ToRect(rect), resources.ScratchBrush(color));
+
+    /// <summary>Fills a rectangle with a two-stop gradient running between two of its points.
+    /// Drawn by the GPU, so a smooth ramp costs one call rather than a fill per step.</summary>
+    public void FillRectGradient(Rect rect, Rgba from, Rgba to, Point start, Point end) =>
+        _target.FillRectangle(
+            AnnotationRenderer.ToRect(rect), resources.GradientBrush(from, to, start, end));
 
     public void FillRounded(Rect rect, float radius, Rgba color) =>
         _target.FillRoundedRectangle(Rounded(rect, radius), resources.Brush(color));
@@ -100,24 +105,17 @@ public sealed class Ui(D2DResources resources)
     /// </summary>
     public void PushClip(Rect bounds)
     {
-        _clips.Push((bounds, Layer: false));
+        _clips.Push(bounds);
         _target.Object.PushAxisAlignedClip(
             AnnotationRenderer.ToRect(bounds), D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_ALIASED);
     }
 
-    public void PopClip() => Pop();
-
-    /// <summary>Clips to a rounded rectangle, which an axis-aligned clip cannot express. Costs a
-    /// layer, so it is for the odd shaped element rather than for general use.</summary>
-    /// <summary>Pops whatever is on top, with the call that matches how it was pushed. A layer popped
-    /// as an axis-aligned clip is what faults the device.</summary>
-    private void Pop()
+    public void PopClip()
     {
         if (_clips.Count == 0) return;
 
-        var (_, layer) = _clips.Pop();
-        if (layer) _target.Object.PopLayer();
-        else _target.Object.PopAxisAlignedClip();
+        _clips.Pop();
+        _target.Object.PopAxisAlignedClip();
     }
 
     /// <summary>Fills the part of a rounded rectangle that falls inside <paramref name="polygon"/>.
@@ -127,7 +125,7 @@ public sealed class Ui(D2DResources resources)
     public void FillRoundedRegion(Rect bounds, float radius, IReadOnlyList<Point> polygon, Rgba color)
     {
         using var rounded = resources.Factory.CreateRoundedRectangleGeometry(Rounded(bounds, radius));
-        using var shape = Path(polygon, closed: true);
+        using var shape = resources.CreatePath(polygon, closed: true);
 
         var region = resources.CreatePathGeometry();
         using (var sink = region.Open())
@@ -144,36 +142,35 @@ public sealed class Ui(D2DResources resources)
     /// <summary>An open path with round caps and joins.</summary>
     public void Polyline(IReadOnlyList<Point> points, Rgba color, float thickness)
     {
-        using var geometry = Path(points, closed: false);
+        using var geometry = resources.CreatePath(points, closed: false);
         _target.Object.DrawGeometry(
             geometry.Object, resources.Brush(color).Object, thickness, resources.RoundStroke.Object);
     }
 
-    private IComObject<ID2D1PathGeometry> Path(IReadOnlyList<Point> points, bool closed)
-    {
-        var geometry = resources.CreatePathGeometry();
-        using var sink = geometry.Open();
-
-        sink.Object.BeginFigure(
-            AnnotationRenderer.ToPoint(points[0]),
-            closed ? D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_FILLED
-                   : D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_HOLLOW);
-
-        for (var i = 1; i < points.Count; i++) sink.Object.AddLine(AnnotationRenderer.ToPoint(points[i]));
-
-        sink.Object.EndFigure(closed ? D2D1_FIGURE_END.D2D1_FIGURE_END_CLOSED
-                                     : D2D1_FIGURE_END.D2D1_FIGURE_END_OPEN);
-        sink.Object.Close();
-
-        return geometry;
-    }
-
-    /// <summary>The open clips, and whether each was pushed as a layer or an axis-aligned clip.</summary>
-    private readonly Stack<(Rect Bounds, bool Layer)> _clips = new();
+    /// <summary>The open clips. Every clip is axis-aligned, so they all pop the same way.</summary>
+    private readonly Stack<Rect> _clips = new();
 
     /// <summary>True when the pointer is inside every active clip - and so can actually see and
-    /// reach whatever is being drawn.</summary>
-    private bool PointerVisible => _clips.All(clip => clip.Bounds.Contains(Pointer));
+    /// reach whatever is being drawn. Walked by hand: this runs per widget per frame, and the LINQ
+    /// form allocates an enumerator on each call.</summary>
+    private bool PointerVisible
+    {
+        get
+        {
+            foreach (var clip in _clips) if (!clip.Contains(Pointer)) return false;
+            return true;
+        }
+    }
+
+    /// <summary>A button sized to its content: 14 units of padding either side, plus room for a
+    /// leading glyph. Scaled by <see cref="Scale"/>, which each window sets for its own frame - the
+    /// editor chrome and the shell have different ones.</summary>
+    public double ButtonWidth(string label, double font, double glyph = 0)
+    {
+        var content = MeasureText(label, font, bold: true);
+        if (glyph > 0) content += glyph + glyph * 0.55;
+        return Math.Round(content + 28 * Scale);
+    }
 
     /// <summary>Text in a box, with alignment. Returns nothing: chrome text is never hit-tested.</summary>
     public void Text(

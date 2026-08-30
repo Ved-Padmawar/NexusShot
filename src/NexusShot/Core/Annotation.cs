@@ -46,7 +46,13 @@ public sealed class Annotation
     public void InvalidateGeometry() => GeometryVersion = NextGeometryVersion();
 
     private static long _geometryVersions;
+
+    /// <summary>Counts from 1, so a zero cache stamp can never match a real version.</summary>
     private static long NextGeometryVersion() => Interlocked.Increment(ref _geometryVersions);
+
+    /// <summary>Memoised freehand <see cref="Bounds"/>, valid while the stamp matches.</summary>
+    private Rect _bounds;
+    private long _boundsStamp;
 
     /// <summary>True for tools painted as a stroke whose pixels get an effect, not a shape.</summary>
     public bool IsBrushEffect => Tool is EditorTool.Blur or EditorTool.Pixelate;
@@ -65,7 +71,20 @@ public sealed class Annotation
     /// <summary>Step number rendered by <see cref="EditorTool.Counter"/>.</summary>
     public int CounterValue { get; set; }
 
-    public string ColorHex { get; set; } = "#FF3B30";
+    /// <summary>The annotation's colour. Parsed here rather than at paint time: the renderer draws
+    /// every frame, and the string only changes when the user picks a colour.</summary>
+    public string ColorHex
+    {
+        get;
+        set
+        {
+            field = value;
+            Color = Palette.Parse(value);
+        }
+    } = "#FF3B30";
+
+    /// <summary>Set only by <see cref="ColorHex"/>, so the two cannot drift apart.</summary>
+    public Rgba Color { get; private set; } = Palette.Parse("#FF3B30");
 
     /// <summary>Stroke width in image pixels. Also drives <see cref="BrushRadius"/>, so a change
     /// invalidates any geometry cached from it.</summary>
@@ -96,6 +115,11 @@ public sealed class Annotation
         {
             if ((Tool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser || IsBrushEffect) && Points.Count > 0)
             {
+                // Only the freehand case is O(points), and the eraser asks for it per stroke per
+                // sample. Stamped with the version the GPU masks use, so an appended point, a
+                // thickness change and a translate all drop it.
+                if (_boundsStamp == GeometryVersion) return _bounds;
+
                 double minX = Points[0].X, maxX = minX, minY = Points[0].Y, maxY = minY;
                 foreach (var p in Points)
                 {
@@ -106,11 +130,16 @@ public sealed class Annotation
                 }
 
                 var box = new Rect(minX, minY, maxX - minX, maxY - minY);
-                if (!IsBrushEffect) return box;
+                if (IsBrushEffect)
+                {
+                    // A brush stroke's footprint extends half a brush beyond its centreline.
+                    var radius = BrushRadius;
+                    box = new Rect(box.X - radius, box.Y - radius, box.Width + radius * 2, box.Height + radius * 2);
+                }
 
-                // A brush stroke's footprint extends half a brush beyond its centreline.
-                var radius = BrushRadius;
-                return new Rect(box.X - radius, box.Y - radius, box.Width + radius * 2, box.Height + radius * 2);
+                _bounds = box;
+                _boundsStamp = GeometryVersion;
+                return box;
             }
 
             if (Tool == EditorTool.Counter)

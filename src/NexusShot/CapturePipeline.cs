@@ -55,7 +55,12 @@ public sealed class CapturePipeline : IDisposable
                     if (pixels is not null) ClipboardImage.Copy(pixels, path);
                     else ClipboardImage.Copy(path);
                 }
-                catch { }
+                catch (Exception exception)
+                {
+                    // The clipboard is owned by whichever process grabbed it last, so a copy can lose
+                    // a race with no fault of ours. The capture is already on disk either way.
+                    Log.Error("clipboard.copy", exception, path);
+                }
             });
         }
 

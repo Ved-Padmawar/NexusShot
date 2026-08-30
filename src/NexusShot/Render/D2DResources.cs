@@ -59,6 +59,39 @@ public sealed class D2DResources : IDisposable
 
     private IComObject<ID2D1SolidColorBrush>? _scratchBrush;
 
+    /// <summary>
+    /// A two-stop linear gradient brush, recoloured and re-aimed in place. One brush serves every
+    /// gradient in the frame, so the colour picker's field costs two draws rather than a fill per
+    /// pixel column.
+    ///
+    /// The stop collection is immutable once created, so a colour change rebuilds the brush; the
+    /// endpoints are brush properties and are simply set. Valid only for the draw it is fetched for.
+    /// </summary>
+    public IComObject<ID2D1LinearGradientBrush> GradientBrush(Rgba from, Rgba to, Point start, Point end)
+    {
+        if (_gradientBrush is null || _gradientStops != (from, to))
+        {
+            _gradientBrush?.Dispose();
+
+            using var stops = _target.CreateGradientStopCollection(
+            [
+                new D2D1_GRADIENT_STOP { position = 0, color = ToD3D(from) },
+                new D2D1_GRADIENT_STOP { position = 1, color = ToD3D(to) },
+            ]);
+
+            _gradientBrush = _target.CreateLinearGradientBrush(
+                new D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES(), stops);
+            _gradientStops = (from, to);
+        }
+
+        _gradientBrush.Object.SetStartPoint(AnnotationRenderer.ToPoint(start));
+        _gradientBrush.Object.SetEndPoint(AnnotationRenderer.ToPoint(end));
+        return _gradientBrush;
+    }
+
+    private IComObject<ID2D1LinearGradientBrush>? _gradientBrush;
+    private (Rgba From, Rgba To)? _gradientStops;
+
     /// <summary>Round caps and joins: what a paint stroke and every grip is drawn with.</summary>
     public IComObject<ID2D1StrokeStyle> RoundStroke => _roundStroke ??= CreateStroke(new D2D1_STROKE_STYLE_PROPERTIES
     {
@@ -146,6 +179,35 @@ public sealed class D2DResources : IDisposable
     /// through here, so it cannot accidentally use a foreign factory.</summary>
     public IComObject<ID2D1PathGeometry> CreatePathGeometry() => Factory.CreatePathGeometry();
 
+    /// <summary>
+    /// A polyline as a path geometry. <paramref name="closed"/> both closes the figure and marks it
+    /// filled, which is the same distinction either way: an open figure is a line to stroke, a
+    /// closed one is a region to fill.
+    ///
+    /// Geometries are cheap to create and are freed by the caller; the expensive resources (brushes,
+    /// stroke styles) are the cached ones. They come from the shared factory rather than a render
+    /// target, so one instance serves every window and the exporter.
+    /// </summary>
+    public IComObject<ID2D1PathGeometry> CreatePath(IReadOnlyList<Point> points, bool closed)
+    {
+        var geometry = CreatePathGeometry();
+        using (var sink = geometry.Open())
+        {
+            sink.Object.BeginFigure(
+                AnnotationRenderer.ToPoint(points[0]),
+                closed ? D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_FILLED
+                       : D2D1_FIGURE_BEGIN.D2D1_FIGURE_BEGIN_HOLLOW);
+
+            for (var i = 1; i < points.Count; i++)
+                sink.Object.AddLine(AnnotationRenderer.ToPoint(points[i]));
+
+            sink.Object.EndFigure(closed ? D2D1_FIGURE_END.D2D1_FIGURE_END_CLOSED
+                                         : D2D1_FIGURE_END.D2D1_FIGURE_END_OPEN);
+            sink.Object.Close();
+        }
+        return geometry;
+    }
+
     public static D3DCOLORVALUE ToD3D(Rgba color) =>
         new(color.A / 255f, color.R / 255f, color.G / 255f, color.B / 255f);
 
@@ -158,6 +220,9 @@ public sealed class D2DResources : IDisposable
         _measurements.Clear();
         _scratchBrush?.Dispose();
         _scratchBrush = null;
+        _gradientBrush?.Dispose();
+        _gradientBrush = null;
+        _gradientStops = null;
         _roundStroke?.Dispose();
         _roundStroke = null;
         _dwrite?.Dispose();
