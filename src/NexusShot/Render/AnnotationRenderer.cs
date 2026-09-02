@@ -223,13 +223,13 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     {
         if (points.Count == 0) return null;
         if (points.Count == 1 || IsDab(points))
-            return CirclePath(points[0], PaintStrokeGeometry.Radius(thickness));
+            return CirclePath(resources, points[0], PaintStrokeGeometry.Radius(thickness));
         return WidenedPath(points, thickness);
     }
 
     /// <summary>A circle as a path geometry, so it can join the Combine chain like a widened
     /// stroke.</summary>
-    private IComObject<ID2D1PathGeometry> CirclePath(Point center, double radius)
+    internal static IComObject<ID2D1PathGeometry> CirclePath(D2DResources resources, Point center, double radius)
     {
         var geometry = resources.CreatePathGeometry();
         using (var sink = geometry.Open())

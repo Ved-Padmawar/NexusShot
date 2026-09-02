@@ -21,6 +21,7 @@ public sealed class CapturePipeline : IDisposable
     /// <summary>Editors, keyed by the file they are editing, so a second Edit on the same capture
     /// raises the window that is already open rather than opening another.</summary>
     private readonly Dictionary<string, EditorWindow> _editors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<EditorWindow> _openEditors = [];
 
     /// <summary>The quick-access cards, newest first. They stack upward from the bottom-left.</summary>
     private readonly List<FloatingPreview> _previews = [];
@@ -40,6 +41,8 @@ public sealed class CapturePipeline : IDisposable
     /// <paramref name="temporaryPath"/> is consumed: it is moved, or adopted as the record's own
     /// path when auto-save is off. <paramref name="pixels"/> is the capture's bitmap when the caller
     /// still has it, so the clipboard copy does not decode the PNG that was just written.</summary>
+    /// <summary>Takes ownership of <paramref name="pixels"/>: it is freed once the clipboard copy
+    /// has finished with it, or immediately when there is no copy to make.</summary>
     public void Land(string temporaryPath, DecodedImage? pixels = null)
     {
         var item = Store(temporaryPath);
@@ -61,8 +64,10 @@ public sealed class CapturePipeline : IDisposable
                     // a race with no fault of ours. The capture is already on disk either way.
                     Log.Error("clipboard.copy", exception, path);
                 }
+                finally { pixels?.Dispose(); }
             });
         }
+        else pixels?.Dispose();
 
         _main.AddCapture(item);
         ShowPreview(item);
@@ -178,15 +183,19 @@ public sealed class CapturePipeline : IDisposable
         }
 
         var editor = new EditorWindow(item.FilePath, _settings.Theme);
-        _editors[item.FilePath] = editor;
+        _openEditors.Add(editor);
+        var editorPath = item.FilePath;
+        _editors[editorPath] = editor;
 
         editor.Closed += () =>
         {
+            _openEditors.Remove(editor);
             // The editor releases its own device resources on destroy; this just drops our handle.
-            _editors.Remove(item.FilePath);
+            if (_editors.TryGetValue(editorPath, out var owner) && ReferenceEquals(owner, editor))
+                _editors.Remove(editorPath);
 
             // The capture may have just been re-saved, so its cached bitmap is the old pixels.
-            _main.DropCache(item.FilePath);
+            _main.DropCache(editorPath);
             _main.Invalidate();
         };
 
@@ -219,14 +228,23 @@ public sealed class CapturePipeline : IDisposable
         // Save As writes a new file; it belongs in the history, and gets a card of its own.
         editor.SavedAs += path =>
         {
+            if (_editors.TryGetValue(editorPath, out var owner) && ReferenceEquals(owner, editor))
+                _editors.Remove(editorPath);
+            editorPath = path;
+            _editors[path] = editor;
+            _main.DropCache(path);
+            var (width, height) = ImageSurface.ReadSize(path);
             var existing = _history.FirstOrDefault(entry => string.Equals(entry.FilePath, path, StringComparison.OrdinalIgnoreCase));
             if (existing is not null)
             {
+                existing.Width = width;
+                existing.Height = height;
+                _storage.SaveHistory(_history);
+                _main.Invalidate();
                 RefreshPreview(existing);
                 return;
             }
 
-            var (width, height) = ImageSurface.ReadSize(path);
             var item = new ScreenshotHistoryItem
             {
                 FilePath = path,
@@ -249,15 +267,17 @@ public sealed class CapturePipeline : IDisposable
     /// <summary>Open editors follow the shell's theme rather than the one they were opened with.</summary>
     public void RethemeEditors()
     {
-        foreach (var editor in _editors.Values) editor.SetTheme(_settings.Theme);
+        foreach (var editor in _openEditors) editor.SetTheme(_settings.Theme);
     }
 
     public void Dispose()
     {
-        foreach (var editor in _editors.Values) editor.Dispose();
+        _main.EditRequested -= Edit;
+        foreach (var editor in _openEditors.ToArray()) editor.Dispose();
+        _openEditors.Clear();
         _editors.Clear();
 
-        foreach (var preview in _previews) preview.Dispose();
+        foreach (var preview in _previews.ToArray()) preview.Dispose();
         _previews.Clear();
     }
 }

@@ -48,9 +48,9 @@ internal sealed class TextBoxController(EditorDocument document)
         document.EndTextEdit();
 
         var annotation = editor.Annotation;
-        if (string.IsNullOrWhiteSpace(editor.Text))
+        if (string.IsNullOrWhiteSpace(editor.Text) && !commit)
         {
-            if (!commit) document.CancelAnnotation(annotation);
+            document.CancelAnnotation(annotation);
             return;
         }
         document.SetTextContent(annotation, editor.Text, annotation.Bounds);
@@ -82,9 +82,9 @@ internal sealed class TextBoxController(EditorDocument document)
     public bool HandleChar(char character)
     {
         if (Editor is not { } editor) return false;
-        if (char.IsControl(character) && character != '\r') return false;
+        if (char.IsControl(character)) return false;
 
-        editor.Insert(character == '\r' ? "\n" : character.ToString());
+        editor.Insert(character.ToString());
         return true;
     }
 

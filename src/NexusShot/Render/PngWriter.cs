@@ -7,13 +7,19 @@ namespace NexusShot.Render;
 public static class PngWriter
 {
     /// <summary>Writes premultiplied BGRA pixels, top-down, as a PNG.</summary>
-    public static void Write(string path, byte[] premultipliedBgra, int width, int height)
+    public static void Write(string path, DecodedImage image) =>
+        Write(path, image.Pointer, image.Width, image.Height, image.Stride);
+
+    /// <summary>Writes from a raw buffer, for a caller that already holds one - the exporter reads
+    /// back from a mapped GPU bitmap, whose rows the driver may pad beyond width * 4.</summary>
+    public static void Write(string path, IntPtr premultipliedBgra, int width, int height, int stride)
     {
         using var bitmap = WicImagingFactory.CreateBitmapFromMemory(
             (uint)width,
             (uint)height,
             Constants.GUID_WICPixelFormat32bppPBGRA,
-            (uint)(width * 4),
+            (uint)stride,
+            (uint)(stride * height),
             premultipliedBgra);
 
         using var file = File.Create(path);

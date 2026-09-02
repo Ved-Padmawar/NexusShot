@@ -15,16 +15,16 @@ public sealed class EditorChrome(Ui ui)
     /// <summary>The display scale. The render target is pinned at 96 DPI so a unit is a physical
     /// pixel; the chrome scales itself, which is what keeps "100%" meaning one image pixel to one
     /// physical pixel rather than one DIP.</summary>
-    public static double Scale { get; set; } = 1;
+    public double Scale { get; set; } = 1;
 
     /// <summary>The strip the window's own caption buttons occupy, above the toolbar.</summary>
-    public static double CaptionHeight { get; set; }
+    public double CaptionHeight { get; set; }
 
-    public static double ToolbarHeight => 46 * Scale;
-    public static double ChromeTop => CaptionHeight + ToolbarHeight;
-    public static double FooterHeight => 40 * Scale;
+    public double ToolbarHeight => 46 * Scale;
+    public double ChromeTop => CaptionHeight + ToolbarHeight;
+    public double FooterHeight => 40 * Scale;
 
-    private static double TileSize => 32 * Scale;
+    private double TileSize => 32 * Scale;
 
     /// <summary>Tools, in toolbar order, with a null marking a group separator.</summary>
     private static readonly EditorTool?[] Groups =
@@ -51,7 +51,7 @@ public sealed class EditorChrome(Ui ui)
     public bool CopyPressed { get; private set; }
     public bool? FitPicked { get; private set; }
 
-    private static double S(double units) => units * Scale;
+    private double S(double units) => units * Scale;
 
     private readonly ColorPicker _picker = new();
     private Rect _pickerAnchor;
@@ -249,6 +249,7 @@ public sealed class EditorChrome(Ui ui)
 
         if (ui.Slider(9001, new Rect(x, y, slider, tile), isText ? 8 : 1, maximum, ref thickness))
             document.SetStrokeThickness(thickness, isAdjusting: true);
+        if (!ui.IsActive(9001)) document.EndThicknessAdjustment();
         x += slider + S(6);
 
         ui.Text(((int)Math.Round(thickness)).ToString(), new Rect(x, y, S(24), tile),

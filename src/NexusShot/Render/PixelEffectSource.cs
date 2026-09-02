@@ -140,6 +140,14 @@ public sealed class PixelEffectSource(ImageSurface image, D2DResources resources
             _maskCache.Remove(annotation.Id);
         }
 
+        if (points.Count == 0) return null;
+        if (points.All(point => point == points[0]))
+        {
+            var circle = AnnotationRenderer.CirclePath(resources, points[0], annotation.BrushRadius);
+            _maskCache[annotation.Id] = (stamp, circle);
+            return circle;
+        }
+
         using var line = resources.CreatePathGeometry();
         using (var sink = line.Open())
         {

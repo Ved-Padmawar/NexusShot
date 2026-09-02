@@ -16,6 +16,13 @@ namespace NexusShot.Views;
 /// </summary>
 public sealed partial class RegionOverlay : D2DRenderWindow
 {
+    protected override void CreateRenderTarget()
+    {
+        RenderTarget?.Dispose();
+        RenderTarget = null;
+        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions);
+    }
+    protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
     private const uint WS_POPUP = 0x80000000;
     private const uint WS_EX_TOPMOST = 0x00000008;
     private const uint WS_EX_TOOLWINDOW = 0x00000080;
@@ -97,48 +104,19 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
             // Cropped from the snapshot already in memory: no decode, and the only PNG encode in
             // the whole pick is this one, of the selected region rather than the whole desktop.
-            var cropped = CropPixels(
-                snapshot, region.X - desktop.X, region.Y - desktop.Y, region.Width, region.Height);
+            using var cropped = snapshot.Crop(
+                region.X - desktop.X, region.Y - desktop.Y, region.Width, region.Height);
 
             var path = Path.Combine(Path.GetTempPath(), $"NexusShot_{Guid.NewGuid():N}.png");
-            PngWriter.Write(path, cropped.Pixels, cropped.Width, cropped.Height);
+            PngWriter.Write(path, cropped);
             return path;
         }
         finally
         {
+            // The overlay only reads the snapshot; this call owns it, and it is the whole desktop.
+            snapshot.Dispose();
             _isPicking = false;
         }
-    }
-
-    /// <summary>
-    /// Copies one rectangle out of a decoded image, clamped to its bounds.
-    ///
-    /// The origin is pinned inside the image before the size is clamped, so a selection rounded a
-    /// pixel past the desktop edge narrows to the last row/column rather than producing an empty or
-    /// inverted rect.
-    /// </summary>
-    private static DecodedImage CropPixels(DecodedImage source, int x, int y, int width, int height)
-    {
-        var originX = Math.Clamp(x, 0, Math.Max(0, source.Width - 1));
-        var originY = Math.Clamp(y, 0, Math.Max(0, source.Height - 1));
-        var cropWidth = Math.Clamp(width, 1, Math.Max(1, source.Width - originX));
-        var cropHeight = Math.Clamp(height, 1, Math.Max(1, source.Height - originY));
-
-        var sourceStride = source.Width * 4;
-        var stride = cropWidth * 4;
-        var pixels = new byte[stride * cropHeight];
-
-        for (var row = 0; row < cropHeight; row++)
-        {
-            Buffer.BlockCopy(
-                source.Pixels,
-                (originY + row) * sourceStride + originX * 4,
-                pixels,
-                row * stride,
-                stride);
-        }
-
-        return new DecodedImage(pixels, cropWidth, cropHeight);
     }
 
     protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)

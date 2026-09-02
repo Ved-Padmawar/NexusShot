@@ -155,15 +155,23 @@ public sealed class App : IDisposable
                 _ => null,
             };
 
-            var path = pixels is not null ? WriteCapture(pixels)
-                : mode == CaptureMode.Region ? CaptureRegion()
-                : null;
-            if (path is null) return;
+            string? path;
+            try
+            {
+                path = pixels is not null ? WriteCapture(pixels)
+                    : mode == CaptureMode.Region ? CaptureRegion()
+                    : null;
+            }
+            catch { pixels?.Dispose(); throw; }
+
+            // Land takes the pixels; nothing before it has an owner to hand them to.
+            if (path is null) { pixels?.Dispose(); return; }
 
             _pipeline.Land(path, pixels);
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException
-            or ArgumentOutOfRangeException)
+            or ArgumentOutOfRangeException or UnauthorizedAccessException
+            or System.Runtime.InteropServices.ExternalException)
         {
             // A failed capture must not take the tray and hotkeys with it.
             Log.Error("capture.failed", exception, mode.ToString());
@@ -176,7 +184,7 @@ public sealed class App : IDisposable
     private static string WriteCapture(DecodedImage image)
     {
         var path = Path.Combine(Path.GetTempPath(), $"NexusShot_{Guid.NewGuid():N}.png");
-        PngWriter.Write(path, image.Pixels, image.Width, image.Height);
+        PngWriter.Write(path, image);
         return path;
     }
 
@@ -215,7 +223,7 @@ public sealed class App : IDisposable
         {
             _watcher = new FolderWatcher(_settings.ScreenshotFolder, SyncHistory);
         }
-        catch (Exception exception) when (exception is IOException or ArgumentException)
+        catch (Exception exception) when (exception is IOException or ArgumentException or UnauthorizedAccessException)
         {
             Log.Error("watcher.failed", exception, _settings.ScreenshotFolder);
             _watcher = null;
@@ -266,7 +274,8 @@ public sealed class App : IDisposable
                                 Height = height,
                             });
                         }
-                        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException) { }
+                        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException
+                            or System.Runtime.InteropServices.ExternalException) { }
                     }
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)

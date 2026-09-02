@@ -80,6 +80,7 @@ Save, Save as… and Copy live in the editor's footer.
 ```powershell
 .\build.ps1                      # debug build, then run
 .\build.ps1 test                 # headless render + drag-timing check
+.\build.ps1 release              # build the native executable
 ```
 
 The app starts in the notification area. The shell's close button hides it; use **Quit** on the
@@ -330,9 +331,15 @@ its own caption icon with `WS_EX_DLGMODALFRAME`, because the sidebar already car
   capture scrolled well past is evicted and re-decodes on demand, so memory stays flat as the
   history grows rather than climbing with it. The cap sits far above a screenful, so scrolling never
   evicts a row it is about to draw again.
-- The selected detail image decodes at source resolution for crisp high-DPI display. Exactly one is
-  held — selecting another capture, or closing the selection, releases it — so full-size bitmaps
-  never accumulate.
+- The selected detail image decodes for the preview's physical display size, including high DPI.
+  Growing the window requests a larger decode. Editors and exports still read the original file.
+  Hiding the shell releases its render target, caches, and pending pixels; a tray-only launch waits
+  until the shell is shown before creating graphics resources. See [the review](REVIEW.md) for
+  measured memory, correctness checks, and remaining validation limits.
+- A compatibility workaround uses software Direct2D and WARP for Intel adapter `8086:7D51` with
+  UMD driver `32.0.101.6104`, where repeated hardware bitmap/effect creation retained handles.
+  It uses the same renderer and effects. Other adapter/driver combinations use the default backend;
+  a driver update changes that selection. See the review for measurements and limitations.
 - A `FileSystemWatcher` on the save folder keeps the sidebar synchronized with File Explorer:
   external deletes remove rows, new PNGs appear automatically. The watcher fires on a thread-pool
   thread, so its work is posted to the UI thread rather than mutating the history under a frame that

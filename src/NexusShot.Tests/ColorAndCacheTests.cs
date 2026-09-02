@@ -62,19 +62,20 @@ public class ColorAndCacheTests
     public void StrokeBoundsFollowPointsAppendedAfterTheFirstRead()
     {
         var document = NewDocument();
-        var stroke = Stroke(document, EditorTool.Pen, [new Point(100, 100), new Point(140, 130)]);
+        document.ActiveTool = EditorTool.Pen;
+        document.BeginGesture(new Point(100, 100));
+        document.ContinueGesture(new Point(140, 130));
+        var stroke = Assert.Single(document.Annotations);
 
         // Reads the memoised value, then grows the stroke: a cache that ignored the geometry stamp
         // would keep reporting the old box.
         var before = stroke.Bounds;
         Assert.Equal(40, before.Width, 3);
 
-        document.SelectAnnotation(stroke);
-        stroke.Translate(25, 15);
-
-        Assert.Equal(before.X + 25, stroke.Bounds.X, 3);
-        Assert.Equal(before.Y + 15, stroke.Bounds.Y, 3);
-        Assert.Equal(before.Width, stroke.Bounds.Width, 3);
+        document.ContinueGesture(new Point(220, 190));
+        Assert.Equal(new Rect(100, 100, 120, 90), stroke.Bounds);
+        document.EndGesture(new Point(240, 200));
+        Assert.Equal(new Rect(100, 100, 140, 100), stroke.Bounds);
     }
 
     [Fact]

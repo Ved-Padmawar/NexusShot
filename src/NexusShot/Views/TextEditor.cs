@@ -1,3 +1,4 @@
+using System.Globalization;
 using NexusShot.Core;
 
 namespace NexusShot.Views;
@@ -95,6 +96,12 @@ internal sealed class TextEditor
     public void MoveTo(int index, bool extend = false)
     {
         Caret = Math.Clamp(index, 0, Text.Length);
+        if (Caret < Text.Length)
+        {
+            var boundaries = StringInfo.ParseCombiningCharacters(Text);
+            var position = Array.BinarySearch(boundaries, Caret);
+            if (position < 0) Caret = boundaries[~position - 1];
+        }
         if (!extend) Anchor = Caret;
         BreakRun();
         Wake();
@@ -127,8 +134,9 @@ internal sealed class TextEditor
         PushUndo(EditKind.Delete);
         if (DeleteSelectionCore()) { Wake(); return; }
 
-        Text = Text.Remove(Caret - 1, 1);
-        Caret--;
+        var previous = TextBoundary(-1);
+        Text = Text.Remove(previous, Caret - previous);
+        Caret = previous;
         Anchor = Caret;
         Wake();
     }
@@ -140,7 +148,7 @@ internal sealed class TextEditor
         PushUndo(EditKind.Delete);
         if (DeleteSelectionCore()) { Wake(); return; }
 
-        Text = Text.Remove(Caret, 1);
+        Text = Text.Remove(Caret, TextBoundary(1) - Caret);
         Anchor = Caret;
         Wake();
     }
@@ -167,7 +175,16 @@ internal sealed class TextEditor
             return;
         }
 
-        MoveTo(byWord ? WordBoundary(direction) : Caret + direction, extend);
+        MoveTo(byWord ? WordBoundary(direction) : TextBoundary(direction), extend);
+    }
+
+    private int TextBoundary(int direction)
+    {
+        var boundaries = StringInfo.ParseCombiningCharacters(Text);
+        var position = Array.BinarySearch(boundaries, Caret);
+        var insertion = position < 0 ? ~position : position;
+        var target = direction < 0 ? insertion - 1 : position < 0 ? insertion : position + 1;
+        return target < 0 ? 0 : target >= boundaries.Length ? Text.Length : boundaries[target];
     }
 
     private int WordBoundary(int direction)
@@ -191,7 +208,7 @@ internal sealed class TextEditor
     {
         var line = end
             ? Text.IndexOf('\n', Caret)
-            : Text.LastIndexOf('\n', Math.Max(0, Caret - 1));
+            : Caret == 0 ? -1 : Text.LastIndexOf('\n', Caret - 1);
 
         MoveTo(end
             ? line < 0 ? Text.Length : line

@@ -131,7 +131,9 @@ public class TextAndFormattingTests
         for (var i = 5; i < 20; i++)
             document.SetStrokeThickness(i, isAdjusting: true);
 
-        // Fifteen ticks added no history: one undo still reaches past them to the shape's creation.
+        // The drag is one edit: undo should restore thickness, not delete the shape.
+        document.Undo();
+        Assert.Equal(4, Assert.Single(document.Annotations).StrokeThickness);
         document.Undo();
         Assert.Empty(document.Annotations);
         Assert.False(document.CanUndo);

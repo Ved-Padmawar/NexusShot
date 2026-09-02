@@ -29,6 +29,10 @@ public sealed class EditorDocument
     /// <summary>The annotation whose creation pushed the newest undo entry, while that entry is
     /// still the newest. Lets a cancelled creation retract its own entry and no other.</summary>
     private Annotation? _createdUndoOwner;
+    // A provisional draw may be discarded. Keep stack references (not another deep copy of the
+    // document) so cancellation restores redo and the oldest entry at the history limit too.
+    private (DocumentSnapshot[] Undo, DocumentSnapshot[] Redo)? _creationHistory;
+    private bool _adjustingThickness;
     private readonly Dictionary<Annotation, EraserMask> _activeEraserMasks = [];
 
     public IReadOnlyList<Annotation> Annotations => _annotations;
@@ -95,6 +99,7 @@ public sealed class EditorDocument
         private set
         {
             if (ReferenceEquals(field, value)) return;
+            EndThicknessAdjustment();
             field = value;
             if (!ReferenceEquals(EditingText, value)) EditingText = null;
         }
@@ -165,8 +170,14 @@ public sealed class EditorDocument
         if (PendingCrop is not { } pending) return;
         var coversEverything = pending.X <= 0.5 && pending.Y <= 0.5
             && pending.Right >= ImageWidth - 0.5 && pending.Bottom >= ImageHeight - 0.5;
-        CropBounds = coversEverything ? null : pending;
         PendingCrop = null;
+        Rect? crop = coversEverything ? null : pending;
+        if (crop != CropBounds)
+        {
+            // Snapshot the previous committed state, without reviving a pending session on undo.
+            PushUndo();
+            CropBounds = crop;
+        }
         Notify();
     }
 
@@ -188,6 +199,7 @@ public sealed class EditorDocument
     /// image pixels — the view scales it so handles stay grabbable when zoomed out.</summary>
     public void BeginGesture(Point point, double handleTolerance = 8)
     {
+        EndThicknessAdjustment();
         _dragOrigin = point;
         _gestureUndoPushed = false;
         _eraserChanged = false;
@@ -222,7 +234,9 @@ public sealed class EditorDocument
         if (GrabExisting(point, handleTolerance)) return;
 
         Selected = null;
+        var history = (_undo.ToArray(), _redo.ToArray());
         PushUndo();
+        _creationHistory = history;
         _draft = new Annotation
         {
             Tool = ActiveTool,
@@ -296,13 +310,17 @@ public sealed class EditorDocument
         switch (_gesture)
         {
             case GestureKind.Move when Selected is not null:
-                EnsureGestureUndo();
                 var (moveX, moveY) = ClampDeltaToImage(Selected, point.X - _dragOrigin.X, point.Y - _dragOrigin.Y);
-                Selected.Translate(moveX, moveY);
                 _dragOrigin = point;
+                if (moveX == 0 && moveY == 0) break;
+                EnsureGestureUndo();
+                Selected.Translate(moveX, moveY);
                 break;
 
             case GestureKind.Resize when Selected is not null:
+                if (Selected.IsLinear
+                    ? point == (_resizeHandle == ResizeHandle.LineStart ? Selected.Start : Selected.End)
+                    : ResizedBounds(point) == Selected.Bounds) break;
                 EnsureGestureUndo();
                 ApplyResize(Selected, point);
                 break;
@@ -348,6 +366,8 @@ public sealed class EditorDocument
     /// <summary>Ends the active gesture, discarding degenerate shapes.</summary>
     public void EndGesture(Point point)
     {
+        // Button-up can carry a newer position than the last mouse-move message.
+        if (_gesture != GestureKind.Draw || _draft?.End != point) ContinueGesture(point);
         if (_gesture is GestureKind.CropMove or GestureKind.CropResize)
         {
             _gesture = GestureKind.None;
@@ -373,7 +393,8 @@ public sealed class EditorDocument
 
         if (_draft.Tool == EditorTool.Eraser)
         {
-            if (!_eraserChanged) _undo.TryPop(out _);
+            if (!_eraserChanged) RestoreCreationHistory();
+            else _creationHistory = null;
             _eraserChanged = false;
             _draft = null;
             Notify();
@@ -394,7 +415,7 @@ public sealed class EditorDocument
         if (isDegenerate)
         {
             RemoveAnnotation(_draft);
-            if (_createdUndoOwner == _draft) _undo.TryPop(out _);
+            if (_createdUndoOwner == _draft) RestoreCreationHistory();
             _createdUndoOwner = null;
         }
         else
@@ -449,15 +470,17 @@ public sealed class EditorDocument
 
         // The origin bounds anchor the sides the handle does not move; crossing an anchored side
         // simply normalises through Start/End ordering.
-        var resized = BoxGeometry.Resize(
-            _resizeOriginBounds,
-            _resizeHandle,
-            point,
-            new Rect(0, 0, ImageWidth, ImageHeight));
+        var resized = ResizedBounds(point);
         annotation.Start = new Point(resized.Left, resized.Top);
         annotation.End = new Point(resized.Right, resized.Bottom);
         annotation.InvalidateGeometry();
     }
+
+    private Rect ResizedBounds(Point point) => BoxGeometry.Resize(
+            _resizeOriginBounds,
+            _resizeHandle,
+            point,
+            new Rect(0, 0, ImageWidth, ImageHeight));
 
     public void SetColor(string colorHex)
     {
@@ -477,6 +500,7 @@ public sealed class EditorDocument
     /// </summary>
     public void SetStrokeThickness(double thickness, bool isAdjusting = false)
     {
+        if (!isAdjusting) EndThicknessAdjustment();
         switch (ActiveTool)
         {
             case EditorTool.Brush:
@@ -492,7 +516,7 @@ public sealed class EditorDocument
 
         StrokeThickness = thickness;
         if (Selected is null || Selected.StrokeThickness == thickness) return;
-        if (!isAdjusting) PushUndo();
+        PrepareThicknessUndo(isAdjusting);
         Selected.StrokeThickness = thickness;
         Notify();
     }
@@ -506,11 +530,20 @@ public sealed class EditorDocument
         var target = Selected is { Tool: EditorTool.Text } selected ? selected : null;
         if (target is null || target.FontSize == size) return;
 
-        if (!isAdjusting) PushUndo();
+        PrepareThicknessUndo(isAdjusting);
         target.FontSize = size;
         NormalizeTextBounds(target);
         Notify();
     }
+
+    private void PrepareThicknessUndo(bool isAdjusting)
+    {
+        if (!_adjustingThickness) PushUndo();
+        _adjustingThickness = isAdjusting;
+    }
+
+    /// <summary>Mouse-up ends one slider edit; the next drag gets its own undo snapshot.</summary>
+    public void EndThicknessAdjustment() => _adjustingThickness = false;
 
     /// <summary>Commits an inline editor's text and final box (clamped to the image) as one undo
     /// step - the single write-back for a text edit.</summary>
@@ -563,7 +596,8 @@ public sealed class EditorDocument
     public void CancelAnnotation(Annotation annotation)
     {
         if (!RemoveAnnotation(annotation)) return;
-        if (_createdUndoOwner == annotation) _undo.TryPop(out _);
+        if (_createdUndoOwner == annotation) RestoreCreationHistory();
+        _creationHistory = null;
         _createdUndoOwner = null;
         if (ReferenceEquals(EditingText, annotation)) EditingText = null;
         if (Selected == annotation) Selected = null;
@@ -637,6 +671,8 @@ public sealed class EditorDocument
         _draft = null;
         _createdUndoOwner = null;
         _gesture = GestureKind.None;
+        _creationHistory = null;
+        EndThicknessAdjustment();
         Selected = null;
         CropBounds = null;
         PendingCrop = null;
@@ -769,6 +805,8 @@ public sealed class EditorDocument
 
     private void PushUndo()
     {
+        _creationHistory = null;
+        EndThicknessAdjustment();
         _createdUndoOwner = null;
         _undo.Push(Snapshot());
         if (_undo.Count > MaxUndo)
@@ -782,10 +820,22 @@ public sealed class EditorDocument
         _redo.Clear();
     }
 
+    private void RestoreCreationHistory()
+    {
+        if (_creationHistory is not { } history) return;
+        _undo.Clear();
+        foreach (var snapshot in history.Undo.Reverse()) _undo.Push(snapshot);
+        _redo.Clear();
+        foreach (var snapshot in history.Redo.Reverse()) _redo.Push(snapshot);
+        _creationHistory = null;
+    }
+
     private DocumentSnapshot Snapshot() => new(_annotations.Select(a => a.Clone()).ToList(), CropBounds, PendingCrop);
 
     private void Restore(DocumentSnapshot snapshot)
     {
+        _creationHistory = null;
+        EndThicknessAdjustment();
         var selectedId = Selected?.Id;
         ReplaceAnnotations(snapshot.Annotations);
         CropBounds = snapshot.CropBounds;

@@ -16,6 +16,18 @@ public abstract class CaptionWindow : D2DRenderWindow
 {
     protected CaptionWindow(string title) : base(title) { }
 
+    protected override void CreateRenderTarget()
+    {
+        RenderTarget?.Dispose();
+        RenderTarget = null;
+        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions);
+    }
+
+    // DirectNAot 1.6.6 loads a fresh owned icon before every class-registration attempt,
+    // even when the class already exists, and never disposes that icon. Windows below
+    // install our process-shared icons explicitly; no additional class icon is needed.
+    protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
+
     /// <summary>The caption's height in physical pixels: how far the client area now reaches up.</summary>
     public double CaptionHeight => 32 * DpiScale;
 

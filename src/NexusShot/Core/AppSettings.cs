@@ -78,9 +78,9 @@ public sealed class Storage
     /// <summary>Locates the settings directory, creating it when possible. A profile that cannot
     /// be written to must not stop the app starting: reads fall back to defaults, and writes
     /// already log and continue.</summary>
-    public Storage()
+    public Storage(string? directory = null)
     {
-        _directory = Path.Combine(
+        _directory = directory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NexusShot");
 
         try
@@ -96,14 +96,31 @@ public sealed class Storage
     public string SettingsPath => Path.Combine(_directory, "settings.json");
     public string HistoryPath => Path.Combine(_directory, "history.json");
 
-    public AppSettings LoadSettings() =>
-        Read(SettingsPath, AppJsonContext.Default.AppSettings) ?? new AppSettings();
+    public AppSettings LoadSettings()
+    {
+        var settings = Read(SettingsPath, AppJsonContext.Default.AppSettings) ?? new AppSettings();
+        // Valid JSON can still contain nulls: nullable annotations do not validate persisted input.
+        var defaults = new AppSettings();
+        settings.CaptureRegionHotkey ??= defaults.CaptureRegionHotkey;
+        settings.CaptureFullScreenHotkey ??= defaults.CaptureFullScreenHotkey;
+        settings.CaptureActiveWindowHotkey ??= defaults.CaptureActiveWindowHotkey;
+        settings.OpenMainWindowHotkey ??= defaults.OpenMainWindowHotkey;
+        if (string.IsNullOrWhiteSpace(settings.ScreenshotFolder)) settings.ScreenshotFolder = defaults.ScreenshotFolder;
+        settings.PreviewDismissSeconds = Math.Clamp(settings.PreviewDismissSeconds, 0, 120);
+        if (!Enum.IsDefined(settings.Theme)) settings.Theme = AppTheme.System;
+        if (!Enum.IsDefined(settings.DefaultCaptureMode)) settings.DefaultCaptureMode = CaptureMode.Region;
+        return settings;
+    }
 
     public void SaveSettings(AppSettings settings) =>
         Write(SettingsPath, settings, AppJsonContext.Default.AppSettings);
 
-    public List<ScreenshotHistoryItem> LoadHistory() =>
-        Read(HistoryPath, AppJsonContext.Default.ListScreenshotHistoryItem) ?? [];
+    public List<ScreenshotHistoryItem> LoadHistory()
+    {
+        var history = Read(HistoryPath, AppJsonContext.Default.ListScreenshotHistoryItem) ?? [];
+        history.RemoveAll(item => item is null || string.IsNullOrWhiteSpace(item.FilePath));
+        return history;
+    }
 
     public void SaveHistory(List<ScreenshotHistoryItem> history) =>
         Write(HistoryPath, history, AppJsonContext.Default.ListScreenshotHistoryItem);
@@ -116,7 +133,7 @@ public sealed class Storage
             using var stream = File.OpenRead(path);
             return JsonSerializer.Deserialize(stream, type);
         }
-        catch (Exception exception) when (exception is IOException or JsonException)
+        catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
         {
             // Defaults beat refusing to start, but the next save would overwrite the file that
             // failed to parse - so it is kept aside first.

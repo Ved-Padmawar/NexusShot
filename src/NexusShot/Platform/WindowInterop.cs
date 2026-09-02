@@ -6,6 +6,10 @@ namespace NexusShot.Platform;
 /// callers cannot drift to different signatures for the same function.</summary>
 public static partial class WindowInterop
 {
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsWindowVisible(IntPtr window);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X, Y; }
 

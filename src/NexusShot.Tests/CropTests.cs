@@ -77,8 +77,7 @@ public class CropTests
         Drag(document, new Point(0, 0), new Point(-500, -500));
 
         var pending = document.PendingCrop!.Value;
-        Assert.True(pending.X >= 0);
-        Assert.True(pending.Y >= 0);
+        Assert.Equal(new Rect(0, 0, ImageWidth, ImageHeight), pending);
     }
 
     [Fact]

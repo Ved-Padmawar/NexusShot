@@ -84,7 +84,8 @@ internal static class RenderTest
         var cropped = Path.Combine(Path.GetDirectoryName(imagePath)!, "render-test-cropped.png");
         Exporter.SavePng(document, imagePath, cropped);
 
-        var (_, croppedWidth, croppedHeight) = ImageSurface.Decode(cropped);
+        using var croppedImage = ImageSurface.Decode(cropped);
+        var (croppedWidth, croppedHeight) = (croppedImage.Width, croppedImage.Height);
         Console.WriteLine($"cropped to {croppedWidth}x{croppedHeight} (expected 400x260)");
 
         if (croppedWidth != 400 || croppedHeight != 260)
@@ -92,6 +93,140 @@ internal static class RenderTest
                 $"Crop was not applied on export: got {croppedWidth}x{croppedHeight}.");
 
         image.Dispose();
+        VerifyTools(imagePath);
+        VerifyRenderSemantics(Path.GetDirectoryName(imagePath)!);
+    }
+
+    private static void VerifyRenderSemantics(string directory)
+    {
+        var source = Path.Combine(directory, "pixel-probe-source.png");
+        var output = Path.Combine(directory, "pixel-probe-result.png");
+        using var canvas = DecodedImage.Allocate(128, 128);
+        canvas.Span.Fill(255);
+        PngWriter.Write(source, canvas);
+
+        foreach (var tool in new[] { EditorTool.Rectangle, EditorTool.Ellipse, EditorTool.Line })
+        {
+            var document = new EditorDocument();
+            document.SetImageSize(128, 128);
+            Draw(document, tool, "#FF0000", 8, (32, 32), (96, 96));
+            Exporter.SavePng(document, source, output);
+            using var probe = ImageSurface.Decode(output);
+            var pixels = probe.Span;
+            CheckPixel(pixels, 4, 4, false); // no effect outside the annotation
+            CheckPixel(pixels, 64, 64, tool == EditorTool.Line); // shapes remain hollow
+            CheckPixel(pixels, 36, 36, tool != EditorTool.Ellipse); // ellipse is not a box
+        }
+
+        var erased = new EditorDocument();
+        erased.SetImageSize(128, 128);
+        Stroke(erased, EditorTool.Pen, "#FF0000", 16, [new(20, 64), new(108, 64)]);
+        Stroke(erased, EditorTool.Eraser, "#000000", 24, [new(64, 64)]);
+        Exporter.SavePng(erased, source, output);
+        using var erasedProbe = ImageSurface.Decode(output);
+        var erasedPixels = erasedProbe.Span;
+        CheckPixel(erasedPixels, 32, 64, true);
+        CheckPixel(erasedPixels, 64, 64, false);
+        CheckPixel(erasedPixels, 96, 64, true);
+
+        // A coordinate-coded image checks crop origin as well as dimensions, without deriving the
+        // expected pixels from the renderer or its geometry helpers.
+        for (var y = 0; y < 128; y++)
+        for (var x = 0; x < 128; x++)
+        {
+            var offset = (y * 128 + x) * 4;
+            canvas.Span[offset] = (byte)x;
+            canvas.Span[offset + 1] = (byte)y;
+            canvas.Span[offset + 2] = 0;
+        }
+        PngWriter.Write(source, canvas);
+        var crop = new EditorDocument();
+        crop.SetImageSize(128, 128);
+        crop.BeginCropSession();
+        crop.BeginGesture(new(128, 128));
+        crop.EndGesture(new(64, 64));
+        crop.BeginGesture(new(32, 32));
+        crop.EndGesture(new(48, 48));
+        crop.CommitCrop();
+        Exporter.SavePng(crop, source, output);
+        using var cropProbe = ImageSurface.Decode(output);
+        var cropped = cropProbe.Span;
+        var (width, height) = (cropProbe.Width, cropProbe.Height);
+        if (width != 64 || height != 64 || cropped[0] != 16 || cropped[1] != 16
+            || cropped[^4] != 79 || cropped[^3] != 79)
+            throw new InvalidOperationException("Crop did not preserve the selected source coordinates.");
+        Console.WriteLine("independent pixel probes: hollow shapes, line, eraser gap, crop origin passed");
+
+        static void CheckPixel(ReadOnlySpan<byte> pixels, int x, int y, bool red)
+        {
+            var offset = (y * 128 + x) * 4;
+            var low = red ? 0 : 255;
+            if (pixels[offset] != low || pixels[offset + 1] != low
+                || pixels[offset + 2] != 255 || pixels[offset + 3] != 255)
+                throw new InvalidOperationException($"Expected {(red ? "red" : "white")} at {x},{y}.");
+        }
+    }
+
+    private static void VerifyTools(string source)
+    {
+        using var originalImage = ImageSurface.Decode(source);
+        var (width, height) = (originalImage.Width, originalImage.Height);
+        var output = Path.Combine(Path.GetDirectoryName(source)!, "tool-check.png");
+        foreach (var tool in Enum.GetValues<EditorTool>())
+        {
+            if (tool is EditorTool.Select or EditorTool.Crop or EditorTool.Eraser) continue;
+            var document = new EditorDocument();
+            document.SetImageSize(width, height);
+            Draw(document, tool, "#FF3B30", 24, (80, 80), (420, 280));
+            if (tool == EditorTool.Text) document.Annotations[0].Text = "Text export verification";
+            Exporter.SavePng(document, source, output);
+            using var drawn = ImageSurface.Decode(output);
+            if (drawn.Width != width || drawn.Height != height || drawn.Span.SequenceEqual(originalImage.Span))
+                throw new InvalidOperationException($"{tool} did not produce visible exported pixels.");
+
+            document.Undo();
+            Exporter.SavePng(document, source, output);
+            using (var undone = ImageSurface.Decode(output))
+            if (!undone.Span.SequenceEqual(originalImage.Span))
+                throw new InvalidOperationException($"Undo did not restore the source for {tool}.");
+            document.Redo();
+            Exporter.SavePng(document, source, output);
+            using (var redone = ImageSurface.Decode(output))
+            if (!redone.Span.SequenceEqual(drawn.Span))
+                throw new InvalidOperationException($"Redo changed the exported pixels for {tool}.");
+            Console.WriteLine($"tool pixels + undo/redo: {tool} passed");
+        }
+
+        foreach (var tool in new[] { EditorTool.Blur, EditorTool.Pixelate })
+        {
+            var document = new EditorDocument();
+            document.SetImageSize(width, height);
+            Stroke(document, tool, "#000000", 24, [new Point(120, 100)]);
+            Exporter.SavePng(document, source, output);
+            using var probe = ImageSurface.Decode(output);
+            var pixels = probe.Span;
+            if (pixels.SequenceEqual(originalImage.Span))
+                throw new InvalidOperationException($"{tool} single-click dab produced no effect.");
+            Console.WriteLine($"single-click effect: {tool} passed");
+        }
+
+        // A destination locked by another process must survive a failed overwrite byte for byte.
+        File.Copy(source, output, true);
+        var before = File.ReadAllBytes(output);
+        var empty = new EditorDocument();
+        empty.SetImageSize(width, height);
+        using (var locked = new FileStream(output, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            try
+            {
+                Exporter.SavePng(empty, source, output);
+                throw new InvalidOperationException("Locked destination unexpectedly overwritten.");
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        }
+        if (!File.ReadAllBytes(output).AsSpan().SequenceEqual(before))
+            throw new InvalidOperationException("Failed save damaged the destination.");
+        Console.WriteLine("locked destination preservation: passed");
     }
 
     /// <summary>Drags the selection fast and renders a full frame per step, timing each one.</summary>

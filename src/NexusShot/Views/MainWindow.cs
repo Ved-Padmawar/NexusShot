@@ -33,9 +33,10 @@ public sealed class MainWindow : CaptionWindow
     /// cap is well above a screenful, so scrolling never evicts a row it is about to draw again.</summary>
     private readonly LruCache<string, ImageSurface> _thumbnails = new(200);
 
-    /// <summary>The full-resolution bitmap for the selected capture, and only that one.</summary>
+    /// <summary>The selected capture, decoded to physical display pixels rather than source size.</summary>
     private ImageSurface? _preview;
     private string? _previewPath;
+    private (int Width, int Height) _previewSize;
 
     private ScreenshotHistoryItem? _selected;
     private Point _pointer;
@@ -92,8 +93,7 @@ public sealed class MainWindow : CaptionWindow
         _settings = settings;
         _history = history;
 
-        // Nothing selected on open: the detail pane is the only thing that decodes at full
-        // resolution, and doing that before the first frame is what makes the window take a beat.
+        // Nothing selected on open: even a scaled PNG decode belongs after the first frame.
     }
 
     protected override void OnCreated(object? sender, EventArgs e)
@@ -152,10 +152,12 @@ public sealed class MainWindow : CaptionWindow
     /// editor saves over a capture: the file has changed, and the cached pixels are the old ones.</summary>
     public void DropCache(string path)
     {
+        _decodes.Invalidate(path);
+        _previewDecodes.Invalidate(path);
         if (_thumbnails.Remove(path, out var thumbnail)) thumbnail?.Dispose();
-        _decoded.TryRemove(path, out _);
+        if (_decoded.TryRemove(path, out var stale)) stale.Dispose();
 
-        if (_pendingPreview?.Path == path) _pendingPreview = null;
+        if (_pendingPreview?.Path == path) DropPendingPreview();
 
         if (_previewPath != path) return;
         _preview?.Dispose();
@@ -164,6 +166,44 @@ public sealed class MainWindow : CaptionWindow
     }
 
     // ============================  RENDER  ============================
+
+    // The tray still needs this HWND, but not a D3D device and swap chain. The base class eagerly
+    // creates them on WM_CREATE; defer that work until the first visible paint instead.
+#pragma warning disable CS8774 // Intentionally lazy; RenderCore establishes the base class's target invariant.
+    protected override void CreateRenderTarget() { }
+#pragma warning restore CS8774
+
+    protected override bool RenderCore()
+    {
+        if (!WindowInterop.IsWindowVisible(Handle)) return true;
+        if (RenderTarget is null) base.CreateRenderTarget();
+        return base.RenderCore();
+    }
+
+    /// <summary>Decides which worker decodes may still be used. See <see cref="DecodeCache"/>.</summary>
+    private readonly DecodeCache _decodes = new();
+    // The same path can have a thumbnail and a detail decode in flight simultaneously.
+    // Their completion/failure state must not release or poison one another's requests.
+    private readonly DecodeCache _previewDecodes = new();
+
+    private void ReleaseVisuals()
+    {
+        _decodes.InvalidateAll();
+        _previewDecodes.InvalidateAll();
+        DropPendingPreview();
+        foreach (var pixels in _decoded.Values) pixels.Dispose();
+        _decoded.Clear();
+        foreach (var thumbnail in _thumbnails.Values) thumbnail.Dispose();
+        _thumbnails.Clear();
+        _preview?.Dispose();
+        _preview = null;
+        _previewPath = null;
+        _resources?.Dispose();
+        _resources = null;
+        _ui = null;
+        RenderTarget?.Dispose();
+        RenderTarget = null;
+    }
 
     protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)
     {
@@ -459,10 +499,10 @@ public sealed class MainWindow : CaptionWindow
         ui.FillRounded(well, (float)S(Metrics.RadiusContainer), theme.SurfaceSunken);
         ui.StrokeRounded(well, (float)S(Metrics.RadiusContainer), theme.StrokeSubtle);
 
-        var bitmap = GetFullBitmap(target, item);
+        var bitmap = GetPreviewBitmap(target, item, well);
         if (bitmap is null)
         {
-            ui.Text("Could not open this capture", well, theme.TextTertiary,
+            ui.Text(_previewLoading ? "Loading capture…" : "Could not open this capture", well, theme.TextTertiary,
                 (float)S(Metrics.FontBody), align: TextAlign.Center);
         }
         else
@@ -1039,13 +1079,17 @@ public sealed class MainWindow : CaptionWindow
         if (_decoded.TryRemove(item.FilePath, out var pixels))
         {
             using var uploadContext = target.AsDeviceContext();
-            if (uploadContext is null) return null;
+            if (uploadContext is null) { pixels.Dispose(); return null; }
 
-            var surface = ImageSurface.Upload(pixels, uploadContext);
+            // The pixels exist only to reach the GPU; the surface is what the cache keeps.
+            using (pixels)
+            {
+                var surface = ImageSurface.Upload(pixels, uploadContext);
 
-            // The evicted surface owns a GPU bitmap: dropping the reference would leak it.
-            if (_thumbnails.Add(item.FilePath, surface, out var evicted)) evicted?.Dispose();
-            return surface;
+                // The evicted surface owns a GPU bitmap: dropping the reference would leak it.
+                if (_thumbnails.Add(item.FilePath, surface, out var evicted)) evicted?.Dispose();
+                return surface;
+            }
         }
 
         StartDecode(item.FilePath);
@@ -1063,25 +1107,24 @@ public sealed class MainWindow : CaptionWindow
 
         var live = _history.Select(item => item.FilePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var path in _decoded.Keys)
-            if (!live.Contains(path)) _decoded.TryRemove(path, out _);
+            if (!live.Contains(path) && _decoded.TryRemove(path, out var pixels)) pixels.Dispose();
     }
-
-    /// <summary>Files a decode is already running for, so a repaint does not start a second one.</summary>
-    private readonly HashSet<string> _decoding = [];
 
     private void StartDecode(string path)
     {
-        if (!_decoding.Add(path)) return;
+        if (!_decodes.TryStart(path)) return;
+        var generation = _decodes.Generation;
 
         Task.Run(() =>
         {
+            DecodedImage? pixels = null;
             try
             {
                 // 2x the chip, so it stays crisp on a scaled display.
-                var pixels = ImageSurface.DecodeScaled(path, maxWidth: 160, maxHeight: 160);
-                _decoded[path] = pixels;
+                pixels = ImageSurface.DecodeScaled(path, maxWidth: 160, maxHeight: 160);
             }
-            catch (Exception exception) when (exception is IOException or InvalidOperationException)
+            catch (Exception exception) when (exception is IOException or InvalidOperationException
+                or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException)
             {
                 // A capture that will not decode simply has no thumbnail.
                 Log.Error("thumbnail.decode", exception, path);
@@ -1089,60 +1132,80 @@ public sealed class MainWindow : CaptionWindow
 
             Post(() =>
             {
-                _decoding.Remove(path);
+                // Rejected pixels are freed here: this callback is their only owner, so returning
+                // without disposing would strand a decode's worth of memory per stale repaint.
+                if (_decodes.Finish(path, generation, pixels is not null) != DecodeOutcome.Accept)
+                {
+                    pixels?.Dispose();
+                }
+                else if (_decoded.TryGetValue(path, out var superseded) && !ReferenceEquals(superseded, pixels))
+                {
+                    _decoded[path] = pixels!;
+                    superseded.Dispose();
+                }
+                else _decoded[path] = pixels!;
+
                 Invalidate();
             });
         });
     }
 
     /// <summary>
-    /// The full-resolution bitmap, for the detail preview only.
-    ///
-    /// Exactly one is held: the preview shows one capture at a time, so caching more would pin
-    /// tens of megabytes each for images nothing is drawing. This is what makes the preview exact
-    /// rather than an upscaled thumbnail.
+    /// One detail decode at a time. Completed pixels are admitted on the UI thread only if their
+    /// cache generation and selection still match.
     /// </summary>
     private bool _previewLoading;
 
     /// <summary>Pixels decoded off-thread, waiting for a render to upload them.</summary>
-    private (string Path, DecodedImage Image)? _pendingPreview;
+    private (string Path, DecodedImage Image, (int Width, int Height) Size)? _pendingPreview;
 
     /// <summary>
-    /// The full-resolution bitmap for the detail preview, decoded on a worker.
+    /// The display-sized bitmap for the detail preview, decoded on a worker.
     ///
     /// The upload needs a live device, so it happens here - inside a render call - rather than from
     /// the worker's completion: a render target handed to one frame can be resized or disposed
     /// before an asynchronous callback would run.
     /// </summary>
-    private ImageSurface? GetFullBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
+    private ImageSurface? GetPreviewBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect well)
     {
         var path = item.FilePath;
+        // Round up to avoid restarting a decode for every pixel of a window resize. These are
+        // physical pixels, so this remains sharp on a high-DPI monitor without storing a 4K image
+        // behind an 800-pixel preview. Editors and exports still use the original file.
+        var size = (Width: Math.Max(256, (int)Math.Ceiling(well.Width / 256) * 256),
+            Height: Math.Max(256, (int)Math.Ceiling(well.Height / 256) * 256));
 
         if (_pendingPreview is { } pending && pending.Path == path)
         {
             _pendingPreview = null;
-            using var context = target.AsDeviceContext();
-            if (context is not null)
+            using (pending.Image)
             {
-                _preview?.Dispose();
-                _preview = ImageSurface.Upload(pending.Image, context);
-                _previewPath = path;
+                using var context = target.AsDeviceContext();
+                if (context is not null)
+                {
+                    _preview?.Dispose();
+                    _preview = ImageSurface.Upload(pending.Image, context);
+                    _previewPath = path;
+                    _previewSize = pending.Size;
+                }
             }
         }
 
-        if (_previewPath == path && _preview is not null) return _preview;
-        if (_previewLoading || !File.Exists(path)) return null;
+        if (_previewPath == path && _preview is not null
+            && _previewSize.Width >= size.Width && _previewSize.Height >= size.Height) return _preview;
+        if (_previewLoading || !File.Exists(path) || !_previewDecodes.TryStart(path)) return null;
 
         _previewLoading = true;
+        var generation = _previewDecodes.Generation;
         _ = Task.Run(() =>
         {
             DecodedImage? decoded = null;
             try
             {
-                var (pixels, width, height) = ImageSurface.Decode(path);
-                decoded = new DecodedImage(pixels, width, height);
+                decoded = ImageSurface.DecodeScaled(path, size.Width, size.Height);
             }
-            catch (Exception exception) when (exception is IOException or InvalidOperationException)
+            catch (Exception exception) when (exception is IOException or InvalidOperationException
+                or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException)
             {
                 // A capture that will not decode shows the empty preview rather than failing the frame.
                 Log.Error("preview.decode", exception, path);
@@ -1151,19 +1214,38 @@ public sealed class MainWindow : CaptionWindow
             Post(() =>
             {
                 _previewLoading = false;
-                if (decoded is null || _selected?.FilePath != path) return;
-                _pendingPreview = (path, decoded);
+
+                // The selection is part of this decode's world: pixels for a capture the user has
+                // already moved off are as stale as pixels from an older generation.
+                var outcome = _previewDecodes.Finish(path, generation, decoded is not null,
+                    stillWanted: _selected?.FilePath == path);
+
+                if (outcome != DecodeOutcome.Accept) decoded?.Dispose();
+                else
+                {
+                    // A pending decode that was never drawn still owns its pixels.
+                    DropPendingPreview();
+                    _pendingPreview = (path, decoded!, size);
+                }
                 Invalidate();
             });
         });
         return null;
     }
 
+    /// <summary>Frees a decode that arrived but was never uploaded. The pending slot owns its
+    /// pixels, so every path that clears it goes through here.</summary>
+    private void DropPendingPreview()
+    {
+        _pendingPreview?.Image.Dispose();
+        _pendingPreview = null;
+    }
+
     /// <summary>Closes the capture back to the empty state, releasing its full-resolution bitmap.</summary>
     private void Deselect()
     {
         _selected = null;
-        _pendingPreview = null;
+        DropPendingPreview();
 
         _preview?.Dispose();
         _preview = null;
@@ -1391,10 +1473,16 @@ public sealed class MainWindow : CaptionWindow
 
             case WmClose:
                 Hide();
-                _preview?.Dispose();
-                _preview = null;
-                _previewPath = null;
                 return new LRESULT { Value = 0 };
+
+            case 0x0018 when wParam.Value == 0: // WM_SHOWWINDOW: every path to hidden releases pixels.
+                ReleaseVisuals();
+                if (_recordingHotkey is not null)
+                {
+                    _recordingHotkey = null;
+                    RecordingChanged?.Invoke(false);
+                }
+                break;
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
@@ -1538,13 +1626,8 @@ public sealed class MainWindow : CaptionWindow
 
     protected override void Dispose(bool disposing)
     {
-        foreach (var thumbnail in _thumbnails.Values) thumbnail.Dispose();
-        _thumbnails.Clear();
-
-        _preview?.Dispose();
-        _preview = null;
-
-        _resources?.Dispose();
+        _dispatch?.Clear();
+        ReleaseVisuals();
         base.Dispose(disposing);
     }
 }

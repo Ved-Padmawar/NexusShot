@@ -13,6 +13,14 @@ namespace NexusShot.Views;
 /// </summary>
 public sealed partial class FloatingPreview : D2DRenderWindow
 {
+    protected override void CreateRenderTarget()
+    {
+        RenderTarget?.Dispose();
+        RenderTarget = null;
+        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions);
+    }
+    // This tool window has no taskbar icon; avoid the dependency's per-window owned icon.
+    protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
     private const uint WS_POPUP = 0x80000000;
     private const uint WS_EX_TOPMOST = 0x00000008;
     private const uint WS_EX_TOOLWINDOW = 0x00000080;
@@ -26,6 +34,11 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
     private const nuint DismissTimerId = 1;
     private const nuint DismissAnimationTimerId = 2;
+    private const nuint CopyFeedbackTimerId = 3;
+    private const int CopyTransitionMs = 160;
+    private const int CopyHoldUntilMs = 1640;
+    private const int CopyFeedbackDurationMs = CopyHoldUntilMs + CopyTransitionMs;
+    private long? _copiedAt;
 
     /// <summary>Card actions - save-as, edit, pin, dismiss - are posted rather than run inline: each
     /// unwinds into a reflow or a modal loop, and neither may run inside DoDragDrop or this card's
@@ -81,6 +94,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
         _thumbnail?.Dispose();
         _thumbnail = null;
+        _thumbnailPixels?.Dispose();
         _thumbnailPixels = null;
 
         _remaining = _dismissSeconds;
@@ -172,11 +186,13 @@ public sealed partial class FloatingPreview : D2DRenderWindow
             {
                 // Decoded in two halves rather than via LoadScaled: the pixels are kept so a drag
                 // can build its picture from them instead of decoding the file a second time.
+                _thumbnailPixels?.Dispose();
                 _thumbnailPixels = ImageSurface.DecodeScaled(_item.FilePath,
                     maxWidth: (int)(CardWidth * 2), maxHeight: (int)(MaxCardHeight * 2));
                 _thumbnail = ImageSurface.Upload(_thumbnailPixels, context);
             }
-            catch (Exception exception) when (exception is IOException or InvalidOperationException)
+            catch (Exception exception) when (exception is IOException or InvalidOperationException
+                or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException)
             {
                 return;
             }
@@ -253,9 +269,9 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
         // Copy leaves the card up: the capture is on the clipboard, but you may still want to drag
         // it, edit it, or copy it again.
-        if (ActionButton(ui, 1, new Rect(x, y, size, size), Icons.Copy, glyph, false))
+        if (ActionButton(ui, 1, new Rect(x, y, size, size), Icons.Copy, glyph, false, CopyConfirmation()))
         {
-            ClipboardImage.Copy(_item.FilePath);
+            Post(Copy);
         }
         x += size + spacing;
 
@@ -290,7 +306,8 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     }
 
     /// <summary>A circular overlay action button, washed a little lighter on hover and press.</summary>
-    private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected)
+    private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected,
+        double confirmation = 0)
     {
         var clicked = ui.Interact(id, bounds);
 
@@ -305,9 +322,62 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         else if (ui.IsHot(id)) ui.FillCircle(center, radius, ActionOverlayHover);
 
         ui.StrokeCircle(center, radius, ActionBorder);
-        ui.Icon(glyph, bounds, Rgba.White, glyphSize);
+        if (confirmation < 1)
+            ui.Icon(glyph, bounds, Rgba.White.WithAlpha((byte)(255 * (1 - confirmation))), glyphSize);
+        if (confirmation > 0)
+            ui.Icon(Icons.Tick, bounds, Rgba.White.WithAlpha((byte)(255 * confirmation)),
+                glyphSize * (0.8 + 0.2 * confirmation));
 
         return clicked;
+    }
+
+    private void Copy()
+    {
+        if (_dismissing) return;
+        try
+        {
+            ClipboardImage.Copy(_item.FilePath);
+            // Only a completed copy earns a tick. A second successful click restarts the hold.
+            _copiedAt = Environment.TickCount64;
+            WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, 16, IntPtr.Zero);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+        {
+            _copiedAt = null;
+            WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
+            Log.Error("preview.copy", exception, _item.FilePath);
+        }
+        Invalidate();
+    }
+
+    private double CopyConfirmation()
+    {
+        if (_copiedAt is not { } started) return 0;
+        var elapsed = Environment.TickCount64 - started;
+        var progress = elapsed < CopyTransitionMs
+            ? elapsed / (double)CopyTransitionMs
+            : (CopyFeedbackDurationMs - elapsed) / (double)CopyTransitionMs;
+        progress = Math.Clamp(progress, 0, 1);
+        return progress * progress * (3 - 2 * progress);
+    }
+
+    private void StepCopyFeedback()
+    {
+        var elapsed = Environment.TickCount64 - (_copiedAt ?? 0);
+        if (_copiedAt is null || elapsed >= CopyFeedbackDurationMs)
+        {
+            _copiedAt = null;
+            WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
+        }
+        else
+        {
+            // Animate only the transitions; the steady tick needs no continuous repainting.
+            var delay = elapsed >= CopyTransitionMs && elapsed < CopyHoldUntilMs
+                ? (uint)(CopyHoldUntilMs - elapsed) : 16u;
+            WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, delay, IntPtr.Zero);
+        }
+        if (_hovered) Invalidate();
     }
 
     /// <summary>A pinned card that is not hovered still says so, quietly, in the corner.</summary>
@@ -504,6 +574,12 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 return new LRESULT { Value = 0 };
 
             case WmTimer:
+                if ((nuint)wParam.Value == CopyFeedbackTimerId)
+                {
+                    StepCopyFeedback();
+                    return new LRESULT { Value = 0 };
+                }
+
                 if ((nuint)wParam.Value == DismissAnimationTimerId)
                 {
                     StepDismissAnimation();
@@ -539,7 +615,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         var y = card.Height > 0 ? press.Y / card.Height * decoded.Height : 0;
 
         return DragImage.FromPixels(
-            decoded.Pixels, decoded.Width, decoded.Height,
+            decoded.Span, decoded.Width, decoded.Height,
             Math.Clamp((int)x, 0, decoded.Width),
             Math.Clamp((int)y, 0, decoded.Height));
     }
@@ -559,12 +635,20 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
+        _dispatch.Clear();
+        WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
         WindowInterop.KillTimer(Handle, DismissTimerId);
         WindowInterop.KillTimer(Handle, DismissAnimationTimerId);
         _thumbnail?.Dispose();
+        _thumbnailPixels?.Dispose();
         _resources?.Dispose();
         _thumbnail = null;
+        _thumbnailPixels = null;
         _resources = null;
+
+        // Clear our reference as part of explicit window teardown.
+        RenderTarget?.Dispose();
+        RenderTarget = null;
         base.OnDestroyed(sender, e);
     }
 

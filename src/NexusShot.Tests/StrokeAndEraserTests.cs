@@ -22,7 +22,7 @@ public class StrokeAndEraserTests
         var stroke = Stroke(document, EditorTool.Pen, Line(300));
 
         Assert.Equal(EditorTool.Pen, stroke.Tool);
-        Assert.True(stroke.Points.Count > 1);
+        Assert.Equal(Line(300), stroke.Points);
     }
 
     [Fact]
@@ -115,12 +115,16 @@ public class StrokeAndEraserTests
     [Fact]
     public void GeometryVersionChangesWhenAStrokeGrows()
     {
-        var stroke = new Annotation { Tool = EditorTool.Pen };
+        var document = NewDocument();
+        document.ActiveTool = EditorTool.Pen;
+        document.BeginGesture(new Point(100, 100));
+        var stroke = Assert.Single(document.Annotations);
         var before = stroke.GeometryVersion;
 
-        stroke.InvalidateGeometry();
+        document.ContinueGesture(new Point(200, 150));
 
         Assert.NotEqual(before, stroke.GeometryVersion);
+        Assert.Equal(new Rect(100, 100, 100, 50), stroke.Bounds);
     }
 
     [Fact]

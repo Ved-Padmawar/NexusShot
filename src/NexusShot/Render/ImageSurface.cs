@@ -1,16 +1,12 @@
-﻿using NexusShot.Core;
-
 namespace NexusShot.Render;
 
-/// <summary>Decoded pixels with no device attached: premultiplied BGRA, top-down.</summary>
-public sealed record DecodedImage(byte[] Pixels, int Width, int Height);
-
 /// <summary>
-/// The decoded source image: a GPU bitmap for drawing, plus the CPU pixels for anything that needs
-/// to read them back (export, colour picking).
+/// The decoded source image as a GPU bitmap.
 ///
 /// Decoded via WIC and uploaded at full resolution; the GPU rescales it every frame, so the view
-/// always samples the real image rather than a pre-scaled copy.
+/// always samples the real image rather than a pre-scaled copy. The CPU-side pixels are released as
+/// soon as the upload completes - nothing here reads them back, and holding them would double the
+/// cost of every open image.
 /// </summary>
 public sealed class ImageSurface : IDisposable
 {
@@ -20,54 +16,11 @@ public sealed class ImageSurface : IDisposable
     public required int Width { get; init; }
     public required int Height { get; init; }
 
-    /// <summary>
-    /// Premultiplied BGRA, top-down - or null when the caller did not ask for it.
-    ///
-    /// Holding the decoded pixels doubles the cost of an image: a 4K screenshot is ~33 MB on the CPU
-    /// on top of the same again on the GPU. Only the editor reads them back (to sample the colour
-    /// under a text box), so everything else - the history grid especially, which caches one surface
-    /// per capture - loads without them.
-    /// </summary>
-    public byte[]? Pixels { get; init; }
-
-    public int Stride => Width * 4;
-
-    /// <summary>
-    /// Decodes a file and uploads it. <paramref name="keepPixels"/> retains the CPU copy, which is
-    /// only worth doing for a surface something will read back.
-    /// </summary>
-    public static unsafe ImageSurface Load(
-        string path, IComObject<ID2D1DeviceContext> context, bool keepPixels = false)
+    /// <summary>Decodes a file and uploads it, freeing the CPU copy before returning.</summary>
+    public static ImageSurface Load(string path, IComObject<ID2D1DeviceContext> context)
     {
-        var (pixels, width, height) = Decode(path);
-
-        var properties = new D2D1_BITMAP_PROPERTIES1
-        {
-            pixelFormat = new D2D1_PIXEL_FORMAT
-            {
-                format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode = D2D1_ALPHA_MODE.D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX = 96,
-            dpiY = 96,
-        };
-
-        fixed (byte* data = pixels)
-        {
-            var bitmap = context.CreateBitmap(
-                new D2D_SIZE_U { width = (uint)width, height = (uint)height },
-                (nint)data,
-                (uint)(width * 4),
-                properties);
-
-            return new ImageSurface
-            {
-                Bitmap = bitmap,
-                Width = width,
-                Height = height,
-                Pixels = keepPixels ? pixels : null,
-            };
-        }
+        using var pixels = Decode(path);
+        return Upload(pixels, context);
     }
 
     /// <summary>
@@ -78,21 +31,23 @@ public sealed class ImageSurface : IDisposable
     /// for images that end up in a 52x34 chip.
     /// </summary>
     public static ImageSurface LoadScaled(
-        string path, IComObject<ID2D1DeviceContext> context, int maxWidth, int maxHeight) =>
-        Upload(DecodeScaled(path, maxWidth, maxHeight), context);
+        string path, IComObject<ID2D1DeviceContext> context, int maxWidth, int maxHeight)
+    {
+        using var pixels = DecodeScaled(path, maxWidth, maxHeight);
+        return Upload(pixels, context);
+    }
 
     /// <summary>The CPU half of <see cref="LoadScaled"/>: decodes and scales, touching no device, so
-    /// it is safe to call from any thread.</summary>
-    public static unsafe DecodedImage DecodeScaled(string path, int maxWidth, int maxHeight)
+    /// it is safe to call from any thread. The caller owns the result.</summary>
+    public static DecodedImage DecodeScaled(string path, int maxWidth, int maxHeight)
     {
         using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
         using var frame = decoder.GetFrame(0);
         frame.Object.GetSize(out var sourceWidth, out var sourceHeight).ThrowOnError();
 
-        var scale = Math.Min(
+        var scale = Math.Min(1, Math.Min(
             maxWidth / (double)sourceWidth,
-            maxHeight / (double)sourceHeight);
-        scale = Math.Min(1, scale);
+            maxHeight / (double)sourceHeight));
 
         var width = Math.Max(1, (int)Math.Round(sourceWidth * scale));
         var height = Math.Max(1, (int)Math.Round(sourceHeight * scale));
@@ -113,44 +68,29 @@ public sealed class ImageSurface : IDisposable
             0,
             WICBitmapPaletteType.WICBitmapPaletteTypeCustom).ThrowOnError();
 
-        var stride = width * 4;
-        var pixels = new byte[stride * height];
-        fixed (byte* buffer = pixels)
-        {
-            converter.Object.CopyPixels(0, (uint)stride, (uint)pixels.Length, (nint)buffer).ThrowOnError();
-        }
-
-        return new DecodedImage(pixels, width, height);
+        return CopyPixels(converter.Object, width, height);
     }
 
-    /// <summary>The GPU half: uploads decoded pixels. Must run on the thread that owns the device.</summary>
-    public static unsafe ImageSurface Upload(DecodedImage image, IComObject<ID2D1DeviceContext> context)
+    /// <summary>The GPU half: uploads decoded pixels. Must run on the thread that owns the device.
+    /// The image is only read, so the caller keeps ownership of it.</summary>
+    public static ImageSurface Upload(DecodedImage image, IComObject<ID2D1DeviceContext> context)
     {
-        fixed (byte* buffer = image.Pixels)
-        {
-            var bitmap = context.CreateBitmap(
-                new D2D_SIZE_U { width = (uint)image.Width, height = (uint)image.Height },
-                (nint)buffer,
-                (uint)(image.Width * 4),
-                new D2D1_BITMAP_PROPERTIES1
-                {
-                    pixelFormat = new D2D1_PIXEL_FORMAT
-                    {
-                        format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
-                        alphaMode = D2D1_ALPHA_MODE.D2D1_ALPHA_MODE_PREMULTIPLIED,
-                    },
-                    dpiX = 96,
-                    dpiY = 96,
-                });
-
-            return new ImageSurface
+        var bitmap = context.CreateBitmap(
+            new D2D_SIZE_U { width = (uint)image.Width, height = (uint)image.Height },
+            image.Pointer,
+            (uint)image.Stride,
+            new D2D1_BITMAP_PROPERTIES1
             {
-                Bitmap = bitmap,
-                Width = image.Width,
-                Height = image.Height,
-                Pixels = null,
-            };
-        }
+                pixelFormat = new D2D1_PIXEL_FORMAT
+                {
+                    format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode = D2D1_ALPHA_MODE.D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX = 96,
+                dpiY = 96,
+            });
+
+        return new ImageSurface { Bitmap = bitmap, Width = image.Width, Height = image.Height };
     }
 
     /// <summary>The image's dimensions, without decoding it. WIC reads the header only.</summary>
@@ -166,7 +106,7 @@ public sealed class ImageSurface : IDisposable
     /// Decodes to premultiplied BGRA - the format D2D composites in, so no conversion happens on
     /// the hot path. WIC does the premultiplication as part of the format conversion.
     /// </summary>
-    public static unsafe (byte[] Pixels, int Width, int Height) Decode(string path)
+    public static DecodedImage Decode(string path)
     {
         using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
         using var frame = decoder.GetFrame(0);
@@ -181,16 +121,28 @@ public sealed class ImageSurface : IDisposable
             WICBitmapPaletteType.WICBitmapPaletteTypeCustom).ThrowOnError();
 
         converter.Object.GetSize(out var width, out var height).ThrowOnError();
-        if ((long)width * (long)height > MaximumPixels)
+        if ((long)width * height > MaximumPixels)
             throw new InvalidOperationException("Image too large to decode.");
-        var stride = (int)width * 4;
-        var pixels = new byte[stride * (int)height];
 
-        fixed (byte* buffer = pixels)
+        return CopyPixels(converter.Object, (int)width, (int)height);
+    }
+
+    /// <summary>Drains a WIC source straight into unmanaged memory, so the pixels never reach the
+    /// managed heap. The image is freed if the copy fails, rather than leaking on the throw.</summary>
+    private static DecodedImage CopyPixels(IWICBitmapSource source, int width, int height)
+    {
+        var image = DecodedImage.Allocate(width, height);
+        try
         {
-            converter.Object.CopyPixels(0, (uint)stride, (uint)pixels.Length, (nint)buffer).ThrowOnError();
+            source.CopyPixels(0, (uint)image.Stride, (uint)image.ByteLength, image.Pointer)
+                .ThrowOnError();
+            return image;
         }
-        return (pixels, (int)width, (int)height);
+        catch
+        {
+            image.Dispose();
+            throw;
+        }
     }
 
     public void Dispose() => Bitmap.Dispose();

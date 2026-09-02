@@ -24,6 +24,21 @@ internal static partial class Program
         if (hr != 0 && hr != 1) throw new InvalidOperationException($"OleInitialize failed 0x{hr:X8}");
         try
         {
+            if (args.Length == 2 && args[0] == "--preview-test")
+            {
+                var (width, height) = Render.ImageSurface.ReadSize(args[1]);
+                using var application = new Application();
+                using var preview = new FloatingPreview(new Core.ScreenshotHistoryItem
+                {
+                    FilePath = args[1], CapturedAt = DateTimeOffset.Now, Width = width, Height = height,
+                }, 0);
+                preview.PlaceAt(Platform.Monitors.WorkAreaUnderCursor(),
+                    Platform.Monitors.DpiScaleUnderCursor(preview.Handle), 0);
+                preview.Show();
+                application.Run();
+                return;
+            }
+
             // Headless render check: exercises the real renderer and exporter with no window.
             if (args.Length >= 2 && args[0] == "--render-test")
             {

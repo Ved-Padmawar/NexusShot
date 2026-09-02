@@ -12,9 +12,10 @@ namespace NexusShot.Views;
 public sealed class EditorWindow : CaptionWindow
 {
     private readonly EditorDocument _document = new();
+    internal EditorDocument Document => _document;
 
-    /// <summary>The file being edited. Save As moves it.</summary>
-    private string _path;
+    /// <summary>Save, Save As and Copy, and the destination they share.</summary>
+    private readonly EditorFiles _files;
 
     private D2DResources? _resources;
     private AnnotationRenderer? _renderer;
@@ -48,12 +49,17 @@ public sealed class EditorWindow : CaptionWindow
     private bool _caretDragging;
 
     private AppTheme _theme;
+    private string? _loadError;
 
     public EditorWindow(string path, AppTheme theme = AppTheme.System) : base("NexusShot")
     {
-        _path = path;
         _theme = theme;
         _text = new TextBoxController(_document);
+        _files = new EditorFiles(_document);
+        _files.OpenedAt(path);
+
+        // The open box lives in this window's controller, so a write has to ask rather than do it.
+        _files.Committing += CommitText;
     }
 
     /// <summary>Follows the shell's theme. The Ui's theme is read per frame, so this only has to
@@ -123,6 +129,10 @@ public sealed class EditorWindow : CaptionWindow
         _renderer = null;
         _ui = null;
         _chrome = null;
+
+        // Keep explicit teardown idempotent, whether invoked by destruction or disposal.
+        RenderTarget?.Dispose();
+        RenderTarget = null;
     }
 
     /// <summary>Everything here belongs to the render target: D2D refuses to use resources from one
@@ -140,7 +150,14 @@ public sealed class EditorWindow : CaptionWindow
         using var context = target.AsDeviceContext();
         if (context is null) return;
 
-        _image = ImageSurface.Load(_path, context, keepPixels: false);
+        try { _image = ImageSurface.Load(_files.Path, context); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+        {
+            Log.Error("editor.decode", exception, _files.Path);
+            _loadError = "Could not open this image. Check that the file is readable and valid.";
+            return;
+        }
         _document.SetImageSize(_image.Width, _image.Height);
         _effects = new PixelEffectSource(_image, _resources);
     }
@@ -157,7 +174,7 @@ public sealed class EditorWindow : CaptionWindow
     {
         if (_image is null) return;
         var well = CanvasWell();
-        var margin = 24 * EditorChrome.Scale;
+        var margin = 24 * DpiScale;
 
         var available = new Size(
             Math.Max(1, well.Width - margin * 2),
@@ -179,9 +196,9 @@ public sealed class EditorWindow : CaptionWindow
         var client = ClientRect;
         return new Rect(
             0,
-            EditorChrome.ChromeTop,
+            CaptionHeight + 46 * DpiScale,
             Math.Max(1, client.Width),
-            Math.Max(1, client.Height - EditorChrome.ChromeTop - EditorChrome.FooterHeight));
+            Math.Max(1, client.Height - CaptionHeight - 86 * DpiScale));
     }
 
     /// <summary>Inverse display scale: adorners are drawn in image space but must keep a constant
@@ -217,18 +234,27 @@ public sealed class EditorWindow : CaptionWindow
         // image are all already physical, and letting D2D scale on top of that double-scales
         // everything. The chrome then scales itself; the canvas deliberately does not.
         target.Object.SetDpi(96, 96);
-        EditorChrome.Scale = DpiScale;
-        EditorChrome.CaptionHeight = CaptionHeight;
 
         EnsureResources(target);
         if (_ui is null || _chrome is null || _renderer is null) return;
+        _chrome.Scale = DpiScale;
+        _chrome.CaptionHeight = CaptionHeight;
 
         // Read per frame, so a theme change can never leave the canvas painted in the old colours.
         _ui.Theme = SystemTheme.Resolve(_theme);
 
         var client = ClientRect;
         renderTarget.Clear(D2DResources.ToD3D(_ui.Theme.SurfaceSunken));
-        if (_image is null) return;
+        if (_image is null)
+        {
+            _ui.BeginFrame(target, _clientPointer, _pointerDown);
+            _ui.Text(_loadError ?? "Could not open this image", CanvasWell(), _ui.Theme.TextPrimary,
+                (float)(14 * DpiScale), align: TextAlign.Center);
+            DrawCaptionButtons(_ui, client.Width);
+            _ui.EndFrame();
+            if (_ui.ClickedThisFrame) Invalidate();
+            return;
+        }
 
         Layout();
 
@@ -273,7 +299,7 @@ public sealed class EditorWindow : CaptionWindow
 
         _ui.BeginFrame(target, _clientPointer, _pointerDown);
         _chrome.Draw(_document, client.Width, client.Height,
-            Path.GetFileName(_path), _fitToViewport, toast, copied);
+            _files.FileName, _fitToViewport, toast, copied);
         DrawCaptionButtons(_ui, client.Width);
         _ui.EndFrame();
 
@@ -297,9 +323,9 @@ public sealed class EditorWindow : CaptionWindow
         if (_chrome.RedoPressed) Redo();
         if (_chrome.DeletePressed) _document.DeleteSelected();
         // All three run outside the frame; see Post.
-        if (_chrome.SavePressed) Post(Save);
-        if (_chrome.SaveAsPressed) Post(SaveAs);
-        if (_chrome.CopyPressed) Post(CopyToClipboard);
+        if (_chrome.SavePressed) Post(() => RunFileAction(Save));
+        if (_chrome.SaveAsPressed) Post(() => RunFileAction(SaveAs));
+        if (_chrome.CopyPressed) Post(() => RunFileAction(CopyToClipboard));
 
         if (_chrome.FitPicked is { } fit && fit != _fitToViewport)
         {
@@ -318,15 +344,21 @@ public sealed class EditorWindow : CaptionWindow
     {
         if (_image is null) return;
 
-        CommitText();
-        _document.CommitCrop();
-
-        Exporter.SavePng(_document, _path, _path);
-
-        _document.ResetAfterSave();
+        _files.Save();
         ReloadImage();
-        Saved?.Invoke(_path);
+        Saved?.Invoke(_files.Path);
         ShowToast("Saved");
+    }
+
+    private void RunFileAction(Action action)
+    {
+        try { action(); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+        {
+            Log.Error("editor.file_action", exception, _files.Path);
+            ShowToast("Could not complete action. Check the file or clipboard and retry.");
+        }
     }
 
     /// <summary>Writes the flattened image somewhere new and continues editing it there.</summary>
@@ -334,17 +366,10 @@ public sealed class EditorWindow : CaptionWindow
     {
         if (_image is null) return;
 
-        CommitText();
-        _document.CommitCrop();
+        // Null means cancelled: nothing was written, and the pending crop stays uncommitted.
+        if (_files.SaveAs((name, folder) => FilePicker.SavePng(Handle, name, folder))
+            is not { } destination) return;
 
-        var suggested = $"{Path.GetFileNameWithoutExtension(_path)}_edited.png";
-        if (FilePicker.SavePng(Handle, suggested, Path.GetDirectoryName(_path)) is not { } destination) return;
-
-        Exporter.SavePng(_document, _path, destination);
-
-        // The editor follows the file: further edits belong to the copy, not the original.
-        _path = destination;
-        _document.ResetAfterSave();
         ReloadImage();
         SavedAs?.Invoke(destination);
         ShowToast("Saved");
@@ -354,18 +379,7 @@ public sealed class EditorWindow : CaptionWindow
     {
         if (_image is null) return;
 
-        CommitText();
-
-        var temporary = Path.Combine(Path.GetTempPath(), $"nexusshot-{Guid.NewGuid():N}.png");
-
-        // The clipboard gets the crop the user is looking at, without committing it to the document -
-        // copying is not saving, and a copy must not silently discard the uncropped original.
-        Exporter.SavePng(_document, _path, temporary, _document.PendingCrop);
-
-        ClipboardImage.Copy(temporary);
-        try
-        { File.Delete(temporary); }
-        catch (IOException) { /* the clipboard may still hold it */ }
+        _files.CopyToClipboard();
 
         // The Copy button confirms this itself, by becoming a tick.
         _copiedUntil = DateTime.UtcNow.AddSeconds(2);
@@ -397,7 +411,7 @@ public sealed class EditorWindow : CaptionWindow
         _effects?.Dispose();
         _image?.Dispose();
 
-        _image = ImageSurface.Load(_path, context, keepPixels: false);
+        _image = ImageSurface.Load(_files.Path, context);
         _effects = new PixelEffectSource(_image, _resources);
         _document.SetImageSize(_image.Width, _image.Height);
         Invalidate();

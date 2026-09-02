@@ -103,7 +103,21 @@ public static class Exporter
         context.Object.SetTarget(null);
 
         staging.Object.CopyFromBitmap(nint.Zero, surface.Object, nint.Zero).ThrowOnError();
-        WritePng(staging, (int)width, (int)height, path);
+        // Encode beside the destination and replace only after success. A failed encoder or a
+        // full disk must not truncate the screenshot the editor is currently working on.
+        var destination = Path.GetFullPath(path);
+        var temporary = Path.Combine(Path.GetDirectoryName(destination)!, $".nexusshot-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            WritePng(staging, (int)width, (int)height, temporary);
+            File.Move(temporary, destination, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(temporary); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 
     private static readonly D2D1_PIXEL_FORMAT PremultipliedBgra = new()
@@ -113,36 +127,14 @@ public static class Exporter
     };
 
     /// <summary>Maps the rendered pixels back to the CPU and encodes them as PNG.</summary>
-    private static unsafe void WritePng(IComObject<ID2D1Bitmap1> staging, int width, int height, string path)
+    private static void WritePng(IComObject<ID2D1Bitmap1> staging, int width, int height, string path)
     {
         staging.Object.Map(D2D1_MAP_OPTIONS.D2D1_MAP_OPTIONS_READ, out var mapped).ThrowOnError();
         try
         {
-            var stride = (int)mapped.pitch;
-            var pixels = new byte[width * height * 4];
-
-            // The mapped pitch is the GPU's, not width*4: copy row by row.
-            for (var y = 0; y < height; y++)
-            {
-                var source = new ReadOnlySpan<byte>((byte*)mapped.bits + y * stride, width * 4);
-                source.CopyTo(pixels.AsSpan(y * width * 4));
-            }
-
-            using var wic = WicImagingFactory.CreateBitmapFromMemory(
-                (uint)width, (uint)height, Constants.GUID_WICPixelFormat32bppPBGRA, (uint)(width * 4), pixels);
-
-            using var file = File.Create(path);
-            using var stream = new ManagedIStream(file);
-            using var encoder = WicImagingFactory.CreateEncoder(Constants.GUID_ContainerFormatPng);
-            encoder.Initialize(stream, WICBitmapEncoderCacheOption.WICBitmapEncoderNoCache);
-
-            using var frame = encoder.CreateNewFrame();
-            frame.Initialize();
-            frame.SetSize((uint)width, (uint)height);
-            frame.SetPixelFormat(Constants.GUID_WICPixelFormat32bppPBGRA);
-            frame.WriteSource(wic);
-            frame.Commit();
-            encoder.Commit();
+            // Encoded straight out of the mapped rows. The pitch is the GPU's rather than width*4,
+            // so it is passed through as the stride instead of repacking into a second buffer.
+            PngWriter.Write(path, mapped.bits, width, height, (int)mapped.pitch);
         }
         finally
         {

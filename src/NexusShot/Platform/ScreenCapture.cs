@@ -113,14 +113,14 @@ public static partial class ScreenCapture
                 SelectObject(memory, previous);
             }
 
-            var stride = bounds.Width * 4;
-            var pixels = new byte[stride * bounds.Height];
-            Marshal.Copy(bits, pixels, 0, pixels.Length);
+            var image = DecodedImage.Allocate(bounds.Width, bounds.Height);
+            var pixels = image.Span;
+            unsafe { new ReadOnlySpan<byte>((void*)bits, image.ByteLength).CopyTo(pixels); }
 
             // BitBlt leaves the alpha byte as garbage; the desktop is opaque, so force it.
             for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
 
-            return new DecodedImage(pixels, bounds.Width, bounds.Height);
+            return image;
         }
         finally
         {

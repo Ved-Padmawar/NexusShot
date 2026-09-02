@@ -35,15 +35,14 @@ internal static partial class ClipboardImage
         DecodedImage image;
         try
         {
-            var (pixels, width, height) = ImageSurface.Decode(pngPath);
-            image = new DecodedImage(pixels, width, height);
+            image = ImageSurface.Decode(pngPath);
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException)
         {
             return;
         }
 
-        Copy(image, pngPath);
+        using (image) Copy(image, pngPath);
     }
 
     /// <summary>
@@ -56,7 +55,6 @@ internal static partial class ClipboardImage
     /// </summary>
     public static void Copy(DecodedImage image, string? pngPath)
     {
-        var pixels = image.Pixels;
         var width = image.Width;
         var height = image.Height;
 
@@ -77,8 +75,8 @@ internal static partial class ClipboardImage
                 }
             }
 
-            Place(CF_DIBV5, BuildDib(pixels, width, height, v5: true));
-            Place(CF_DIB, BuildDib(pixels, width, height, v5: false));
+            Place(CF_DIBV5, BuildDib(image.Span, width, height, v5: true));
+            Place(CF_DIB, BuildDib(image.Span, width, height, v5: false));
         }
         finally
         {
@@ -110,32 +108,29 @@ internal static partial class ClipboardImage
     /// <summary>A packed DIB: header, then bottom-up 32-bit rows, alpha composited onto white.
     /// <paramref name="v5"/> emits a BITMAPV5HEADER, which states the channel masks and colour space
     /// rather than leaving the reader to assume them.</summary>
-    private static byte[] BuildDib(byte[] premultipliedBgra, int width, int height, bool v5)
+    private static byte[] BuildDib(ReadOnlySpan<byte> premultipliedBgra, int width, int height, bool v5)
     {
         var headerSize = v5 ? BITMAPV5HEADER_SIZE : BITMAPINFOHEADER_SIZE;
         var stride = width * 4;
         var dib = new byte[headerSize + stride * height];
 
-        void WriteInt(int offset, int value) => BitConverter.GetBytes(value).CopyTo(dib, offset);
-        void WriteUInt(int offset, uint value) => BitConverter.GetBytes(value).CopyTo(dib, offset);
-        void WriteShort(int offset, short value) => BitConverter.GetBytes(value).CopyTo(dib, offset);
-
-        WriteInt(0, headerSize);
-        WriteInt(4, width);
-        WriteInt(8, height);          // positive: bottom-up
-        WriteShort(12, 1);            // planes
-        WriteShort(14, 32);           // bits per pixel
-        WriteUInt(16, v5 ? BI_BITFIELDS : BI_RGB);
-        WriteInt(20, stride * height);
+        var header = dib.AsSpan();
+        BitConverter.TryWriteBytes(header[0..], headerSize);
+        BitConverter.TryWriteBytes(header[4..], width);
+        BitConverter.TryWriteBytes(header[8..], height);            // positive: bottom-up
+        BitConverter.TryWriteBytes(header[12..], (short)1);         // planes
+        BitConverter.TryWriteBytes(header[14..], (short)32);        // bits per pixel
+        BitConverter.TryWriteBytes(header[16..], v5 ? BI_BITFIELDS : BI_RGB);
+        BitConverter.TryWriteBytes(header[20..], stride * height);
 
         if (v5)
         {
             // The channel masks, in the BGRA order the rows below are written in.
-            WriteUInt(40, 0x00FF0000);   // red
-            WriteUInt(44, 0x0000FF00);   // green
-            WriteUInt(48, 0x000000FF);   // blue
-            WriteUInt(52, 0xFF000000);   // alpha
-            WriteUInt(56, LCS_sRGB);     // colour space
+            BitConverter.TryWriteBytes(header[40..], 0x00FF0000u);   // red
+            BitConverter.TryWriteBytes(header[44..], 0x0000FF00u);   // green
+            BitConverter.TryWriteBytes(header[48..], 0x000000FFu);   // blue
+            BitConverter.TryWriteBytes(header[52..], 0xFF000000u);   // alpha
+            BitConverter.TryWriteBytes(header[56..], LCS_sRGB);      // colour space
         }
 
         for (var y = 0; y < height; y++)

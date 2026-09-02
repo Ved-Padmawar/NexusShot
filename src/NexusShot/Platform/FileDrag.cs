@@ -465,7 +465,7 @@ public sealed partial record DragImage(IntPtr Bitmap, int Width, int Height, int
     /// <summary>A 32-bit premultiplied-BGRA DIB section, which is what the drag helper wants: an
     /// ordinary bitmap drags as an opaque block with no alpha.</summary>
     public static unsafe DragImage? FromPixels(
-        byte[] pixels, int width, int height, int hotspotX, int hotspotY)
+        ReadOnlySpan<byte> pixels, int width, int height, int hotspotX, int hotspotY)
     {
         var header = new BITMAPINFOHEADER
         {
@@ -480,7 +480,8 @@ public sealed partial record DragImage(IntPtr Bitmap, int Width, int Height, int
         var bitmap = CreateDIBSection(IntPtr.Zero, ref header, 0, out var bits, IntPtr.Zero, 0);
         if (bitmap == IntPtr.Zero || bits == IntPtr.Zero) return null;
 
-        Marshal.Copy(pixels, 0, bits, Math.Min(pixels.Length, width * height * 4));
+        var length = Math.Min(pixels.Length, width * height * 4);
+        pixels[..length].CopyTo(new Span<byte>((void*)bits, length));
         return new DragImage(bitmap, width, height, hotspotX, hotspotY);
     }
 
