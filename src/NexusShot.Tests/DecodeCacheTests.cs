@@ -1,4 +1,4 @@
-using NexusShot.Core;
+﻿using NexusShot.Core;
 
 namespace NexusShot.Tests;
 
@@ -167,5 +167,22 @@ public class DecodeCacheTests
 
         Assert.True(cache.IsRunning(@"c:\shots\a.png"));
         Assert.False(cache.TryStart(@"c:\shots\a.png"));
+    }
+
+    [Fact]
+    public void DecodesBeyondTheConcurrencyBoundAreRefused()
+    {
+        // Scrolling a long history reaches many files at once, each a distinct path that per-path
+        // deduplication happily admits. Without a bound that is one WIC decoder per visible row.
+        var cache = new DecodeCache();
+        for (var i = 0; i < DecodeCache.MaxConcurrentDecodes; i++)
+            Assert.True(cache.TryStart($"{i}.png"));
+
+        Assert.False(cache.TryStart("overflow.png"));
+
+        // A refusal is not a failure: the slot frees up and the file stays eligible.
+        Assert.False(cache.HasFailed("overflow.png"));
+        cache.Finish("0.png", cache.Generation, succeeded: true);
+        Assert.True(cache.TryStart("overflow.png"));
     }
 }

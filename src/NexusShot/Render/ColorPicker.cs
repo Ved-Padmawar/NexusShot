@@ -1,4 +1,4 @@
-using NexusShot.Core;
+﻿using NexusShot.Core;
 
 namespace NexusShot.Render;
 
@@ -109,7 +109,7 @@ public sealed class ColorPicker
 
         var hexBox = new Rect(chip.Right + 8 * s, readout.Y,
             readout.Right - chip.Right - 8 * s, 26 * s);
-        if (TextBox(ui, 7103, hexBox, Field.Hex, Current.ToHex(), s)) picked = Current;
+        if (TextBox(ui, Ui.Id("picker.hex"), hexBox, Field.Hex, Current.ToHex(), s)) picked = Current;
 
         // R / G / B, three equal boxes under the hex, each labelled beneath.
         var channels = new Rect(field.X, readout.Bottom + 10 * s, field.Width, 26 * s);
@@ -305,8 +305,9 @@ public sealed class ColorPicker
         ui.StrokeCircle(thumb, (float)(7 * (field.Width / (Width - 24))), Rgba.Black.WithAlpha(160), 3f);
         ui.StrokeCircle(thumb, (float)(7 * (field.Width / (Width - 24))), Rgba.White, 1.6f);
 
-        if (!ui.Interact(7101, field) && !ui.IsActive(7101)) return false;
-        if (!ui.IsActive(7101)) return false;
+        var id = Ui.Id("picker.field");
+        if (!ui.Interact(id, field) && !ui.IsActive(id)) return false;
+        if (!ui.IsActive(id)) return false;
 
         _saturation = Math.Clamp((ui.Pointer.X - field.X) / field.Width, 0, 1);
         _value = Math.Clamp(1 - (ui.Pointer.Y - field.Y) / field.Height, 0, 1);
@@ -328,8 +329,9 @@ public sealed class ColorPicker
         ui.StrokeRounded(new Rect(x - 2.5, rail.Y - 4, 5, rail.Height + 8), 1,
             Rgba.Black.WithAlpha(160));
 
-        if (!ui.Interact(7102, rail) && !ui.IsActive(7102)) return false;
-        if (!ui.IsActive(7102)) return false;
+        var id = Ui.Id("picker.hue");
+        if (!ui.Interact(id, rail) && !ui.IsActive(id)) return false;
+        if (!ui.IsActive(id)) return false;
 
         _hue = Math.Clamp((ui.Pointer.X - rail.X) / rail.Width, 0, 1) * 360;
         return true;

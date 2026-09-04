@@ -8,7 +8,7 @@ namespace NexusShot.Views;
 /// The shell: a sidebar that browses, a pane that previews and acts. Annotating opens the editor as
 /// its own window rather than docking it here, so the sidebar's width is never taken from the image.
 /// </summary>
-public sealed class MainWindow : CaptionWindow
+public sealed partial class MainWindow : CaptionWindow
 {
     private const uint WmMouseMove = 0x0200;
     private const uint WmLButtonDown = 0x0201;
@@ -21,6 +21,9 @@ public sealed class MainWindow : CaptionWindow
     /// quantizing them to notches makes a smooth drag land as jumps.</summary>
     private const double WheelDelta = 120;
     private const uint WmClose = 0x0010;
+    private const uint WmTimer = 0x0113;
+
+    private const nuint CopyFeedbackTimerId = 1;
 
     private readonly Storage _storage;
     private readonly AppSettings _settings;
@@ -72,9 +75,16 @@ public sealed class MainWindow : CaptionWindow
     /// The folder watcher fires on a thread pool thread, and mutating the history from there would
     /// be doing it underneath a frame that is drawing it.
     /// </summary>
-    public void Post(Action work) => _dispatch.Post(work);
+    /// <summary>
+    /// Queues work for the UI thread.
+    ///
+    /// The dispatcher needs the window's handle, which only exists once the window has been created,
+    /// so it is built on first use rather than in OnCreated - callers post during startup, before
+    /// the message loop has run and raised that event.
+    /// </summary>
+    public void Post(Action work) => (_dispatch ??= new UiThreadDispatch(Handle)).Post(work);
 
-    private UiThreadDispatch _dispatch = null!;
+    private UiThreadDispatch? _dispatch;
 
     public event Action<CaptureMode>? CaptureRequested;
     public event Action<ScreenshotHistoryItem>? EditRequested;
@@ -99,8 +109,6 @@ public sealed class MainWindow : CaptionWindow
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
-
-        _dispatch = new UiThreadDispatch(Handle);
 
         // Alt+Tab and the taskbar get the icon; the caption itself shows neither icon nor title,
         // because the sidebar carries the brand and the caption is now our own pixels.
@@ -266,11 +274,11 @@ public sealed class MainWindow : CaptionWindow
 
         y += S(38);
 
-        y = DrawCaptureAction(ui, bounds, y, 1, Icons.CaptureRegion, "Region",
+        y = DrawCaptureAction(ui, bounds, y, Ui.Id("capture.region"), Icons.CaptureRegion, "Region",
             Hint(_settings.CaptureRegionHotkey), CaptureMode.Region);
-        y = DrawCaptureAction(ui, bounds, y, 2, Icons.CaptureScreen, "Full screen",
+        y = DrawCaptureAction(ui, bounds, y, Ui.Id("capture.fullscreen"), Icons.CaptureScreen, "Full screen",
             Hint(_settings.CaptureFullScreenHotkey), CaptureMode.FullScreen);
-        y = DrawCaptureAction(ui, bounds, y, 3, Icons.CaptureWindow, "Active window",
+        y = DrawCaptureAction(ui, bounds, y, Ui.Id("capture.window"), Icons.CaptureWindow, "Active window",
             Hint(_settings.CaptureActiveWindowHotkey), CaptureMode.ActiveWindow);
 
         y += S(14);
@@ -399,7 +407,7 @@ public sealed class MainWindow : CaptionWindow
 
             if (row.Bottom < bounds.Y || row.Y > bounds.Bottom) continue;
 
-            var id = 1000 + i;
+            var id = Ui.Id(HistoryRow, i);
             var selected = ReferenceEquals(item, _selected);
             if (ui.Interact(id, row))
             {
@@ -458,7 +466,7 @@ public sealed class MainWindow : CaptionWindow
 
         // The toggle flips light and dark. "System" is a deliberate choice, made in Settings - a
         // button that cycles through three states leaves you guessing which one you are in.
-        if (ui.Tile(30, new Rect(bounds.X + S(12), y, size, size), false,
+        if (ui.Tile(Ui.Id("main.newcapture"), new Rect(bounds.X + S(12), y, size, size), false,
             Icons.Theme, S(15), "Switch theme"))
         {
             _settings.Theme = SystemTheme.Resolve(_settings.Theme).IsDark
@@ -467,7 +475,7 @@ public sealed class MainWindow : CaptionWindow
             SaveSettings();
         }
 
-        if (ui.Tile(31, new Rect(bounds.Right - S(12) - size, y, size, size), _settingsOpen,
+        if (ui.Tile(Ui.Id("main.settings"), new Rect(bounds.Right - S(12) - size, y, size, size), _settingsOpen,
             Icons.Settings, S(15), "Settings", neutral: true))
         {
             _settingsOpen = !_settingsOpen;
@@ -541,15 +549,16 @@ public sealed class MainWindow : CaptionWindow
         // Edit carries the accent: it is what this pane is for.
         var edit = ui.ButtonWidth("Edit", font, glyph);
         right -= edit;
-        if (ui.Button(23, new Rect(right, y, edit, S(32)), "Edit",
+        if (ui.Button(Ui.Id("main.edit"), new Rect(right, y, edit, S(32)), "Edit",
             primary: true, glyph: Icons.Edit, glyphSize: glyph, fontSize: font))
             Post(() => EditRequested?.Invoke(item));
 
         var copy = ui.ButtonWidth("Copy", font, glyph);
         right -= copy + S(8);
-        if (ui.Button(22, new Rect(right, y, copy, S(32)), "Copy",
-            glyph: Icons.Copy, glyphSize: glyph, fontSize: font))
-            ClipboardImage.Copy(item.FilePath);
+        if (ui.Button(Ui.Id("main.copy"), new Rect(right, y, copy, S(32)), "Copy",
+            glyph: Icons.Copy, glyphSize: glyph, fontSize: font,
+            confirmation: _copied.Progress(Environment.TickCount64)))
+            CopyToClipboard(item);
 
         // The icon-only actions sit in a taller box with a larger glyph: at 14px they read as
         // afterthoughts next to the labelled buttons they share a row with.
@@ -558,17 +567,18 @@ public sealed class MainWindow : CaptionWindow
         var iconY = bounds.Y + (bounds.Height - icon) / 2;
 
         right -= icon + S(6);
-        if (ui.Tile(21, new Rect(right, iconY, icon, icon), false, Icons.Delete, iconGlyph, "Remove"))
+        if (ui.Tile(Ui.Id("main.remove"), new Rect(right, iconY, icon, icon), false, Icons.Delete, iconGlyph, "Remove",
+            destructive: true))
             Post(() => Delete(item));
 
         right -= icon + S(4);
-        if (ui.Tile(20, new Rect(right, iconY, icon, icon), false, Icons.Reveal, iconGlyph,
+        if (ui.Tile(Ui.Id("main.reveal"), new Rect(right, iconY, icon, icon), false, Icons.Reveal, iconGlyph,
             "Show in Explorer"))
             Reveal(item.FilePath);
 
         // Close sits apart from the pair that act on the file: it only dismisses the view.
         right -= icon + S(14);
-        if (ui.Tile(24, new Rect(right, iconY, icon, icon), false, Icons.Close, iconGlyph,
+        if (ui.Tile(Ui.Id("main.dismiss"), new Rect(right, iconY, icon, icon), false, Icons.Close, iconGlyph,
             "Close  (Esc)"))
             Deselect();
     }
@@ -597,739 +607,6 @@ public sealed class MainWindow : CaptionWindow
             theme.TextTertiary, (float)S(Metrics.FontBody), align: TextAlign.Center);
     }
 
-    // ============================  SETTINGS  ============================
-
-    /// <summary>
-    /// Settings replace the detail pane in place rather than opening a dialog: every change applies
-    /// immediately, so there is nothing to confirm or cancel. Rows sit directly in the column with
-    /// hairline separators doing the grouping, rather than being boxed into nested cards.
-    /// </summary>
-    private void DrawSettings(Ui ui, Rect bounds)
-    {
-        var theme = ui.Theme;
-
-        // The header starts below the caption, so its title and close button clear the window
-        // controls floating over this pane's top-right rather than crowding them.
-        var header = new Rect(
-            bounds.X,
-            bounds.Y + CaptionHeight,
-            bounds.Width,
-            S(14) * 2 + S(Metrics.FontTitle) + S(4));
-
-        ui.Text("Settings", new Rect(header.X + S(28), header.Y, header.Width, header.Height),
-            theme.TextPrimary, (float)S(Metrics.FontTitle), bold: true);
-
-        if (ui.Tile(60, new Rect(header.Right - S(28) - S(36), header.Center.Y - S(18), S(36), S(36)),
-            false, Icons.Close, S(14), "Close settings"))
-        {
-            // The click that got here already committed any focused box, on the way in.
-            _settingsOpen = false;
-            CloseDropdowns();
-        }
-        ui.FillRect(new Rect(bounds.X, header.Bottom, bounds.Width, 1), theme.StrokeSubtle);
-
-        // The scrollable body. Clipped, so a long list cannot paint over the header.
-        var body = new Rect(bounds.X, header.Bottom, bounds.Width, bounds.Bottom - header.Bottom);
-        _settingsViewport = Math.Max(1, body.Height);
-        ui.PushClip(body);
-
-        // Centred column: MaxWidth=640, Margin="32,0,32,32". Sections and rows provide their
-        // own vertical rhythm; keeping it here instead of at each call site makes the whole pane
-        // feel like one system rather than a stack of individually nudged controls.
-        var width = Math.Min(S(640), body.Width - S(64));
-        var x = body.X + (body.Width - width) / 2;
-
-        // Settled before anything is positioned: clamping after the layout would draw one frame at
-        // the bad offset and snap back on the next.
-        _settingsScroll = Math.Clamp(
-            _settingsScroll, 0, Math.Max(0, _settingsHeight - _settingsViewport));
-
-        // Laid out from a fixed origin and shifted by the scroll, so the extent measured below is a
-        // property of the content alone - an extent that moved with the scroll position would feed
-        // back into the next frame's layout.
-        var top = body.Y - _settingsScroll;
-        var y = top;
-
-        y = Section(ui, "CAPTURE", x, y, width);
-
-        y = Row(ui, x, y, width, "Save folder", Shorten(_settings.ScreenshotFolder, 52),
-            row =>
-            {
-                if (!ui.Button(40, ActionSlot(row, S(92)), "Change…",
-                    fontSize: S(Metrics.FontCaption))) return;
-
-                // The picker is modal and would pump its loop mid-frame.
-                Post(() =>
-                {
-                    if (FolderPicker.Pick(Handle, _settings.ScreenshotFolder) is not { } folder)
-                        return;
-
-                    _settings.ScreenshotFolder = folder;
-                    SaveSettings();
-                    Invalidate();
-                });
-            });
-
-        y = Row(ui, x, y, width, "Default capture mode", null,
-            row => _captureModeBox.Field(ui, 41, ActionSlot(row, S(148)),
-                ["Region", "Full screen", "Active window"],
-                (int)_settings.DefaultCaptureMode,
-                index =>
-                {
-                    _settings.DefaultCaptureMode = (CaptureMode)index;
-                    SaveSettings();
-                }));
-
-        y = Row(ui, x, y, width,
-            "Copy to clipboard automatically",
-            "Every capture lands on the clipboard, ready to paste.",
-            row => Switch(ui, 42, ActionSlot(row, S(44)), _settings.CopyToClipboardAutomatically,
-                value =>
-                {
-                    _settings.CopyToClipboardAutomatically = value;
-                    SaveSettings();
-                }));
-
-        y = Row(ui, x, y, width,
-            "Save screenshots automatically",
-            "Captures are written straight into the save folder.",
-            row => Switch(ui, 43, ActionSlot(row, S(44)), _settings.SaveAutomatically,
-                value =>
-                {
-                    _settings.SaveAutomatically = value;
-                    SaveSettings();
-                }));
-
-        y = Section(ui, "SHORTCUTS", x, y, width);
-
-        // On the header line: a reset belongs to the group, not to a row of its own.
-        if (!HotkeysAreDefault())
-        {
-            var reset = new Rect(x + width - S(132), y - S(36), S(132), S(28));
-            if (ui.Button(55, reset, "Restore defaults",
-                glyph: Icons.Undo, glyphSize: S(12), fontSize: S(Metrics.FontCaption)))
-                ResetHotkeys();
-        }
-
-        ui.Text(
-            "Click a shortcut, then press the new keys. Backspace unbinds, Delete restores that one, Esc cancels.",
-            new Rect(x, y, width, S(16)),
-            theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
-        y += S(30);
-
-        var hotkeyWidth = HotkeyWidth(ui);
-
-        y = Hotkey(ui, 44, x, y, width, hotkeyWidth, "Capture region", _settings.CaptureRegionHotkey);
-        y = Hotkey(ui, 45, x, y, width, hotkeyWidth, "Capture full screen", _settings.CaptureFullScreenHotkey);
-        y = Hotkey(ui, 46, x, y, width, hotkeyWidth, "Capture active window", _settings.CaptureActiveWindowHotkey);
-        y = Hotkey(ui, 47, x, y, width, hotkeyWidth, "Open NexusShot", _settings.OpenMainWindowHotkey);
-
-        if (_hotkeyWarning is { } warning)
-        {
-            ui.Text(warning, new Rect(x, y + S(6), width, S(20)),
-                theme.Danger, (float)S(Metrics.FontCaption), middle: false);
-            y += S(28);
-        }
-
-        y = Section(ui, "PREVIEW", x, y, width);
-
-        y = Row(ui, x, y, width,
-            "Auto-dismiss after",
-            "Seconds before a floating preview disappears. 0 keeps it open.",
-            row => NumberField(ui, 48, ActionSlot(row, S(120)), _settings.PreviewDismissSeconds, 0, 120,
-                value =>
-                {
-                    _settings.PreviewDismissSeconds = value;
-                    SaveSettings();
-                }));
-
-        y = Section(ui, "GENERAL", x, y, width);
-
-        y = Row(ui, x, y, width, "Theme", null,
-            row => _themeBox.Field(ui, 49, ActionSlot(row, S(148)),
-                ["System", "Light", "Dark"],
-                (int)_settings.Theme,
-                index =>
-                {
-                    _settings.Theme = (AppTheme)index;
-                    SaveSettings();
-                }));
-
-        y = Row(ui, x, y, width,
-            "Start NexusShot with Windows", null,
-            row => Switch(ui, 50, ActionSlot(row, S(44)), _settings.StartWithWindows,
-                value =>
-                {
-                    _settings.StartWithWindows = value;
-                    Startup.Set(value);
-                    SaveSettings();
-                }));
-
-        // Last frame's extent, which the scroll position was clamped against above - so the thumb
-        // and the rows agree.
-        ui.Scrollbar(body, _settingsHeight, _settingsScroll);
-        ui.PopClip();
-
-        // Open lists paint after the clip is popped: a list is allowed to overhang the rows below it
-        // and the body's own edge, which is the point of a dropdown.
-        _captureModeBox.DrawOpen(ui, body);
-        _themeBox.DrawOpen(ui, body);
-
-        // The trailing margin is part of the content: added to the extent after measuring, it would
-        // buy scroll travel no pixel occupies.
-        y += S(32);
-        _settingsHeight = y - top;
-    }
-
-    private readonly Dropdown _captureModeBox = new();
-    private readonly Dropdown _themeBox = new();
-
-    /// <summary>An open list is anchored to a row, so anything that moves or hides that row - a
-    /// scroll, Escape, leaving settings - has to take the list with it.</summary>
-    private void CloseDropdowns()
-    {
-        _captureModeBox.Close();
-        _themeBox.Close();
-    }
-
-    private bool DropdownOpen => _captureModeBox.IsOpen || _themeBox.IsOpen;
-
-    /// <summary>SectionHeaderStyle: caption, SemiBold, TextTertiary. A generous leading gap and a
-    /// smaller trailing gap make the heading belong to the rows below it, while keeping adjacent
-    /// groups visually distinct.</summary>
-    private double Section(Ui ui, string title, double x, double y, double width)
-    {
-        y += S(28);
-        ui.Text(title, new Rect(x, y, width, S(16)),
-            ui.Theme.TextTertiary, (float)S(Metrics.FontCaption), bold: true, middle: false);
-        return y + S(16) + S(10);
-    }
-
-    /// <summary>
-    /// SettingRowStyle: at least 48 high, bottom border StrokeSubtle, ColumnSpacing=24.
-    /// A title, an optional caption, and a control on the right. The control draws itself into
-    /// the slot the row hands it. The minimum height deliberately leaves eight pixels above and
-    /// below a 32-pixel control, so consecutive buttons never read as one clumped control stack.
-    /// </summary>
-    private double Row(
-        Ui ui, double x, double y, double width,
-        string title, string? caption, Action<Rect> control)
-    {
-        var theme = ui.Theme;
-        var pad = S(10);
-
-        var textHeight = caption is null ? S(18) : S(18) + S(4) + S(18);
-        var height = Math.Max(S(48), pad * 2 + textHeight);
-        var row = new Rect(x, y, width, height);
-
-        var textWidth = width - S(260) - S(24);
-
-        if (caption is null)
-        {
-            ui.Text(title, new Rect(x, row.Y, textWidth, height),
-                theme.TextPrimary, (float)S(Metrics.FontBody));
-        }
-        else
-        {
-            ui.Text(title, new Rect(x, row.Y + pad, textWidth, S(18)),
-                theme.TextPrimary, (float)S(Metrics.FontBody), middle: false);
-            ui.Text(caption, new Rect(x, row.Y + pad + S(18) + S(4), textWidth, S(18)),
-                theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false, wrap: true);
-        }
-
-        control(row);
-
-        ui.FillRect(new Rect(x, row.Bottom, width, 1), theme.StrokeSubtle);
-        return row.Bottom + 1;
-    }
-
-    /// <summary>The right-aligned slot a row's control sits in. ShellButtonStyle is 32 tall.</summary>
-    private Rect ActionSlot(Rect row, double width) =>
-        new(row.Right - width, row.Center.Y - S(16), width, S(32));
-
-    /// <summary>A toggle switch: a track with a knob that slides.</summary>
-    private void Switch(Ui ui, int id, Rect slot, bool value, Action<bool> set)
-    {
-        var track = new Rect(slot.Right - S(40), slot.Center.Y - S(10), S(40), S(20));
-        if (ui.Interact(id, track)) set(!value);
-
-        ui.FillRounded(track, (float)S(10),
-            value ? ui.Theme.Accent
-            : ui.IsHot(id) ? ui.Theme.StrokeStrong
-            : ui.Theme.StrokeDefault);
-
-        var knob = new Point(value ? track.Right - S(10) : track.X + S(10), track.Center.Y);
-        ui.FillCircle(knob, (float)S(7), Rgba.White);
-    }
-
-    /// <summary>An editable number box. Clicking focuses it; the window's key handler types into it.
-    /// Commits on Enter or on clicking away, clamped to the range. An empty box means the minimum.</summary>
-    private void NumberField(Ui ui, int id, Rect slot, int value, int min, int max, Action<int> set)
-    {
-        var focused = _editingNumber == id;
-        if (focused) _numberBounds = slot;
-
-        if (ui.Interact(id, slot) && !focused)
-        {
-            _editingNumber = id;
-            _numberDraft = value.ToString();
-        }
-
-        var radius = (float)S(Metrics.RadiusControl);
-        ui.FillRounded(slot, radius, ui.Theme.SurfaceOverlay);
-        ui.StrokeRounded(slot, radius,
-            focused ? ui.Theme.Accent
-            : ui.IsHot(id) ? ui.Theme.StrokeStrong
-            : ui.Theme.StrokeDefault,
-            focused ? 1.5f : 1f);
-
-        var text = focused ? _numberDraft : value.ToString();
-        var inner = slot.Deflate(S(10));
-
-        ui.Text(text, inner, ui.Theme.TextPrimary, (float)S(Metrics.FontBody));
-
-        if (!focused) return;
-
-        // A caret, so a focused empty box does not read as a dead one.
-        var caretX = inner.X + ui.MeasureText(text, S(Metrics.FontBody)) + S(1);
-        ui.FillRect(new Rect(caretX, slot.Y + S(8), S(1.5), slot.Height - S(16)), ui.Theme.TextPrimary);
-
-        // Held so the key handler can commit into the right setting without knowing which row it is.
-        _numberCommit = () =>
-        {
-            var parsed = int.TryParse(_numberDraft, out var typed) ? typed : min;
-            set(Math.Clamp(parsed, min, max));
-        };
-    }
-
-    /// <summary>The number box being typed into, if any, and the text as typed.</summary>
-    private int? _editingNumber;
-    private string _numberDraft = "";
-
-    /// <summary>Where the focused box sits, so a click landing anywhere else commits it.</summary>
-    private Rect _numberBounds;
-
-    /// <summary>Writes the focused box's draft back into whichever setting it belongs to.</summary>
-    private Action? _numberCommit;
-
-    /// <summary>Commits and unfocuses the number box, if one is focused.</summary>
-    private void CommitNumberField()
-    {
-        if (_editingNumber is null) return;
-
-        _numberCommit?.Invoke();
-        _numberCommit = null;
-        _editingNumber = null;
-    }
-
-    private const string Recording = "Press keys…";
-
-    /// <summary>The width every recorder shares: the widest label any of them can show. Sizing each
-    /// to its own label leaves a ragged column, and a button that resizes when armed jumps.</summary>
-    private double HotkeyWidth(Ui ui)
-    {
-        var font = S(Metrics.FontCaption);
-        var widest = ui.MeasureText(Recording, font);
-
-        foreach (var id in HotkeyIds)
-        {
-            if (Binding(id) is not { } binding) continue;
-            widest = Math.Max(widest, ui.MeasureText(Describe(binding), font));
-        }
-
-        return Math.Max(S(96), widest + S(28));
-    }
-
-    /// <summary>A hotkey recorder. Clicking arms it; the next key press becomes the binding. The
-    /// window's key handler does the recording - there is nothing here to listen with.</summary>
-    private double Hotkey(
-        Ui ui, int id, double x, double y, double width, double slotWidth,
-        string title, HotkeyBinding binding)
-    {
-        return Row(ui, x, y, width, title, null, row =>
-        {
-            var recording = _recordingHotkey == id;
-            var label = recording ? Recording : Describe(binding);
-
-            // The clear gutter is always reserved, so clearing does not shift the recorder.
-            var clearable = binding.Key != 0 && !recording;
-            var full = ActionSlot(row, slotWidth);
-            var clear = new Rect(full.Right - S(22), full.Center.Y - S(11), S(22), S(22));
-            var slot = new Rect(full.X - S(26), full.Y, full.Width, full.Height);
-
-            if (clearable)
-            {
-                if (ui.Interact(id + 7, clear))
-                {
-                    binding.Modifiers = 0;
-                    binding.Key = 0;
-                    _hotkeyWarning = null;
-                    SaveSettings();
-                    HotkeysChanged?.Invoke();
-                    Invalidate();
-                }
-
-                if (ui.IsHot(id + 7))
-                    ui.FillRounded(clear, (float)S(Metrics.RadiusControl), ui.Theme.FillHover);
-
-                ui.Text("✕", clear,
-                    ui.IsHot(id + 7) ? ui.Theme.TextPrimary : ui.Theme.TextTertiary,
-                    (float)S(Metrics.FontCaption), align: TextAlign.Center);
-            }
-
-            // The click lands after `recording` was read, so this frame still draws the old label.
-            // Without the repaint, "Press keys…" would not appear until the next mouse move.
-            if (ui.Interact(id, slot))
-            {
-                _recordingHotkey = recording ? null : id;
-                _hotkeyWarning = null;
-                RecordingChanged?.Invoke(_recordingHotkey is not null);
-                Invalidate();
-            }
-
-            ui.FillRounded(slot, (float)S(Metrics.RadiusControl),
-                recording ? ui.Theme.FillSelected
-                : ui.IsHot(id) ? ui.Theme.FillHover
-                : ui.Theme.SurfaceOverlay);
-
-            ui.StrokeRounded(slot, (float)S(Metrics.RadiusControl),
-                recording ? ui.Theme.Accent : ui.Theme.StrokeSubtle,
-                recording ? 1.5f : 1f);
-
-            ui.Text(label, slot,
-                recording ? ui.Theme.Accent : ui.Theme.TextSecondary,
-                (float)S(Metrics.FontCaption), align: TextAlign.Center);
-        });
-    }
-
-    /// <summary>Describe() for a sidebar hint: unbound draws nothing rather than the word "None".</summary>
-    private static string Hint(HotkeyBinding binding) => binding.Key == 0 ? "" : Describe(binding);
-
-    /// <summary>A binding as text: "Ctrl + Shift + S".</summary>
-    private static string Describe(HotkeyBinding binding)
-    {
-        if (binding.Key == 0) return "None";
-
-        var parts = new List<string>(4);
-        if ((binding.Modifiers & 0x0002) != 0) parts.Add("Ctrl");
-        if ((binding.Modifiers & 0x0004) != 0) parts.Add("Shift");
-        if ((binding.Modifiers & 0x0001) != 0) parts.Add("Alt");
-        if ((binding.Modifiers & 0x0008) != 0) parts.Add("Win");
-        parts.Add(KeyName(binding.Key));
-
-        return string.Join(" + ", parts);
-    }
-
-    private static string KeyName(uint key) => key switch
-    {
-        >= 0x70 and <= 0x87 => $"F{key - 0x6F}",           // F1..F24
-        0x2C => "PrtScn",
-        0x2D => "Insert",
-        0x2E => "Delete",
-        0x24 => "Home",
-        0x23 => "End",
-        0x21 => "PgUp",
-        0x22 => "PgDn",
-        0x20 => "Space",
-        >= 0x30 and <= 0x5A => ((char)key).ToString(),      // 0-9, A-Z
-        _ => $"0x{key:X2}",
-    };
-
-    /// <summary>A path, shortened from the middle so both ends stay readable.</summary>
-    private static string Shorten(string path, int limit)
-    {
-        if (path.Length <= limit) return path;
-        var keep = (limit - 3) / 2;
-        return $"{path[..keep]}…{path[^keep..]}";
-    }
-
-    // ============================  DATA  ============================
-
-    private void DrawThumbnail(
-        Ui ui, IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect slot)
-    {
-        var bitmap = GetThumbnail(target, item);
-        if (bitmap is null) return;
-
-        // Aspect-fill, clipped to the chip. A letterboxed thumbnail in a 52x34 cell is mostly empty
-        // background; filling it makes the row scannable, which is the whole job of a thumbnail.
-        var fit = slot.Cover(new Size(bitmap.Width, bitmap.Height));
-
-        target.Object.PushAxisAlignedClip(
-            AnnotationRenderer.ToRect(slot), D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_ALIASED);
-        target.DrawBitmap(
-            bitmap.Bitmap, 1f,
-            D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-            AnnotationRenderer.ToRect(fit));
-        target.Object.PopAxisAlignedClip();
-    }
-
-    /// <summary>
-    /// The bitmap for a row's thumbnail, or null while it is still being decoded.
-    ///
-    /// The decode runs off the UI thread: inflating a PNG costs tens of milliseconds even when the
-    /// result is a 52x34 chip. The upload has to happen here, on the thread that owns the device, and
-    /// the row fills in on the next frame.
-    /// </summary>
-    private ImageSurface? GetThumbnail(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
-    {
-        if (_thumbnails.TryGetValue(item.FilePath, out var cached)) return cached;
-
-        // Decoded and waiting: upload it now that we are on the thread that owns the device.
-        if (_decoded.TryRemove(item.FilePath, out var pixels))
-        {
-            using var uploadContext = target.AsDeviceContext();
-            if (uploadContext is null) { pixels.Dispose(); return null; }
-
-            // The pixels exist only to reach the GPU; the surface is what the cache keeps.
-            using (pixels)
-            {
-                var surface = ImageSurface.Upload(pixels, uploadContext);
-
-                // The evicted surface owns a GPU bitmap: dropping the reference would leak it.
-                if (_thumbnails.Add(item.FilePath, surface, out var evicted)) evicted?.Dispose();
-                return surface;
-            }
-        }
-
-        StartDecode(item.FilePath);
-        return null;
-    }
-
-    /// <summary>Decoded thumbnail pixels waiting to be uploaded, keyed by file.</summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DecodedImage> _decoded = new();
-
-    /// <summary>Drops pixels for files no longer in the history. An entry is only consumed when its
-    /// row is drawn, so one deleted first would be held forever.</summary>
-    public void SweepDecoded()
-    {
-        if (_decoded.IsEmpty) return;
-
-        var live = _history.Select(item => item.FilePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in _decoded.Keys)
-            if (!live.Contains(path) && _decoded.TryRemove(path, out var pixels)) pixels.Dispose();
-    }
-
-    private void StartDecode(string path)
-    {
-        if (!_decodes.TryStart(path)) return;
-        var generation = _decodes.Generation;
-
-        Task.Run(() =>
-        {
-            DecodedImage? pixels = null;
-            try
-            {
-                // 2x the chip, so it stays crisp on a scaled display.
-                pixels = ImageSurface.DecodeScaled(path, maxWidth: 160, maxHeight: 160);
-            }
-            catch (Exception exception) when (exception is IOException or InvalidOperationException
-                or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException)
-            {
-                // A capture that will not decode simply has no thumbnail.
-                Log.Error("thumbnail.decode", exception, path);
-            }
-
-            Post(() =>
-            {
-                // Rejected pixels are freed here: this callback is their only owner, so returning
-                // without disposing would strand a decode's worth of memory per stale repaint.
-                if (_decodes.Finish(path, generation, pixels is not null) != DecodeOutcome.Accept)
-                {
-                    pixels?.Dispose();
-                }
-                else if (_decoded.TryGetValue(path, out var superseded) && !ReferenceEquals(superseded, pixels))
-                {
-                    _decoded[path] = pixels!;
-                    superseded.Dispose();
-                }
-                else _decoded[path] = pixels!;
-
-                Invalidate();
-            });
-        });
-    }
-
-    /// <summary>
-    /// One detail decode at a time. Completed pixels are admitted on the UI thread only if their
-    /// cache generation and selection still match.
-    /// </summary>
-    private bool _previewLoading;
-
-    /// <summary>Pixels decoded off-thread, waiting for a render to upload them.</summary>
-    private (string Path, DecodedImage Image, (int Width, int Height) Size)? _pendingPreview;
-
-    /// <summary>
-    /// The display-sized bitmap for the detail preview, decoded on a worker.
-    ///
-    /// The upload needs a live device, so it happens here - inside a render call - rather than from
-    /// the worker's completion: a render target handed to one frame can be resized or disposed
-    /// before an asynchronous callback would run.
-    /// </summary>
-    private ImageSurface? GetPreviewBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect well)
-    {
-        var path = item.FilePath;
-        // Round up to avoid restarting a decode for every pixel of a window resize. These are
-        // physical pixels, so this remains sharp on a high-DPI monitor without storing a 4K image
-        // behind an 800-pixel preview. Editors and exports still use the original file.
-        var size = (Width: Math.Max(256, (int)Math.Ceiling(well.Width / 256) * 256),
-            Height: Math.Max(256, (int)Math.Ceiling(well.Height / 256) * 256));
-
-        if (_pendingPreview is { } pending && pending.Path == path)
-        {
-            _pendingPreview = null;
-            using (pending.Image)
-            {
-                using var context = target.AsDeviceContext();
-                if (context is not null)
-                {
-                    _preview?.Dispose();
-                    _preview = ImageSurface.Upload(pending.Image, context);
-                    _previewPath = path;
-                    _previewSize = pending.Size;
-                }
-            }
-        }
-
-        if (_previewPath == path && _preview is not null
-            && _previewSize.Width >= size.Width && _previewSize.Height >= size.Height) return _preview;
-        if (_previewLoading || !File.Exists(path) || !_previewDecodes.TryStart(path)) return null;
-
-        _previewLoading = true;
-        var generation = _previewDecodes.Generation;
-        _ = Task.Run(() =>
-        {
-            DecodedImage? decoded = null;
-            try
-            {
-                decoded = ImageSurface.DecodeScaled(path, size.Width, size.Height);
-            }
-            catch (Exception exception) when (exception is IOException or InvalidOperationException
-                or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException)
-            {
-                // A capture that will not decode shows the empty preview rather than failing the frame.
-                Log.Error("preview.decode", exception, path);
-            }
-
-            Post(() =>
-            {
-                _previewLoading = false;
-
-                // The selection is part of this decode's world: pixels for a capture the user has
-                // already moved off are as stale as pixels from an older generation.
-                var outcome = _previewDecodes.Finish(path, generation, decoded is not null,
-                    stillWanted: _selected?.FilePath == path);
-
-                if (outcome != DecodeOutcome.Accept) decoded?.Dispose();
-                else
-                {
-                    // A pending decode that was never drawn still owns its pixels.
-                    DropPendingPreview();
-                    _pendingPreview = (path, decoded!, size);
-                }
-                Invalidate();
-            });
-        });
-        return null;
-    }
-
-    /// <summary>Frees a decode that arrived but was never uploaded. The pending slot owns its
-    /// pixels, so every path that clears it goes through here.</summary>
-    private void DropPendingPreview()
-    {
-        _pendingPreview?.Image.Dispose();
-        _pendingPreview = null;
-    }
-
-    /// <summary>Closes the capture back to the empty state, releasing its full-resolution bitmap.</summary>
-    private void Deselect()
-    {
-        _selected = null;
-        DropPendingPreview();
-
-        _preview?.Dispose();
-        _preview = null;
-        _previewPath = null;
-
-        Invalidate();
-    }
-
-    private void Delete(ScreenshotHistoryItem item)
-    {
-        _history.Remove(item);
-
-        // Deleting what you were looking at lands on the empty state, rather than decoding whichever
-        // capture happens to be next.
-        if (ReferenceEquals(_selected, item)) Deselect();
-
-        DropCache(item.FilePath);
-
-        // history.json is editable on disk, so its paths are not trusted. Delete only under a root
-        // we own: the screenshot folder, or temp for a capture that was never saved.
-        try
-        {
-            var full = Path.GetFullPath(item.FilePath);
-            if (IsUnder(full, _settings.ScreenshotFolder) || IsUnder(full, Path.GetTempPath()))
-                File.Delete(full);
-            else
-                Log.Error("history.delete_outside_root", new InvalidOperationException(full));
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // The file may be open elsewhere; the history entry still goes.
-        }
-
-        _storage.SaveHistory(_history);
-        Invalidate();
-    }
-
-    /// <summary>Whether the path sits inside root. The trailing separator matters: without it
-    /// "C:\Shots-elsewhere" prefix-matches "C:\Shots".</summary>
-    private static bool IsUnder(string fullPath, string root)
-    {
-        try
-        {
-            var normalized = Path.GetFullPath(root).TrimEnd(
-                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return fullPath.StartsWith(normalized, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception exception) when (exception is ArgumentException or IOException)
-        {
-            return false;
-        }
-    }
-
-    private static void Reveal(string path)
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = $"/select,\"{path}\"",
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception exception) when (exception is IOException
-            or System.ComponentModel.Win32Exception)
-        {
-            // Explorer not opening is not worth taking the app down for.
-        }
-    }
-
-    private static string Truncate(string text, int limit) =>
-        text.Length <= limit ? text : text[..(limit - 1)] + "…";
-
-    private static string Ago(DateTimeOffset when)
-    {
-        var elapsed = DateTimeOffset.Now - when;
-        if (elapsed.TotalMinutes < 1) return "just now";
-        if (elapsed.TotalHours < 1) return $"{(int)elapsed.TotalMinutes}m ago";
-        if (elapsed.TotalDays < 1) return $"{(int)elapsed.TotalHours}h ago";
-        if (elapsed.TotalDays < 7) return $"{(int)elapsed.TotalDays}d ago";
-        return when.LocalDateTime.ToString("d MMM");
-    }
-
     // ============================  INPUT  ============================
 
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
@@ -1341,7 +618,7 @@ public sealed class MainWindow : CaptionWindow
         switch (msg)
         {
             case UiThreadDispatch.Message:
-                _dispatch.Drain();
+                _dispatch?.Drain();
                 return new LRESULT { Value = 0 };
 
             case SystemTheme.WM_SETTINGCHANGE:
@@ -1471,12 +748,17 @@ public sealed class MainWindow : CaptionWindow
                 return new LRESULT { Value = 0 };
             }
 
+            case WmTimer when (nuint)wParam.Value == CopyFeedbackTimerId:
+                StepCopyFeedback();
+                return new LRESULT { Value = 0 };
+
             case WmClose:
                 Hide();
                 return new LRESULT { Value = 0 };
 
             case 0x0018 when wParam.Value == 0: // WM_SHOWWINDOW: every path to hidden releases pixels.
                 ReleaseVisuals();
+                StopCopyFeedback();
                 if (_recordingHotkey is not null)
                 {
                     _recordingHotkey = null;
@@ -1554,26 +836,34 @@ public sealed class MainWindow : CaptionWindow
         static bool Down(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
     }
 
-    private static readonly int[] HotkeyIds = [44, 45, 46, 47];
+    /// <summary>The hotkey rows, in the order they are drawn. One table: the recorder, the reset,
+    /// the defaults check and the row itself all read the binding from here, so adding a hotkey
+    /// cannot leave one of them behind.</summary>
+    private static readonly (int Id, Func<AppSettings, HotkeyBinding> Binding, string Title)[] Hotkeys =
+    [
+        (Ui.Id("hotkey.region"), settings => settings.CaptureRegionHotkey, "Capture region"),
+        (Ui.Id("hotkey.fullscreen"), settings => settings.CaptureFullScreenHotkey, "Capture full screen"),
+        (Ui.Id("hotkey.window"), settings => settings.CaptureActiveWindowHotkey, "Capture active window"),
+        (Ui.Id("hotkey.open"), settings => settings.OpenMainWindowHotkey, "Open NexusShot"),
+    ];
 
     /// <summary>Whether every binding already matches a fresh AppSettings.</summary>
     private bool HotkeysAreDefault()
     {
         var defaults = new AppSettings();
-        foreach (var id in HotkeyIds)
-        {
-            if (Binding(id) is not { } current || Binding(id, defaults) is not { } fallback) continue;
-            if (!current.IsSameGesture(fallback)) return false;
-        }
+        foreach (var (_, binding, _) in Hotkeys)
+            if (!binding(_settings).IsSameGesture(binding(defaults))) return false;
+
         return true;
     }
 
     private void ResetHotkeys()
     {
         var defaults = new AppSettings();
-        foreach (var id in HotkeyIds)
+        foreach (var (_, binding, _) in Hotkeys)
         {
-            if (Binding(id) is not { } current || Binding(id, defaults) is not { } fallback) continue;
+            var current = binding(_settings);
+            var fallback = binding(defaults);
             current.Modifiers = fallback.Modifiers;
             current.Key = fallback.Key;
         }
@@ -1588,15 +878,10 @@ public sealed class MainWindow : CaptionWindow
     /// <summary>The binding a hotkey row edits.</summary>
     private HotkeyBinding? Binding(int id, AppSettings? from = null)
     {
-        var settings = from ?? _settings;
-        return id switch
-        {
-            44 => settings.CaptureRegionHotkey,
-            45 => settings.CaptureFullScreenHotkey,
-            46 => settings.CaptureActiveWindowHotkey,
-            47 => settings.OpenMainWindowHotkey,
-            _ => null,
-        };
+        foreach (var (rowId, binding, _) in Hotkeys)
+            if (rowId == id) return binding(from ?? _settings);
+
+        return null;
     }
 
     /// <summary>Reports bindings that another application already owns, so the user can see which

@@ -35,10 +35,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private const nuint DismissTimerId = 1;
     private const nuint DismissAnimationTimerId = 2;
     private const nuint CopyFeedbackTimerId = 3;
-    private const int CopyTransitionMs = 160;
-    private const int CopyHoldUntilMs = 1640;
-    private const int CopyFeedbackDurationMs = CopyHoldUntilMs + CopyTransitionMs;
-    private long? _copiedAt;
+    private readonly ConfirmFeedback _copied = new();
 
     /// <summary>Card actions - save-as, edit, pin, dismiss - are posted rather than run inline: each
     /// unwinds into a reflow or a modal loop, and neither may run inside DoDragDrop or this card's
@@ -47,9 +44,9 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private void Post(Action work) => _dispatch.Post(work);
 
     // Design units; scaled per-monitor.
-    private const double CardWidth = 168;
-    private const double MinCardHeight = 56;
-    private const double MaxCardHeight = 240;
+    private const double CardWidth = 136;
+    private const double MinCardHeight = 46;
+    private const double MaxCardHeight = 194;
     private const double StackGap = 10;
     private const double EdgeMargin = 18;
 
@@ -221,207 +218,6 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         _ui.EndFrame();
 
         if (_ui.ClickedThisFrame) Invalidate();
-    }
-
-    private static readonly Rgba ActionBackground = new(0x20, 0x20, 0x24, 0xE6);
-    private static readonly Rgba ActionBorder = new(0xFF, 0xFF, 0xFF, 0x26);
-
-    /// <summary>Hover and press wash white over the rest fill and leave the border alone, which is
-    /// what the stock button template these were gave them.</summary>
-    private static readonly Rgba ActionOverlayHover = new(0xFF, 0xFF, 0xFF, 0x0F);
-    private static readonly Rgba ActionOverlayPressed = new(0xFF, 0xFF, 0xFF, 0x0A);
-
-    private static readonly Rgba CloseBackground = new(0x32, 0x32, 0x36, 0xF2);
-    private static readonly Rgba CloseHover = new(0xC4, 0x2B, 0x1C, 0xFF);
-    private static readonly Rgba CloseBorder = new(0xFF, 0xFF, 0xFF, 0x59);
-
-    /// <summary>Dismisses the card without acting on the capture.</summary>
-    private void DrawClose(Ui ui, Rect card)
-    {
-        var size = S(18);
-        var bounds = new Rect(card.Right - size - S(4), S(4), size, size);
-
-        var clicked = ui.Interact(5, bounds);
-        var hot = ui.IsHot(5) || ui.IsActive(5);
-
-        var center = bounds.Center;
-        var radius = (float)(size / 2);
-        ui.FillCircle(center, radius, hot ? CloseHover : CloseBackground);
-        ui.StrokeCircle(center, radius, CloseBorder);
-        ui.Icon(Icons.Close, bounds, Rgba.White, S(8));
-
-        // Acted on last: Dismiss tears the window down, and the frame still has to finish.
-        if (clicked) Dismiss();
-    }
-
-    /// <summary>The hover actions: a full-card scrim behind a centred row of circular buttons.</summary>
-    private void DrawActions(Ui ui, Rect card)
-    {
-        ui.FillRect(card, ui.Theme.HoverScrim);
-
-        const int count = 4;
-        var size = S(26);
-        var spacing = S(5);
-        var totalWidth = size * count + spacing * (count - 1);
-        var x = card.Center.X - totalWidth / 2;
-        var y = card.Center.Y - size / 2;
-        var glyph = S(12);
-
-        // Copy leaves the card up: the capture is on the clipboard, but you may still want to drag
-        // it, edit it, or copy it again.
-        if (ActionButton(ui, 1, new Rect(x, y, size, size), Icons.Copy, glyph, false, CopyConfirmation()))
-        {
-            Post(Copy);
-        }
-        x += size + spacing;
-
-        if (ActionButton(ui, 2, new Rect(x, y, size, size), Icons.Save, glyph, false))
-        {
-            Post(SaveAs);
-        }
-        x += size + spacing;
-
-        if (ActionButton(ui, 3, new Rect(x, y, size, size), Icons.Edit, glyph, false))
-        {
-            Post(RaiseEditRequested);
-        }
-        x += size + spacing;
-
-        // Pin: the accent when engaged, so its state is legible without a label.
-        if (ActionButton(ui, 4, new Rect(x, y, size, size), Icons.Pin, glyph, IsPinned))
-        {
-            IsPinned = !IsPinned;
-            _remaining = _dismissSeconds;
-            Post(() => PinnedChanged?.Invoke());
-        }
-    }
-
-    /// <summary>Posted rather than handled inline from the button click: dismissing here must not
-    /// run underneath the frame that just drew the button.</summary>
-    private void RaiseEditRequested()
-    {
-        if (_dismissing) return;
-        EditRequested?.Invoke(_item);
-        Dismiss();
-    }
-
-    /// <summary>A circular overlay action button, washed a little lighter on hover and press.</summary>
-    private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected,
-        double confirmation = 0)
-    {
-        var clicked = ui.Interact(id, bounds);
-
-        var center = bounds.Center;
-        var radius = (float)(bounds.Width / 2);
-
-        ui.FillCircle(center, radius, selected ? ui.Theme.Accent : ActionBackground);
-
-        // Over whatever the button already is, so an engaged pin brightens from the accent rather
-        // than snapping back to grey.
-        if (ui.IsActive(id)) ui.FillCircle(center, radius, ActionOverlayPressed);
-        else if (ui.IsHot(id)) ui.FillCircle(center, radius, ActionOverlayHover);
-
-        ui.StrokeCircle(center, radius, ActionBorder);
-        if (confirmation < 1)
-            ui.Icon(glyph, bounds, Rgba.White.WithAlpha((byte)(255 * (1 - confirmation))), glyphSize);
-        if (confirmation > 0)
-            ui.Icon(Icons.Tick, bounds, Rgba.White.WithAlpha((byte)(255 * confirmation)),
-                glyphSize * (0.8 + 0.2 * confirmation));
-
-        return clicked;
-    }
-
-    private void Copy()
-    {
-        if (_dismissing) return;
-        try
-        {
-            ClipboardImage.Copy(_item.FilePath);
-            // Only a completed copy earns a tick. A second successful click restarts the hold.
-            _copiedAt = Environment.TickCount64;
-            WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, 16, IntPtr.Zero);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
-            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
-        {
-            _copiedAt = null;
-            WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
-            Log.Error("preview.copy", exception, _item.FilePath);
-        }
-        Invalidate();
-    }
-
-    private double CopyConfirmation()
-    {
-        if (_copiedAt is not { } started) return 0;
-        var elapsed = Environment.TickCount64 - started;
-        var progress = elapsed < CopyTransitionMs
-            ? elapsed / (double)CopyTransitionMs
-            : (CopyFeedbackDurationMs - elapsed) / (double)CopyTransitionMs;
-        progress = Math.Clamp(progress, 0, 1);
-        return progress * progress * (3 - 2 * progress);
-    }
-
-    private void StepCopyFeedback()
-    {
-        var elapsed = Environment.TickCount64 - (_copiedAt ?? 0);
-        if (_copiedAt is null || elapsed >= CopyFeedbackDurationMs)
-        {
-            _copiedAt = null;
-            WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
-        }
-        else
-        {
-            // Animate only the transitions; the steady tick needs no continuous repainting.
-            var delay = elapsed >= CopyTransitionMs && elapsed < CopyHoldUntilMs
-                ? (uint)(CopyHoldUntilMs - elapsed) : 16u;
-            WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, delay, IntPtr.Zero);
-        }
-        if (_hovered) Invalidate();
-    }
-
-    /// <summary>A pinned card that is not hovered still says so, quietly, in the corner.</summary>
-    private void DrawPin(Ui ui, Rect card)
-    {
-        var badge = new Rect(card.Right - S(26), S(6), S(20), S(20));
-        ui.FillRounded(badge, (float)S(4), ui.Theme.HoverScrim);
-        ui.Icon(Icons.Pin, badge, ui.Theme.Accent, S(11));
-    }
-
-    /// <summary>Writes a copy wherever the user picks, then dismisses: the capture has landed
-    /// somewhere permanent, so the card has done its job.</summary>
-    private void SaveAs()
-    {
-        if (_dismissing) return;
-
-        // The picker pumps its own message loop, so the countdown keeps ticking behind it - and
-        // would close the window while the user is still typing a filename.
-        _remaining = _dismissSeconds;
-        _savingAs = true;
-
-        string? destination;
-        try
-        {
-            destination = FilePicker.SavePng(Handle, Path.GetFileName(_item.FilePath),
-                Path.GetDirectoryName(_item.FilePath));
-        }
-        finally
-        {
-            _savingAs = false;
-        }
-
-        if (destination is null) return;
-
-        try
-        {
-            File.Copy(_item.FilePath, destination, overwrite: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            return;
-        }
-
-        Dismiss();
     }
 
     /// <summary>Dismisses the card without acting on the capture.</summary>

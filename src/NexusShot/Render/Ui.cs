@@ -1,4 +1,4 @@
-using NexusShot.Core;
+﻿using NexusShot.Core;
 
 namespace NexusShot.Render;
 
@@ -139,6 +139,15 @@ public sealed class Ui(D2DResources resources)
             _target.Object.FillGeometry(region.Object, resources.Brush(color).Object, null!);
     }
 
+    /// <summary>Fills <paramref name="row"/> clipped to the rounded rectangle <paramref name="within"/>,
+    /// so a row flush against a list's end picks up that end's corners and the rows between it stay
+    /// square.</summary>
+    public void FillRowInRounded(Rect row, Rect within, float radius, Rgba color) =>
+        FillRoundedRegion(within, radius,
+            [new Point(row.X, row.Y), new Point(row.Right, row.Y),
+             new Point(row.Right, row.Bottom), new Point(row.X, row.Bottom)],
+            color);
+
     /// <summary>An open path with round caps and joins.</summary>
     public void Polyline(IReadOnlyList<Point> points, Rgba color, float thickness)
     {
@@ -246,6 +255,43 @@ public sealed class Ui(D2DResources resources)
         return clicked;
     }
 
+    /// <summary>
+    /// A stable widget id from a name, so ids do not have to be hand-allocated.
+    ///
+    /// FNV-1a, written out rather than taken from string.GetHashCode, which is randomised per
+    /// process: ids are compared against Hot/Active across frames, not persisted, but a literal
+    /// here keeps the value inspectable in a debugger and identical between runs. Zero is reserved
+    /// for "no widget", so a name hashing to it is nudged.
+    /// </summary>
+    public static int Id(string name)
+    {
+        unchecked
+        {
+            var hash = 2166136261u;
+            foreach (var character in name) hash = (hash ^ character) * 16777619u;
+
+            var id = (int)hash;
+            return id == 0 ? 1 : id;
+        }
+    }
+
+    /// <summary>
+    /// A child id under <paramref name="owner"/>, for widgets that repeat over runtime data.
+    ///
+    /// Mixed rather than added: `owner + index` walks straight into the next owner's id once the
+    /// index grows, which is what hand-allocated ranges kept colliding on.
+    /// </summary>
+    public static int Id(int owner, int index)
+    {
+        unchecked
+        {
+            var hash = ((2166136261u ^ (uint)owner) * 16777619u ^ (uint)index) * 16777619u;
+
+            var id = (int)hash;
+            return id == 0 ? 1 : id;
+        }
+    }
+
     public bool IsHot(int id) => Hot == id;
     public bool IsActive(int id) => Active == id;
 
@@ -254,12 +300,16 @@ public sealed class Ui(D2DResources resources)
     /// a nav destination is somewhere you are, not a mode you have armed.</summary>
     public bool Tile(
         int id, Rect bounds, bool selected, string glyph, double glyphSize,
-        string? tooltip = null, Rgba? tint = null, bool neutral = false)
+        string? tooltip = null, Rgba? tint = null, bool neutral = false, bool destructive = false)
     {
         var clicked = Interact(id, bounds);
 
+        // Deleting is the one action on these bars that cannot be undone by clicking again, so it
+        // states that on approach rather than looking like every other tile until it has run.
         var fill = selected
             ? neutral ? Theme.FillSelected : Theme.Accent
+            : destructive && (IsHot(id) || IsActive(id))
+                ? IsActive(id) ? Theme.Danger.WithAlpha(0xE6) : Theme.Danger
             : IsActive(id) ? Theme.FillPressed
             : IsHot(id) ? Theme.FillHover
             : default;
@@ -268,6 +318,7 @@ public sealed class Ui(D2DResources resources)
 
         var foreground = selected
             ? neutral ? Theme.TextPrimary : Theme.TextOnAccent
+            : destructive && (IsHot(id) || IsActive(id)) ? Theme.TextOnAccent
             : IsHot(id) ? Theme.TextPrimary
             : Theme.TextSecondary;
         Icon(glyph, bounds, tint ?? foreground, glyphSize);
@@ -335,7 +386,7 @@ public sealed class Ui(D2DResources resources)
         int id, Rect bounds, string label,
         bool primary = false, bool enabled = true, bool toggled = false,
         string? glyph = null, double glyphSize = 14, double fontSize = Metrics.FontBody,
-        bool accent = false)
+        bool accent = false, bool destructive = false, double confirmation = 0)
     {
         // Interact first: it is what sets Hot/Active, so reading them before it would style the
         // button from the previous frame's state and drop the first frame of every hover.
@@ -363,6 +414,12 @@ public sealed class Ui(D2DResources resources)
             border = Theme.StrokeStrong;
             text = Theme.TextPrimary;
         }
+        else if (destructive && (IsHot(id) || IsActive(id)))
+        {
+            fill = IsActive(id) ? Theme.Danger.WithAlpha(0xE6) : Theme.Danger;
+            border = fill;
+            text = Theme.TextOnAccent;
+        }
         else
         {
             // The overlay surface is opaque, so the hover/press tint is composited onto it rather
@@ -389,6 +446,8 @@ public sealed class Ui(D2DResources resources)
             return clicked;
         }
 
+
+
         // Glyph and label as one centred cluster. The label is measured, not estimated from its
         // character count: a guess leaves the pair visibly off-centre in the button.
         var gap = glyphSize * 0.55;
@@ -396,7 +455,15 @@ public sealed class Ui(D2DResources resources)
         var content = glyphSize + gap + labelWidth;
         var x = bounds.X + (bounds.Width - content) / 2;
 
-        Icon(glyph, new Rect(x, bounds.Y, glyphSize, bounds.Height), text, glyphSize);
+        // Confirmed: the glyph cross-fades to a tick in place. The label and the cluster's width
+        // are measured from the original, so nothing reflows under the pointer mid-swap.
+        var glyphBounds = new Rect(x, bounds.Y, glyphSize, bounds.Height);
+        if (confirmation < 1)
+            Icon(glyph, glyphBounds, text.WithAlpha((byte)(text.A * (1 - confirmation))), glyphSize);
+        if (confirmation > 0)
+            Icon(Icons.Tick, glyphBounds, text.WithAlpha((byte)(text.A * confirmation)),
+                glyphSize * (0.8 + 0.2 * confirmation));
+
         Text(label, new Rect(x + glyphSize + gap, bounds.Y, labelWidth + 2, bounds.Height),
             text, (float)fontSize, bold);
 

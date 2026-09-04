@@ -80,7 +80,7 @@ public sealed class CapturePipeline : IDisposable
         var (width, height) = ImageSurface.ReadSize(temporaryPath);
 
         Directory.CreateDirectory(_settings.ScreenshotFolder);
-        var baseName = $"NexusShot {DateTime.Now:yyyy-MM-dd HH.mm.ss}";
+        var baseName = CaptureName.For(DateTime.Now);
         var destination = Path.Combine(_settings.ScreenshotFolder, baseName + ".png");
         if (_settings.SaveAutomatically)
         {

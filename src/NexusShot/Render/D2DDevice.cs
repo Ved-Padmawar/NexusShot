@@ -1,7 +1,7 @@
-namespace NexusShot.Render;
+﻿namespace NexusShot.Render;
 
 /// <summary>
-/// Creates a Direct2D device on D3D11, using WARP for the tested driver compatibility workaround.
+/// Creates a Direct2D device on D3D11.
 ///
 /// A device context (rather than a plain render target) is what unlocks ID2D1Effect, which is how
 /// blur and pixelate run on the GPU. The exporter needs one for exactly that reason: a WIC render
@@ -24,8 +24,7 @@ public static class D2DDevice
 
         using var d3d = D3D11Functions.D3D11CreateDevice(
             null,
-            GraphicsBackend.UseSoftwareRendering ? D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_WARP
-                : D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE,
+            D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE,
             // BGRA support is required for D2D interop.
             D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT);
 

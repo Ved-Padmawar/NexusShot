@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -14,7 +14,7 @@
 
     <!-- The fallback for a local build. A release overrides it with the tag, via build.ps1's
          -p:Version. The sidebar badge reads it back off the assembly. -->
-    <Version>0.1.8</Version>
+    <Version>0.1.9</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

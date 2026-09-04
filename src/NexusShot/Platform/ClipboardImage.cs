@@ -26,6 +26,9 @@ internal static partial class ClipboardImage
     private const uint BI_BITFIELDS = 3;
     private const uint LCS_sRGB = 0x73524742;   // 'sRGB'
 
+    private const int OpenAttempts = 5;
+    private const int OpenRetryDelayMs = 15;
+
     /// <summary>The shell registers "PNG" by name; the atom is stable for the session.</summary>
     private static readonly uint CF_PNG = RegisterClipboardFormatW("PNG");
 
@@ -60,7 +63,7 @@ internal static partial class ClipboardImage
 
         if (width <= 0 || height <= 0) return;
 
-        if (!OpenClipboard(IntPtr.Zero)) return;
+        if (!TryOpenClipboard()) return;
         try
         {
             EmptyClipboard();
@@ -75,12 +78,28 @@ internal static partial class ClipboardImage
                 }
             }
 
-            Place(CF_DIBV5, BuildDib(image.Span, width, height, v5: true));
-            Place(CF_DIB, BuildDib(image.Span, width, height, v5: false));
+            PlaceDib(CF_DIBV5, image.Span, width, height, v5: true);
+            PlaceDib(CF_DIB, image.Span, width, height, v5: false);
         }
         finally
         {
             CloseClipboard();
+        }
+    }
+
+    /// <summary>
+    /// The clipboard is a single system-wide resource, and any process holding it makes
+    /// OpenClipboard fail outright. Clipboard managers and Office hold it for a few milliseconds at
+    /// a time, so one attempt loses that race often enough to drop captures.
+    /// </summary>
+    private static bool TryOpenClipboard()
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            if (OpenClipboard(IntPtr.Zero)) return true;
+            if (attempt == OpenAttempts - 1) return false;
+
+            Thread.Sleep(OpenRetryDelayMs << attempt);
         }
     }
 
@@ -105,16 +124,48 @@ internal static partial class ClipboardImage
         if (SetClipboardData(format, memory) == IntPtr.Zero) GlobalFree(memory);
     }
 
-    /// <summary>A packed DIB: header, then bottom-up 32-bit rows, alpha composited onto white.
-    /// <paramref name="v5"/> emits a BITMAPV5HEADER, which states the channel masks and colour space
-    /// rather than leaving the reader to assume them.</summary>
-    private static byte[] BuildDib(ReadOnlySpan<byte> premultipliedBgra, int width, int height, bool v5)
+    /// <summary>
+    /// Builds a packed DIB directly inside the clipboard's own moveable block, which the clipboard
+    /// then takes ownership of.
+    ///
+    /// A full-screen DIB is several megabytes, so staging it in a byte[] first put one array per
+    /// format straight onto the large object heap and left it there until the next gen-2 collection.
+    /// </summary>
+    private static void PlaceDib(uint format, ReadOnlySpan<byte> premultipliedBgra, int width, int height, bool v5)
     {
         var headerSize = v5 ? BITMAPV5HEADER_SIZE : BITMAPINFOHEADER_SIZE;
         var stride = width * 4;
-        var dib = new byte[headerSize + stride * height];
 
-        var header = dib.AsSpan();
+        var memory = GlobalAlloc(GMEM_MOVEABLE, (nuint)(headerSize + stride * height));
+        if (memory == IntPtr.Zero) return;
+
+        var target = GlobalLock(memory);
+        if (target == IntPtr.Zero)
+        {
+            GlobalFree(memory);
+            return;
+        }
+
+        try
+        {
+            unsafe
+            {
+                WriteDib(new Span<byte>((void*)target, headerSize + stride * height),
+                    premultipliedBgra, width, height, headerSize, stride, v5);
+            }
+        }
+        finally { GlobalUnlock(memory); }
+
+        if (SetClipboardData(format, memory) == IntPtr.Zero) GlobalFree(memory);
+    }
+
+    /// <summary><paramref name="v5"/> emits a BITMAPV5HEADER, which states the channel masks and
+    /// colour space rather than leaving the reader to assume them. Rows are bottom-up 32-bit, with
+    /// alpha composited onto white.</summary>
+    private static void WriteDib(Span<byte> dib, ReadOnlySpan<byte> premultipliedBgra,
+        int width, int height, int headerSize, int stride, bool v5)
+    {
+        var header = dib;
         BitConverter.TryWriteBytes(header[0..], headerSize);
         BitConverter.TryWriteBytes(header[4..], width);
         BitConverter.TryWriteBytes(header[8..], height);            // positive: bottom-up
@@ -152,7 +203,6 @@ internal static partial class ClipboardImage
                 dib[destination + x + 3] = 255;
             }
         }
-        return dib;
     }
 
     [LibraryImport("user32.dll", SetLastError = true)]

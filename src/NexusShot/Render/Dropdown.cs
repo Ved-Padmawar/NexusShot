@@ -1,4 +1,4 @@
-using NexusShot.Core;
+﻿using NexusShot.Core;
 
 namespace NexusShot.Render;
 
@@ -64,10 +64,13 @@ public sealed class Dropdown
 
         var scale = ui.Scale;
         var rowHeight = 32 * scale;
-        var padding = 4 * scale;
         var gap = 4 * scale;
+        var radius = 6 * scale;
 
-        var height = _options.Length * rowHeight + padding * 2;
+        // Rows run edge to edge: an inset leaves the highlight floating inside the surface with a
+        // sliver of background showing around it, which reads as a misdrawn row rather than a
+        // selection. The list's own corner radius is what keeps the ends from being square.
+        var height = _options.Length * rowHeight;
 
         var below = _anchor.Bottom + gap;
         var above = _anchor.Y - gap - height;
@@ -85,15 +88,13 @@ public sealed class Dropdown
             return;
         }
 
-        ui.FillRounded(list, (float)(6 * scale), ui.Theme.SurfaceOverlay);
-        ui.StrokeRounded(list, (float)(6 * scale), ui.Theme.StrokeDefault);
+        ui.FillRounded(list, (float)radius, ui.Theme.SurfaceOverlay);
 
         for (var i = 0; i < _options.Length; i++)
         {
-            var row = new Rect(list.X + padding, list.Y + padding + i * rowHeight,
-                list.Width - padding * 2, rowHeight);
+            var row = new Rect(list.X, list.Y + i * rowHeight, list.Width, rowHeight);
 
-            var id = _openId * 100 + i + 1;
+            var id = Ui.Id(_openId, i);
             if (ui.Interact(id, row))
             {
                 var commit = _commit;
@@ -103,11 +104,13 @@ public sealed class Dropdown
                 return;
             }
 
-            if (i == _selected) ui.FillRounded(row, (float)(4 * scale), ui.Theme.Accent);
-            else if (ui.IsHot(id)) ui.FillRounded(row, (float)(4 * scale), ui.Theme.FillHover);
+            // Clipped to the list, so the end rows pick up its corners and the ones between stay
+            // square: a full-width fill would otherwise square off the rounded ends.
+            var fill = i == _selected ? ui.Theme.Accent : ui.IsHot(id) ? ui.Theme.FillHover : default;
+            if (fill.A > 0) ui.FillRowInRounded(row, list, (float)radius, fill);
 
             ui.Text(_options[i],
-                new Rect(row.X + 8 * scale, row.Y, row.Width - 8 * scale, row.Height),
+                new Rect(row.X + 12 * scale, row.Y, row.Width - 12 * scale, row.Height),
                 i == _selected ? ui.Theme.TextOnAccent : ui.Theme.TextPrimary,
                 (float)(Metrics.FontBody * scale));
         }

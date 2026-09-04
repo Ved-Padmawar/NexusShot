@@ -51,6 +51,12 @@ public sealed class App : IDisposable
         _main.ThemeChanged += RethemeEditors;
         WatchSaveFolder();
 
+        // The watcher only reports changes from here on, so whatever is already in the folder is
+        // invisible to it. A reinstall keeps the captures but loses the history file, and pointing
+        // the setting at an existing folder is the same situation: without this scan those captures
+        // appear only once some later change happens to fire the watcher.
+        SyncHistory();
+
         // Rewrites a Run entry from an older build, which had no --startup flag.
         if (_settings.StartWithWindows) Startup.Set(true);
 
@@ -269,7 +275,8 @@ public sealed class App : IDisposable
                             candidates.Add(new ScreenshotHistoryItem
                             {
                                 FilePath = file,
-                                CapturedAt = File.GetCreationTime(file),
+                                CapturedAt = CaptureName.TryParseTime(file, out var captured)
+                                    ? captured : File.GetCreationTime(file),
                                 Width = width,
                                 Height = height,
                             });

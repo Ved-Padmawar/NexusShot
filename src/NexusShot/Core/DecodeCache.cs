@@ -1,4 +1,4 @@
-namespace NexusShot.Core;
+﻿namespace NexusShot.Core;
 
 /// <summary>
 /// Admission control for decodes that finish on a worker thread.
@@ -11,6 +11,11 @@ namespace NexusShot.Core;
 /// </summary>
 public sealed class DecodeCache
 {
+    /// <summary>Decoders allowed to run at once. Scrolling a long history crosses dozens of files
+    /// the cache has never seen, and each is a distinct path, so per-path deduplication alone puts
+    /// one WIC decoder per visible row on the pool at the same time.</summary>
+    public const int MaxConcurrentDecodes = 2;
+
     private readonly HashSet<string> _failures = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _running = new(StringComparer.OrdinalIgnoreCase);
     private long _generation;
@@ -25,9 +30,13 @@ public sealed class DecodeCache
     public bool HasFailed(string path) => _failures.Contains(path);
 
     /// <summary>Claims the right to decode <paramref name="path"/>. False when one is already
-    /// running or the file has already failed, so a repaint cannot start a second decode of the
-    /// same file or retry a corrupt one forever.</summary>
-    public bool TryStart(string path) => !_failures.Contains(path) && _running.Add(path);
+    /// running, the file has already failed, or the concurrency bound is reached, so a repaint
+    /// cannot start a second decode of the same file or retry a corrupt one forever.
+    ///
+    /// A refused start is not recorded: the next repaint asks again, and the row that is still on
+    /// screen by then is the one that gets the slot.</summary>
+    public bool TryStart(string path)
+        => _running.Count < MaxConcurrentDecodes && !_failures.Contains(path) && _running.Add(path);
 
     /// <summary>
     /// Reports a decode finished, and says whether its result may be used.

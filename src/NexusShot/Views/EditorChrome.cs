@@ -1,4 +1,4 @@
-using NexusShot.Core;
+﻿using NexusShot.Core;
 using NexusShot.Render;
 
 namespace NexusShot.Views;
@@ -78,7 +78,7 @@ public sealed class EditorChrome(Ui ui)
 
     public void Draw(
         EditorDocument document, double width, double height, string title, bool fit, string? toast,
-        bool copied)
+        double copied)
     {
         _copied = copied;
         ToolPicked = null;
@@ -143,16 +143,17 @@ public sealed class EditorChrome(Ui ui)
         var right = width - S(12);
 
         right -= tile;
-        if (ui.Tile(9024, new Rect(right, y, tile, tile), false, Icons.Delete, S(14), "Delete  (Del)"))
+        if (ui.Tile(Ui.Id("editor.delete"), new Rect(right, y, tile, tile), false, Icons.Delete, S(14), "Delete  (Del)",
+            destructive: true))
             DeletePressed = true;
 
         right -= tile + S(2);
-        if (ui.Tile(9023, new Rect(right, y, tile, tile), false, Icons.Redo, S(14), "Redo  (Ctrl+Y)")
+        if (ui.Tile(Ui.Id("editor.redo"), new Rect(right, y, tile, tile), false, Icons.Redo, S(14), "Redo  (Ctrl+Y)")
             && document.CanRedo)
             RedoPressed = true;
 
         right -= tile + S(2);
-        if (ui.Tile(9022, new Rect(right, y, tile, tile), false, Icons.Undo, S(14), "Undo  (Ctrl+Z)")
+        if (ui.Tile(Ui.Id("editor.undo"), new Rect(right, y, tile, tile), false, Icons.Undo, S(14), "Undo  (Ctrl+Z)")
             && document.CanUndo)
             UndoPressed = true;
 
@@ -206,7 +207,8 @@ public sealed class EditorChrome(Ui ui)
         var chipBounds = new Rect(x, y + S(3), chip, tile - S(6));
         var open = _picker.IsOpen;
 
-        if (ui.Interact(9002, chipBounds))
+        var chipId = Ui.Id("editor.colour.chip");
+        if (ui.Interact(chipId, chipBounds))
         {
             if (open) _picker.Close();
             else _picker.Open(Palette.Parse(document.ColorHex));
@@ -214,7 +216,7 @@ public sealed class EditorChrome(Ui ui)
 
         ui.FillRounded(chipBounds, (float)S(Metrics.RadiusControl),
             open ? ui.Theme.FillSelected
-            : ui.IsHot(9002) ? ui.Theme.FillHover
+            : ui.IsHot(chipId) ? ui.Theme.FillHover
             : ui.Theme.SurfaceOverlay);
         ui.StrokeRounded(chipBounds, (float)S(Metrics.RadiusControl), ui.Theme.StrokeSubtle);
 
@@ -247,9 +249,10 @@ public sealed class EditorChrome(Ui ui)
             ui.Theme.TextTertiary, (float)S(Metrics.FontCaption));
         x += S(46);
 
-        if (ui.Slider(9001, new Rect(x, y, slider, tile), isText ? 8 : 1, maximum, ref thickness))
+        var sliderId = Ui.Id("editor.thickness");
+        if (ui.Slider(sliderId, new Rect(x, y, slider, tile), isText ? 8 : 1, maximum, ref thickness))
             document.SetStrokeThickness(thickness, isAdjusting: true);
-        if (!ui.IsActive(9001)) document.EndThicknessAdjustment();
+        if (!ui.IsActive(sliderId)) document.EndThicknessAdjustment();
         x += slider + S(6);
 
         ui.Text(((int)Math.Round(thickness)).ToString(), new Rect(x, y, S(24), tile),
@@ -284,12 +287,12 @@ public sealed class EditorChrome(Ui ui)
 
         // Zoom, left of centre.
         var x = width * 0.5 - S(66);
-        if (ui.Button(9030, new Rect(x, y, S(58), S(32)), "Fit",
+        if (ui.Button(Ui.Id("editor.zoom.fit"), new Rect(x, y, S(58), S(32)), "Fit",
             fontSize: S(Metrics.FontCaption), toggled: fit))
             FitPicked = true;
 
         x += S(62);
-        if (ui.Button(9031, new Rect(x, y, S(58), S(32)), "100%",
+        if (ui.Button(Ui.Id("editor.zoom.actual"), new Rect(x, y, S(58), S(32)), "100%",
             fontSize: S(Metrics.FontCaption), toggled: !fit))
             FitPicked = false;
 
@@ -300,24 +303,26 @@ public sealed class EditorChrome(Ui ui)
 
         var save = ui.ButtonWidth("Save", font, glyph);
         right -= save;
-        if (ui.Button(9020, new Rect(right, y, save, S(32)), "Save",
+        if (ui.Button(Ui.Id("editor.save"), new Rect(right, y, save, S(32)), "Save",
             primary: true, glyph: Icons.Save, glyphSize: glyph, fontSize: font))
             SavePressed = true;
 
         var saveAs = ui.ButtonWidth("Save as…", font);
         right -= saveAs + S(8);
         // Not 9022: the toolbar's Undo tile owns that, and a shared id lights both up.
-        if (ui.Button(9025, new Rect(right, y, saveAs, S(32)), "Save as…", fontSize: font))
+        if (ui.Button(Ui.Id("editor.saveas"), new Rect(right, y, saveAs, S(32)), "Save as…", fontSize: font))
             SaveAsPressed = true;
 
-        // The copy confirms itself: the icon becomes a tick and the label reads "Copied".
-        var copyLabel = _copied ? "Copied" : "Copy";
-        var copy = ui.ButtonWidth(copyLabel, font, glyph);
+        // The copy confirms itself: the icon cross-fades to a tick and the label reads "Copied".
+        // The width is measured from the wider of the two labels so the button does not resize
+        // under the pointer as it swaps.
+        var copyLabel = _copied > 0.5 ? "Copied" : "Copy";
+        var copy = ui.ButtonWidth("Copied", font, glyph);
         right -= copy + S(8);
 
-        if (ui.Button(9021, new Rect(right, y, copy, S(32)), copyLabel,
-            glyph: _copied ? Icons.Tick : Icons.Copy, glyphSize: glyph, fontSize: font,
-            accent: _copied))
+        if (ui.Button(Ui.Id("editor.copy"), new Rect(right, y, copy, S(32)), copyLabel,
+            glyph: Icons.Copy, glyphSize: glyph, fontSize: font,
+            accent: _copied > 0.5, confirmation: _copied))
             CopyPressed = true;
 
         // Save still gets a badge: it says which file it wrote, which the button cannot.
@@ -328,7 +333,7 @@ public sealed class EditorChrome(Ui ui)
         ui.Text(toast, badge, ui.Theme.TextOnAccent, (float)font, align: TextAlign.Center);
     }
 
-    private bool _copied;
+    private double _copied;
 
     private static string Glyph(EditorTool tool) => tool switch
     {
