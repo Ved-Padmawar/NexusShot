@@ -4,79 +4,55 @@ using NexusShot.Render;
 
 namespace NexusShot.Views;
 
-/// <summary>
-/// Save, Save As and Copy for one open document, and the destination they share.
-///
-/// Every write commits the text, then the crop, then flattens - stated here once rather than at
-/// three call sites. Reporting stays with the caller: the window owns the toast.
-/// </summary>
+/// <summary>Prepares independent exports on the UI thread and adopts successful saves there.
+/// Encoding never mutates the live document, so a failed write leaves crop and undo intact.</summary>
 public sealed class EditorFiles(EditorDocument document)
 {
-    /// <summary>The file being edited. Save As moves it, which is why no other class caches it.</summary>
     public string Path { get; private set; } = string.Empty;
-
     public string FileName => System.IO.Path.GetFileName(Path);
-
-    public void OpenedAt(string path) => Path = path;
-
-    /// <summary>Raised before a write, so the window can commit an open text box: the box lives in
-    /// the window's text controller, not the document.</summary>
+    public void OpenedAt(string path) => Path = System.IO.Path.GetFullPath(path);
     public event Action? Committing;
 
-    /// <summary>Writes the flattened image over the original.</summary>
-    public void Save()
+    public ExportRequest PrepareSave()
     {
         Committing?.Invoke();
-        document.CommitCrop();
-        Exporter.SavePng(document, Path, Path);
-        document.ResetAfterSave();
+        return new(document.CreateExportSnapshot(), Path, Path);
     }
 
-    /// <summary>
-    /// Writes the flattened image somewhere new and continues editing it there. Null when the user
-    /// cancelled: nothing is written and the crop stays uncommitted, so cancelling costs nothing.
-    ///
-    /// <paramref name="chooseDestination"/> takes the suggested name and starting folder. It is
-    /// passed in so the cancel path can be tested without a modal dialog.
-    /// </summary>
-    public string? SaveAs(Func<string, string?, string?> chooseDestination)
+    public ExportRequest? PrepareSaveAs(Func<string, string?, string?> chooseDestination)
     {
-        Committing?.Invoke();
-
         var suggested = $"{System.IO.Path.GetFileNameWithoutExtension(Path)}_edited.png";
         if (chooseDestination(suggested, System.IO.Path.GetDirectoryName(Path)) is not { } destination)
             return null;
-
-        document.CommitCrop();
-        Exporter.SavePng(document, Path, destination);
-
-        // The editor follows the file: further edits belong to the copy, not the original.
-        Path = destination;
-        document.ResetAfterSave();
-        return destination;
+        Committing?.Invoke();
+        return new(document.CreateExportSnapshot(), Path, System.IO.Path.GetFullPath(destination));
     }
 
-    /// <summary>
-    /// Puts the flattened image on the clipboard, cropped as the user sees it but without the
-    /// document committing to that crop: copying is not saving, and must not discard the original.
-    /// </summary>
+    public void CompleteSave(ExportRequest request)
+    {
+        Path = request.Destination;
+        document.ResetAfterSave();
+    }
+}
+
+/// <summary>Owned by one worker after preparation; contains no live view state.</summary>
+public sealed record ExportRequest(EditorDocument Document, string Source, string Destination)
+{
+    public void Save() => Exporter.SavePng(Document, Source, Destination);
+
     public void CopyToClipboard()
     {
-        Committing?.Invoke();
-
-        var temporary = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(), $"nexusshot-{Guid.NewGuid():N}.png");
+        var temporary = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"nexusshot-{Guid.NewGuid():N}.png");
         try
         {
-            Exporter.SavePng(document, Path, temporary, document.PendingCrop);
+            Exporter.SavePng(Document, Source, temporary);
             ClipboardImage.Copy(temporary);
         }
         finally
         {
-            // Cleaned up even when the copy failed, or a failed clipboard grab would leave the file.
             try { File.Delete(temporary); }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { Log.Error("clipboard.temp_cleanup", exception); }
         }
     }
 }

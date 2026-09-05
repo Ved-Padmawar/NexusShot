@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using NexusShot.Render;
 
 namespace NexusShot.Platform;
@@ -35,17 +35,8 @@ internal static partial class ClipboardImage
     /// <summary>Decodes the file, then copies it. For callers that only have a path.</summary>
     public static void Copy(string pngPath)
     {
-        DecodedImage image;
-        try
-        {
-            image = ImageSurface.Decode(pngPath);
-        }
-        catch (Exception exception) when (exception is IOException or InvalidOperationException)
-        {
-            return;
-        }
-
-        using (image) Copy(image, pngPath);
+        using var image = ImageSurface.Decode(pngPath);
+        Copy(image, pngPath);
     }
 
     /// <summary>
@@ -63,10 +54,24 @@ internal static partial class ClipboardImage
 
         if (width <= 0 || height <= 0) return;
 
-        if (!TryOpenClipboard()) return;
+        // EmptyClipboard needs a real owner before SetClipboardData. This hidden message-only
+        // window is created on the copying thread and owns no delayed-rendered data.
+        var owner = CreateWindowExW(0, "STATIC", "NexusShot clipboard", 0,
+            0, 0, 0, 0, new IntPtr(-3), IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        if (owner == IntPtr.Zero) throw new InvalidOperationException("Could not create the clipboard owner.");
         try
         {
-            EmptyClipboard();
+            if (!TryOpenClipboard(owner)) throw new InvalidOperationException("The clipboard is busy. Please retry.");
+            Publish(image, pngPath, width, height);
+        }
+        finally { DestroyWindow(owner); }
+    }
+
+    private static void Publish(DecodedImage image, string? pngPath, int width, int height)
+    {
+        try
+        {
+            if (!EmptyClipboard()) throw new InvalidOperationException("Could not clear the clipboard.");
 
             if (CF_PNG != 0 && pngPath is not null)
             {
@@ -92,11 +97,11 @@ internal static partial class ClipboardImage
     /// OpenClipboard fail outright. Clipboard managers and Office hold it for a few milliseconds at
     /// a time, so one attempt loses that race often enough to drop captures.
     /// </summary>
-    private static bool TryOpenClipboard()
+    private static bool TryOpenClipboard(IntPtr owner)
     {
         for (var attempt = 0; ; attempt++)
         {
-            if (OpenClipboard(IntPtr.Zero)) return true;
+            if (OpenClipboard(owner)) return true;
             if (attempt == OpenAttempts - 1) return false;
 
             Thread.Sleep(OpenRetryDelayMs << attempt);
@@ -107,13 +112,13 @@ internal static partial class ClipboardImage
     private static void Place(uint format, byte[] bytes)
     {
         var memory = GlobalAlloc(GMEM_MOVEABLE, (nuint)bytes.Length);
-        if (memory == IntPtr.Zero) return;
+        if (memory == IntPtr.Zero) throw new InvalidOperationException("Could not allocate clipboard data.");
 
         var target = GlobalLock(memory);
         if (target == IntPtr.Zero)
         {
             GlobalFree(memory);
-            return;
+            throw new InvalidOperationException("Could not lock clipboard data.");
         }
 
         try
@@ -121,7 +126,11 @@ internal static partial class ClipboardImage
         finally { GlobalUnlock(memory); }
 
         // The clipboard owns it on success; freeing it here would be a double free.
-        if (SetClipboardData(format, memory) == IntPtr.Zero) GlobalFree(memory);
+        if (SetClipboardData(format, memory) == IntPtr.Zero)
+        {
+            GlobalFree(memory);
+            throw new InvalidOperationException("Could not publish clipboard data.");
+        }
     }
 
     /// <summary>
@@ -137,13 +146,13 @@ internal static partial class ClipboardImage
         var stride = width * 4;
 
         var memory = GlobalAlloc(GMEM_MOVEABLE, (nuint)(headerSize + stride * height));
-        if (memory == IntPtr.Zero) return;
+        if (memory == IntPtr.Zero) throw new InvalidOperationException("Could not allocate clipboard data.");
 
         var target = GlobalLock(memory);
         if (target == IntPtr.Zero)
         {
             GlobalFree(memory);
-            return;
+            throw new InvalidOperationException("Could not lock clipboard data.");
         }
 
         try
@@ -156,15 +165,20 @@ internal static partial class ClipboardImage
         }
         finally { GlobalUnlock(memory); }
 
-        if (SetClipboardData(format, memory) == IntPtr.Zero) GlobalFree(memory);
+        if (SetClipboardData(format, memory) == IntPtr.Zero)
+        {
+            GlobalFree(memory);
+            throw new InvalidOperationException("Could not publish clipboard data.");
+        }
     }
 
     /// <summary><paramref name="v5"/> emits a BITMAPV5HEADER, which states the channel masks and
     /// colour space rather than leaving the reader to assume them. Rows are bottom-up 32-bit, with
     /// alpha composited onto white.</summary>
-    private static void WriteDib(Span<byte> dib, ReadOnlySpan<byte> premultipliedBgra,
+    internal static void WriteDib(Span<byte> dib, ReadOnlySpan<byte> premultipliedBgra,
         int width, int height, int headerSize, int stride, bool v5)
     {
+        dib[..headerSize].Clear(); // GlobalAlloc does not initialize reserved header fields.
         var header = dib;
         BitConverter.TryWriteBytes(header[0..], headerSize);
         BitConverter.TryWriteBytes(header[4..], width);
@@ -204,6 +218,14 @@ internal static partial class ClipboardImage
             }
         }
     }
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial IntPtr CreateWindowExW(uint extendedStyle, string className, string title,
+        uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyWindow(IntPtr window);
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

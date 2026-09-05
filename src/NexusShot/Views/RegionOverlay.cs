@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
@@ -58,7 +58,7 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     }
 
     /// <summary>
-    /// Runs the picker to completion and returns the captured region as a temp PNG, or null if
+    /// Runs the picker to completion and returns owned cropped pixels, or null if
     /// cancelled. Blocking, because a capture is a modal act: nothing else in the app can
     /// meaningfully happen while the user is choosing what to grab.
     ///
@@ -67,15 +67,16 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     /// </summary>
     private static bool _isPicking;
 
-    public static string? Pick()
+    public static DecodedImage? Pick() => Pick(ScreenCapture.Capture);
+
+    internal static DecodedImage? Pick(Func<RectInt, DecodedImage> capture)
     {
         if (_isPicking) return null;
         _isPicking = true;
-        var desktop = ScreenCapture.VirtualDesktop;
-        var snapshot = ScreenCapture.Capture(desktop);
-
         try
         {
+            var desktop = ScreenCapture.VirtualDesktop;
+            using var snapshot = capture(desktop);
             RectInt? selection;
             using (var overlay = new RegionOverlay(desktop, snapshot))
             {
@@ -102,19 +103,12 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
             if (selection is not { } region) return null;
 
-            // Cropped from the snapshot already in memory: no decode, and the only PNG encode in
-            // the whole pick is this one, of the selected region rather than the whole desktop.
-            using var cropped = snapshot.Crop(
+            // Return independent cropped pixels; encoding belongs to the media worker.
+            return snapshot.Crop(
                 region.X - desktop.X, region.Y - desktop.Y, region.Width, region.Height);
-
-            var path = Path.Combine(Path.GetTempPath(), $"NexusShot_{Guid.NewGuid():N}.png");
-            PngWriter.Write(path, cropped);
-            return path;
         }
         finally
         {
-            // The overlay only reads the snapshot; this call owns it, and it is the whole desktop.
-            snapshot.Dispose();
             _isPicking = false;
         }
     }

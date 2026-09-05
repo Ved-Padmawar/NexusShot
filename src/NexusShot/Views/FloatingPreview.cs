@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
@@ -385,7 +385,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 // The countdown pauses under the pointer, while pinned, and behind the save
                 // dialog: a timer that runs while you are reaching for a button will eventually
                 // lose you a capture.
-                if (_hovered || IsPinned || _savingAs)
+                if (_hovered || IsPinned || _copying || _savingAs)
                 {
                     _remaining = _dismissSeconds;
                     return new LRESULT { Value = 0 };

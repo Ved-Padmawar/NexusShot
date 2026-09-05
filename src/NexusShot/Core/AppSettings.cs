@@ -80,7 +80,7 @@ public sealed class Storage
     /// already log and continue.</summary>
     public Storage(string? directory = null)
     {
-        _directory = directory ?? Path.Combine(
+        _directory = directory ?? Environment.GetEnvironmentVariable("NEXUSSHOT_DATA_DIRECTORY") ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NexusShot");
 
         try
@@ -119,7 +119,7 @@ public sealed class Storage
     {
         var history = Read(HistoryPath, AppJsonContext.Default.ListScreenshotHistoryItem) ?? [];
         history.RemoveAll(item => item is null || string.IsNullOrWhiteSpace(item.FilePath));
-        return history;
+        return history.DistinctBy(item => item.FilePath, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     public void SaveHistory(List<ScreenshotHistoryItem> history) =>

@@ -44,6 +44,14 @@ public static class Exporter
     public static void SavePng(
         EditorDocument document, string sourcePath, string path, Rect? cropOverride = null)
     {
+        // The app uses one media worker; headless callers may not. All access to the
+        // single-threaded factory and shared device must be serialized, not just creation.
+        lock (_deviceLock) SavePngCore(document, sourcePath, path, cropOverride);
+    }
+
+    private static void SavePngCore(
+        EditorDocument document, string sourcePath, string path, Rect? cropOverride)
+    {
         var crop = cropOverride
             ?? document.CropBounds
             ?? new Rect(0, 0, document.ImageWidth, document.ImageHeight);

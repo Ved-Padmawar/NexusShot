@@ -14,16 +14,16 @@ public sealed class UiThreadDispatch(IntPtr handle)
     /// the HWND it is posted to, so there is nothing to collide with.</summary>
     public const uint Message = 0x8000;   // WM_APP
 
-    private readonly Queue<Action> _posted = new();
+    private readonly Queue<(Action Run, Action? Discard)> _posted = new();
     private bool _closed;
 
     /// <summary>Queues <paramref name="work"/> and wakes the window's message loop to run it.</summary>
-    public void Post(Action work)
+    public void Post(Action work, Action? discarded = null)
     {
         lock (_posted)
         {
-            if (_closed) return;
-            _posted.Enqueue(work);
+            if (_closed) { discarded?.Invoke(); return; }
+            _posted.Enqueue((work, discarded));
         }
         WindowInterop.PostMessageW(handle, Message, IntPtr.Zero, IntPtr.Zero);
     }
@@ -32,18 +32,21 @@ public sealed class UiThreadDispatch(IntPtr handle)
     /// pending outlived the frame it was going to run against.</summary>
     public void Clear()
     {
+        (Action Run, Action? Discard)[] work;
         lock (_posted)
         {
             _closed = true;
+            work = [.. _posted];
             _posted.Clear();
         }
+        foreach (var item in work) item.Discard?.Invoke();
     }
 
     /// <summary>Call from WindowProc when <see cref="Message"/> arrives. Runs everything queued so
     /// far, in order.</summary>
     public void Drain()
     {
-        Action[] work;
+        (Action Run, Action? Discard)[] work;
         lock (_posted)
         {
             work = [.. _posted];
@@ -52,8 +55,10 @@ public sealed class UiThreadDispatch(IntPtr handle)
         foreach (var item in work)
         {
             // A callback can destroy its own window. Clear must also stop this detached batch.
-            lock (_posted) if (_closed) break;
-            item();
+            bool closed;
+            lock (_posted) closed = _closed;
+            if (closed) item.Discard?.Invoke();
+            else item.Run();
         }
     }
 }

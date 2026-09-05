@@ -132,6 +132,22 @@ public sealed class EditorDocument
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
 
+    /// <summary>Saved pixels are the baseline; saving flattens and clears the annotations.
+    /// Undoing back to an empty document is therefore clean without a separate dirty flag.</summary>
+    public bool HasUnsavedChanges => _annotations.Count != 0 || CropBounds is not null
+        || (PendingCrop is { } crop && crop != new Rect(0, 0, ImageWidth, ImageHeight));
+
+    /// <summary>A worker owns this independent copy. No UI selection, events or undo history
+    /// crosses the thread boundary.</summary>
+    public EditorDocument CreateExportSnapshot()
+    {
+        var copy = new EditorDocument();
+        copy.SetImageSize(ImageWidth, ImageHeight);
+        copy.ReplaceAnnotations(_annotations.Select(annotation => annotation.Clone()).ToArray());
+        copy.CropBounds = PendingCrop ?? CropBounds;
+        return copy;
+    }
+
     /// <summary>
     /// Raised whenever the annotation list, selection or crop changes. In the immediate-mode
     /// renderer this is only an invalidation signal: there is no retained visual tree to patch,

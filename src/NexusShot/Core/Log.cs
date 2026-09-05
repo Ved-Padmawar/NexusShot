@@ -16,7 +16,8 @@ public static class Log
     private const long MaxBytes = 1024 * 1024;
 
     private static readonly Lock Gate = new();
-    private static readonly string Directory = Path.Combine(
+    private static readonly string Directory = Environment.GetEnvironmentVariable("NEXUSSHOT_DATA_DIRECTORY") is { Length: > 0 } isolated
+        ? Path.Combine(isolated, "logs") : Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "NexusShot", "logs");
 

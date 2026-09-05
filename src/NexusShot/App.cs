@@ -1,4 +1,4 @@
-﻿using NexusShot.Core;
+using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
 using NexusShot.Views;
@@ -147,54 +147,89 @@ public sealed class App : IDisposable
     /// The shell is deliberately *not* hidden first: NexusShot's own window is a legitimate thing to
     /// capture, and a tool that ducks out of the way cannot screenshot itself.
     /// </summary>
+    private bool _captureRunning;
+    private bool _disposed;
+
     private void Capture(CaptureMode mode)
     {
+        if (_captureRunning) return;
+        _captureRunning = true;
         try
         {
-            // Full-screen and active-window blit straight to pixels, so the clipboard copy uses
-            // those instead of decoding the PNG back. Region already returns a path - its pixels are
-            // a crop of a snapshot the overlay owns, and that snapshot dies with the overlay.
-            DecodedImage? pixels = mode switch
+            // The desktop must be sampled before focus changes; only encoding/filing is deferred.
+            var pixels = mode switch
             {
                 CaptureMode.FullScreen => ScreenCapture.CaptureFullScreen(),
                 CaptureMode.ActiveWindow => ScreenCapture.CaptureActiveWindow(),
-                _ => null,
+                _ => RegionOverlay.Pick(),
             };
-
-            string? path;
-            try
-            {
-                path = pixels is not null ? WriteCapture(pixels)
-                    : mode == CaptureMode.Region ? CaptureRegion()
-                    : null;
-            }
-            catch { pixels?.Dispose(); throw; }
-
-            // Land takes the pixels; nothing before it has an owner to hand them to.
-            if (path is null) { pixels?.Dispose(); return; }
-
-            _pipeline.Land(path, pixels);
+            if (pixels is null) { _captureRunning = false; return; }
+            _ = FinishCapture(pixels, _settings.ScreenshotFolder, _settings.SaveAutomatically,
+                _settings.CopyToClipboardAutomatically);
         }
-        catch (Exception exception) when (exception is IOException or InvalidOperationException
-            or ArgumentOutOfRangeException or UnauthorizedAccessException
-            or System.Runtime.InteropServices.ExternalException)
+        catch (Exception exception)
         {
-            // A failed capture must not take the tray and hotkeys with it.
+            _captureRunning = false;
             Log.Error("capture.failed", exception, mode.ToString());
+            UserFeedback.Error(_main.Handle, "Could not capture the screen. Please retry.");
         }
     }
 
-    private static string? CaptureRegion() => RegionOverlay.Pick();
-
-    /// <summary>Writes a freshly blitted capture to the temp PNG the pipeline expects to move.</summary>
-    private static string WriteCapture(DecodedImage image)
+    private async Task FinishCapture(DecodedImage pixels, string folder, bool autoSave, bool autoCopy)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"NexusShot_{Guid.NewGuid():N}.png");
-        PngWriter.Write(path, image);
-        return path;
+        ScreenshotHistoryItem? item = null;
+        Exception? failure = null;
+        Exception? copyFailure = null;
+        try
+        {
+            item = await MediaWorker.Run(() =>
+            {
+                var saved = CaptureStore.Save(pixels, folder, autoSave);
+                if (autoCopy)
+                {
+                    try { ClipboardImage.Copy(pixels, saved.FilePath); }
+                    catch (Exception exception) { copyFailure = exception; }
+                }
+                return saved;
+            });
+        }
+        catch (Exception exception) { failure = exception; }
+        finally { pixels.Dispose(); }
+        _main.Post(() =>
+        {
+            _captureRunning = false;
+            if (_disposed) return;
+            if (failure is not null)
+            {
+                Log.Error("capture.failed", failure);
+                UserFeedback.Error(_main.Handle, "Could not save the capture. Check the save folder and available disk space.");
+                return;
+            }
+            try { _pipeline.Land(item!); }
+            catch (Exception exception)
+            {
+                Log.Error("capture.preview_failed", exception);
+                UserFeedback.Error(_main.Handle, "The screenshot was saved, but its preview could not be opened.");
+            }
+            if (copyFailure is not null)
+            {
+                Log.Error("clipboard.copy", copyFailure);
+                UserFeedback.Error(_main.Handle, "The screenshot was saved, but copying failed. Please use Copy to retry.");
+            }
+        });
     }
 
     private void Exit()
+    {
+        if (_captureRunning)
+        {
+            UserFeedback.Error(_main.Handle, "Please wait for the capture to finish before exiting.");
+            return;
+        }
+        _pipeline.CloseEditors(FinishExit);
+    }
+
+    private void FinishExit()
     {
         _storage.SaveHistory(_history);
         _storage.SaveSettings(_settings);
@@ -216,7 +251,14 @@ public sealed class App : IDisposable
     }
 
     /// <summary>The save folder may have moved, so the watcher follows it.</summary>
-    private void OnSettingsChanged() => WatchSaveFolder();
+    private string? _watchedFolder;
+
+    private void OnSettingsChanged()
+    {
+        if (string.Equals(_watchedFolder, _settings.ScreenshotFolder, StringComparison.OrdinalIgnoreCase)) return;
+        WatchSaveFolder();
+        SyncHistory();
+    }
 
     /// <summary>Open editors follow the shell's theme rather than the one they were opened with.</summary>
     private void RethemeEditors() => _pipeline.RethemeEditors();
@@ -224,6 +266,7 @@ public sealed class App : IDisposable
     private void WatchSaveFolder()
     {
         _watcher?.Dispose();
+        _watchedFolder = _settings.ScreenshotFolder;
 
         try
         {
@@ -243,81 +286,76 @@ public sealed class App : IDisposable
     /// watcher fires on a background thread, so the work is posted to the UI thread rather than
     /// mutating the list underneath a frame that is drawing it.
     /// </summary>
+    private readonly Dictionary<string, FileVersion> _historyVersions = new(StringComparer.OrdinalIgnoreCase);
+
     private void SyncHistory()
     {
         _main.Post(() =>
         {
-            // One scan at a time, with a rescan queued if the folder changes while it runs: two
-            // overlapping scans each admit files against their own snapshot of what was known.
-            if (_syncRunning)
-            {
-                _syncQueued = true;
-                return;
-            }
+            if (_disposed) return;
+            if (_syncRunning) { _syncQueued = true; return; }
             _syncRunning = true;
+            _ = ScanHistory(_settings.ScreenshotFolder,
+                _history.Select(item => item.FilePath).ToArray(),
+                new Dictionary<string, FileVersion>(_historyVersions, StringComparer.OrdinalIgnoreCase));
+        });
+    }
 
-            var removed = _history.RemoveAll(item => !File.Exists(item.FilePath));
-            if (removed != 0) _main.SweepDecoded();
-
-            var known = _history.Select(item => item.FilePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var folder = _settings.ScreenshotFolder;
-            _ = Task.Run(() =>
+    private async Task ScanHistory(string folder, string[] known, Dictionary<string, FileVersion> versions)
+    {
+        HistoryScan? result = null;
+        try { result = await Task.Run(() => HistoryScanner.Scan(folder, known, versions)); }
+        catch (Exception exception) { Log.Error("history.scan_failed", exception); }
+        _main.Post(() =>
+        {
+            _syncRunning = false;
+            if (_disposed) return;
+            if (!string.Equals(folder, _settings.ScreenshotFolder, StringComparison.OrdinalIgnoreCase))
+                _syncQueued = true;
+            else if (result is not null)
             {
-                var candidates = new List<ScreenshotHistoryItem>();
-                try
+                var changed = false;
+                foreach (var path in result.Missing)
                 {
-                    foreach (var file in Directory.EnumerateFiles(folder, "*.png"))
-                    {
-                        if (known.Contains(file)) continue;
-                        try
-                        {
-                            var (width, height) = ImageSurface.ReadSize(file);
-                            candidates.Add(new ScreenshotHistoryItem
-                            {
-                                FilePath = file,
-                                CapturedAt = CaptureName.TryParseTime(file, out var captured)
-                                    ? captured : File.GetCreationTime(file),
-                                Width = width,
-                                Height = height,
-                            });
-                        }
-                        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException
-                            or System.Runtime.InteropServices.ExternalException) { }
-                    }
+                    // A capture/save may have recreated this path since the worker observed it.
+                    if (File.Exists(path)) continue;
+                    changed |= _history.RemoveAll(item => string.Equals(item.FilePath, path, StringComparison.OrdinalIgnoreCase)) != 0;
+                    _historyVersions.Remove(path);
+                    _main.ForgetMissingCapture(path);
                 }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                var live = _history.ToDictionary(item => item.FilePath, StringComparer.OrdinalIgnoreCase);
+                foreach (var (candidate, version) in result.Changed)
                 {
-                    Log.Error("history.sync_failed", exception);
+                    // Reject a file deleted or replaced after the scan. A queued watcher event
+                    // will rescan replacements; no old dimensions overwrite a newer save.
+                    try
+                    {
+                        if (FileVersion.Read(candidate.FilePath) != version) { _syncQueued = true; continue; }
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    { continue; }
+                    _historyVersions[candidate.FilePath] = version;
+                    if (live.TryGetValue(candidate.FilePath, out var existing))
+                    {
+                        existing.Width = candidate.Width;
+                        existing.Height = candidate.Height;
+                        _main.DropCache(existing.FilePath);
+                        _pipeline.RefreshExistingPreview(existing);
+                    }
+                    else _history.Add(candidate);
+                    changed = true;
                 }
-                _main.Post(() =>
+                if (changed)
                 {
-                    // Admission is decided against the list as it stands now, not the snapshot the
-                    // scan started from, which may be several changes old by this point.
-                    var live = _history
-                        .Select(item => item.FilePath)
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                    var added = 0;
-                    foreach (var candidate in candidates)
-                    {
-                        if (!live.Add(candidate.FilePath)) continue;
-                        _history.Add(candidate);
-                        added++;
-                    }
-
-                    if (removed != 0 || added != 0)
-                    {
-                        _history.Sort((a, b) => b.CapturedAt.CompareTo(a.CapturedAt));
-                        _storage.SaveHistory(_history);
-                        _main.Invalidate();
-                    }
-
-                    _syncRunning = false;
-                    if (!_syncQueued) return;
-                    _syncQueued = false;
-                    SyncHistory();
-                });
-            });
+                    _main.SweepDecoded();
+                    _history.Sort((a, b) => b.CapturedAt.CompareTo(a.CapturedAt));
+                    _storage.SaveHistory(_history);
+                    _main.Invalidate();
+                }
+            }
+            if (!_syncQueued) return;
+            _syncQueued = false;
+            SyncHistory();
         });
     }
 
@@ -327,6 +365,7 @@ public sealed class App : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
         // Detached before the window goes: a handler that outlives its subscriber can still be
         // reached from a late message, and would run against disposed hotkeys or a dead tray icon.
         _main.CaptureRequested -= Capture;

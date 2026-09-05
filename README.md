@@ -4,7 +4,7 @@
 
 # NexusShot
 
-**A native Windows screenshot utility, modelled on CleanShot X.**
+**A native Windows screenshot and annotation utility.**
 
 <p>
   <img src="https://img.shields.io/github/v/release/Ved-Padmawar/NexusShot?label=version&color=success" alt="Version" />
@@ -139,9 +139,8 @@ src/NexusShot/
 ```
 
 The app is **immediate mode**: there is no retained visual tree. Input mutates the document and
-asks for a repaint; a frame is one allocation-free pass over the annotation list. `WM_PAINT` is
-already coalesced to the display rate, so a burst of pointer messages collapses into one frame on
-its own.
+asks for a repaint; a frame is one allocation-free pass over the annotation list. `WM_PAINT`
+coalesces invalidations, so a burst of pointer messages collapses into a single repaint.
 
 Measured on a 120-frame drag with 9 annotations live (including GPU blur and pixelate):
 **median 1.2 ms per frame**, against a 16.7 ms budget.
@@ -236,11 +235,12 @@ Clip state is the other sharp edge. Direct2D counts pushes and pops itself, and 
 takes the app down. `Ui` records what each clip was pushed as, pops with the matching call, and
 unwinds anything a caller left open at the end of the frame.
 
-The exception is **text entry**, which is hosted in a real Win32 `EDIT` child window. Hand-rolling a
-text box means hand-rolling the caret, selection, shift-arrow, word select, `Ctrl+A`, clipboard,
-in-box undo, and IME composition for anyone typing a language that needs one. All of that already
-exists and is already correct. The control is created over the annotation's box, styled through
-`WM_CTLCOLOREDIT` to paint on the image's own colour, and destroyed when the edit ends.
+Text entry is drawn in Direct2D alongside the annotation, with caret, selection, grapheme-aware
+navigation, clipboard commands and local undo managed by `TextEditor` and `TextBoxController`.
+It is not a Win32 `EDIT` control: a child HWND over a Direct2D surface has no defined paint order,
+so the two invalidated each other every frame — the box flickered and its glyphs lagged a keystroke.
+The cost of owning the text surface is that full IME composition and UI Automation accessibility are
+not implemented.
 
 </details>
 
@@ -334,12 +334,7 @@ its own caption icon with `WS_EX_DLGMODALFRAME`, because the sidebar already car
 - The selected detail image decodes for the preview's physical display size, including high DPI.
   Growing the window requests a larger decode. Editors and exports still read the original file.
   Hiding the shell releases its render target, caches, and pending pixels; a tray-only launch waits
-  until the shell is shown before creating graphics resources. See [the review](REVIEW.md) for
-  measured memory, correctness checks, and remaining validation limits.
-- A compatibility workaround uses software Direct2D and WARP for Intel adapter `8086:7D51` with
-  UMD driver `32.0.101.6104`, where repeated hardware bitmap/effect creation retained handles.
-  It uses the same renderer and effects. Other adapter/driver combinations use the default backend;
-  a driver update changes that selection. See the review for measurements and limitations.
+  until the shell is shown before creating graphics resources.
 - A `FileSystemWatcher` on the save folder keeps the sidebar synchronized with File Explorer:
   external deletes remove rows, new PNGs appear automatically. The watcher fires on a thread-pool
   thread, so its work is posted to the UI thread rather than mutating the history under a frame that
@@ -351,5 +346,7 @@ its own caption icon with `WS_EX_DLGMODALFRAME`, because the sidebar already car
 - The editor's Save overwrites the capture and refreshes its quick-access card, creating one if it
   was already dismissed. Save as… writes a new file, points the editor at it, and gives it a card of
   its own.
+- Closing an editor with unsaved edits offers to save, discard or cancel, and so does exiting from
+  the tray with editors still open. Cancel is the default, so a stray Enter never discards work.
 - Logs are JSON-lines under `%LOCALAPPDATA%\NexusShot\logs`, rotating at 1 MB. Image contents are
   never logged.

@@ -47,7 +47,7 @@ public class EditorFilesTests
         var files = new EditorFiles(document);
         files.OpenedAt(@"C:\shots\capture.png");
 
-        var result = files.SaveAs((_, _) => null);
+        var result = files.PrepareSaveAs((_, _) => null);
 
         Assert.Null(result);
         Assert.True(document.IsCropSessionActive);
@@ -62,7 +62,7 @@ public class EditorFilesTests
 
         string? offeredName = null;
         string? offeredFolder = null;
-        files.SaveAs((name, folder) =>
+        files.PrepareSaveAs((name, folder) =>
         {
             (offeredName, offeredFolder) = (name, folder);
             return null;

@@ -1,4 +1,4 @@
-﻿using NexusShot.Core;
+using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
 
@@ -148,6 +148,7 @@ public sealed partial class MainWindow : CaptionWindow
 
     public void AddCapture(ScreenshotHistoryItem item)
     {
+        _history.RemoveAll(existing => string.Equals(existing.FilePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
         _history.Insert(0, item);
         _selected = item;
         _settingsOpen = false;
@@ -599,10 +600,18 @@ public sealed partial class MainWindow : CaptionWindow
             new Rect(bounds.X, centre.Y - S(6), bounds.Width, S(24)),
             theme.TextSecondary, (float)S(Metrics.FontSubtitle), align: TextAlign.Center);
 
+        // The region hotkey is rebindable and can be cleared, so the hint reads the live binding
+        // rather than naming a default the user may no longer have.
+        var region = _settings.CaptureRegionHotkey;
+        var gesture = region.Key == 0 ? null : Describe(region);
         ui.Text(
             empty
-                ? "Press Ctrl + Shift + S to capture a region"
-                : "Pick a capture from the list, or press Ctrl + Shift + S for a new one",
+                ? gesture is null
+                    ? "Capture a region to get started"
+                    : $"Press {gesture} to capture a region"
+                : gesture is null
+                    ? "Pick a capture from the list"
+                    : $"Pick a capture from the list, or press {gesture} for a new one",
             new Rect(bounds.X, centre.Y + S(20), bounds.Width, S(20)),
             theme.TextTertiary, (float)S(Metrics.FontBody), align: TextAlign.Center);
     }

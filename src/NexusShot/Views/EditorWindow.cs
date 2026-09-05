@@ -1,4 +1,4 @@
-﻿using ToolCursor = DirectN.Extensions.Utilities.Cursor;
+using ToolCursor = DirectN.Extensions.Utilities.Cursor;
 using NexusShot.Core;
 using NexusShot.Render;
 using NexusShot.Platform;
@@ -303,7 +303,7 @@ public sealed partial class EditorWindow : CaptionWindow
         DrawCaptionButtons(_ui, client.Width);
         _ui.EndFrame();
 
-        ApplyChrome();
+        if (!_fileBusy && !_confirmingClose) ApplyChrome();
 
         if (_ui.ClickedThisFrame) Invalidate();
 
@@ -338,82 +338,4 @@ public sealed partial class EditorWindow : CaptionWindow
         RefreshCursor();
     }
 
-    /// <summary>Writes the flattened image over the original. A crop frame the user is still
-    /// dragging is applied too: the footer says "Save to apply", so Save applies it.</summary>
-    private void Save()
-    {
-        if (_image is null) return;
-
-        _files.Save();
-        ReloadImage();
-        Saved?.Invoke(_files.Path);
-        ShowToast("Saved");
-    }
-
-    private void RunFileAction(Action action)
-    {
-        try { action(); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
-            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
-        {
-            Log.Error("editor.file_action", exception, _files.Path);
-            ShowToast("Could not complete action. Check the file or clipboard and retry.");
-        }
-    }
-
-    /// <summary>Writes the flattened image somewhere new and continues editing it there.</summary>
-    private void SaveAs()
-    {
-        if (_image is null) return;
-
-        // Null means cancelled: nothing was written, and the pending crop stays uncommitted.
-        if (_files.SaveAs((name, folder) => FilePicker.SavePng(Handle, name, folder))
-            is not { } destination) return;
-
-        ReloadImage();
-        SavedAs?.Invoke(destination);
-        ShowToast("Saved");
-    }
-
-    private void CopyToClipboard()
-    {
-        if (_image is null) return;
-
-        _files.CopyToClipboard();
-
-        // The Copy button confirms this itself, by becoming a tick.
-        _copied.Start(Environment.TickCount64);
-        Invalidate();
-    }
-
-    /// <summary>A brief confirmation in the footer, so an action that changes nothing visible still
-    /// says it happened.</summary>
-    private void ShowToast(string message)
-    {
-        _toast = message;
-        _toastUntil = DateTime.UtcNow.AddSeconds(2);
-        Invalidate();
-    }
-
-    private string? _toast;
-    private DateTime _toastUntil;
-    private readonly ConfirmFeedback _copied = new();
-
-    /// <summary>Re-decodes the file after a save, so the editor is now working over the flattened
-    /// pixels rather than the original plus a document that no longer exists.</summary>
-    private void ReloadImage()
-    {
-        if (_resources is null || RenderTarget is null) return;
-        using var target = RenderTarget.AsRenderTarget();
-        using var context = target.AsDeviceContext();
-        if (context is null) return;
-
-        _effects?.Dispose();
-        _image?.Dispose();
-
-        _image = ImageSurface.Load(_files.Path, context);
-        _effects = new PixelEffectSource(_image, _resources);
-        _document.SetImageSize(_image.Width, _image.Height);
-        Invalidate();
-    }
 }

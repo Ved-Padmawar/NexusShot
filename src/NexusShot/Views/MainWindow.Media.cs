@@ -1,4 +1,4 @@
-﻿using NexusShot.Core;
+using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
 
@@ -212,21 +212,33 @@ public sealed partial class MainWindow
     private readonly ConfirmFeedback _copied = new();
 
     /// <summary>Copies the capture, and ticks the button only if the copy actually completed.</summary>
-    private void CopyToClipboard(ScreenshotHistoryItem item)
+    private bool _copying;
+
+    private void CopyToClipboard(ScreenshotHistoryItem item) => _ = CopyToClipboardAsync(item);
+
+    private async Task CopyToClipboardAsync(ScreenshotHistoryItem item)
     {
-        try
+        if (_copying) return;
+        _copying = true;
+        Exception? failure = null;
+        try { await MediaWorker.Run(() => { ClipboardImage.Copy(item.FilePath); return true; }); }
+        catch (Exception exception) { failure = exception; }
+        Post(() =>
         {
-            ClipboardImage.Copy(item.FilePath);
-            _copied.Start(Environment.TickCount64);
-            WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, 16, IntPtr.Zero);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
-            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
-        {
-            StopCopyFeedback();
-            Log.Error("main.copy", exception, item.FilePath);
-        }
-        Invalidate();
+            _copying = false;
+            if (failure is null)
+            {
+                _copied.Start(Environment.TickCount64);
+                WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, 16, IntPtr.Zero);
+            }
+            else
+            {
+                StopCopyFeedback();
+                Log.Error("main.copy", failure, item.FilePath);
+                UserFeedback.Error(Handle, "Could not copy this image. Check that the file exists and retry.");
+            }
+            Invalidate();
+        });
     }
 
     private void StepCopyFeedback()
@@ -257,31 +269,31 @@ public sealed partial class MainWindow
         Invalidate();
     }
 
+    public void ForgetMissingCapture(string path)
+    {
+        if (string.Equals(_selected?.FilePath, path, StringComparison.OrdinalIgnoreCase)) Deselect();
+        DropCache(path);
+    }
+
     private void Delete(ScreenshotHistoryItem item)
     {
-        _history.Remove(item);
-
-        // Deleting what you were looking at lands on the empty state, rather than decoding whichever
-        // capture happens to be next.
-        if (ReferenceEquals(_selected, item)) Deselect();
-
-        DropCache(item.FilePath);
-
-        // history.json is editable on disk, so its paths are not trusted. Delete only under a root
-        // we own: the screenshot folder, or temp for a capture that was never saved.
         try
         {
             var full = Path.GetFullPath(item.FilePath);
-            if (IsUnder(full, _settings.ScreenshotFolder) || IsUnder(full, Path.GetTempPath()))
-                File.Delete(full);
-            else
-                Log.Error("history.delete_outside_root", new InvalidOperationException(full));
+            if (!IsUnder(full, _settings.ScreenshotFolder) && !IsUnder(full, Path.GetTempPath()))
+                throw new InvalidOperationException("The image is outside the managed screenshot folder.");
+            File.Delete(full);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or ArgumentException or InvalidOperationException)
         {
-            // The file may be open elsewhere; the history entry still goes.
+            Log.Error("history.delete", exception, item.FilePath);
+            UserFeedback.Error(Handle, "Could not delete this image. It may be in use or outside the current screenshot folder.");
+            return;
         }
-
+        _history.Remove(item);
+        if (ReferenceEquals(_selected, item)) Deselect();
+        DropCache(item.FilePath);
         _storage.SaveHistory(_history);
         Invalidate();
     }
@@ -316,7 +328,7 @@ public sealed partial class MainWindow
         catch (Exception exception) when (exception is IOException
             or System.ComponentModel.Win32Exception)
         {
-            // Explorer not opening is not worth taking the app down for.
+            Log.Error("history.reveal", exception, path);
         }
     }
 

@@ -1,4 +1,4 @@
-﻿using NexusShot.Core;
+using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
 using NexusShot.Views;
@@ -37,74 +37,33 @@ public sealed class CapturePipeline : IDisposable
         _main.EditRequested += Edit;
     }
 
-    /// <summary>Moves a fresh capture into the screenshot folder, records it, and shows its card.
-    /// <paramref name="temporaryPath"/> is consumed: it is moved, or adopted as the record's own
-    /// path when auto-save is off. <paramref name="pixels"/> is the capture's bitmap when the caller
-    /// still has it, so the clipboard copy does not decode the PNG that was just written.</summary>
-    /// <summary>Takes ownership of <paramref name="pixels"/>: it is freed once the clipboard copy
-    /// has finished with it, or immediately when there is no copy to make.</summary>
-    public void Land(string temporaryPath, DecodedImage? pixels = null)
+    public void Land(ScreenshotHistoryItem item)
     {
-        var item = Store(temporaryPath);
         Log.Info("capture", $"{item.Width}x{item.Height}");
-
-        if (_settings.CopyToClipboardAutomatically)
-        {
-            var path = item.FilePath;
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    if (pixels is not null) ClipboardImage.Copy(pixels, path);
-                    else ClipboardImage.Copy(path);
-                }
-                catch (Exception exception)
-                {
-                    // The clipboard is owned by whichever process grabbed it last, so a copy can lose
-                    // a race with no fault of ours. The capture is already on disk either way.
-                    Log.Error("clipboard.copy", exception, path);
-                }
-                finally { pixels?.Dispose(); }
-            });
-        }
-        else pixels?.Dispose();
-
         _main.AddCapture(item);
         ShowPreview(item);
     }
 
-    /// <summary>Moves the temp capture into the screenshot folder and records it.</summary>
-    private ScreenshotHistoryItem Store(string temporaryPath)
+    public void RefreshExistingPreview(ScreenshotHistoryItem item)
     {
-        // The header, not the pixels: this only needs the dimensions for the history row.
-        var (width, height) = ImageSurface.ReadSize(temporaryPath);
+        var card = _previews.FirstOrDefault(preview =>
+            string.Equals(preview.FilePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
+        if (card is null) return;
+        try { card.Refresh(item); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+        { Log.Error("preview.refresh", exception, item.FilePath); }
+        ReflowPreviews();
+    }
 
-        Directory.CreateDirectory(_settings.ScreenshotFolder);
-        var baseName = CaptureName.For(DateTime.Now);
-        var destination = Path.Combine(_settings.ScreenshotFolder, baseName + ".png");
-        if (_settings.SaveAutomatically)
+    public void CloseEditors(Action completed)
+    {
+        foreach (var editor in _openEditors.ToArray())
         {
-            var counter = 1;
-            while (File.Exists(destination))
-            {
-                destination = Path.Combine(_settings.ScreenshotFolder, $"{baseName}_{counter:D3}.png");
-                counter++;
-                if (counter > 999) { destination = Path.Combine(_settings.ScreenshotFolder, $"NexusShot {Guid.NewGuid():N}.png"); break; }
-            }
-            File.Move(temporaryPath, destination, overwrite: false);
+            if (!editor.RequestClose(() => CloseEditors(completed))) return;
+            editor.Dispose();
         }
-        else
-        {
-            destination = temporaryPath;
-        }
-
-        return new ScreenshotHistoryItem
-        {
-            FilePath = destination,
-            CapturedAt = DateTimeOffset.Now,
-            Width = width,
-            Height = height,
-        };
+        completed();
     }
 
     /// <summary>Updates the card showing a re-saved capture, or brings a new one up if that card was
@@ -175,6 +134,14 @@ public sealed class CapturePipeline : IDisposable
 
     private void Edit(ScreenshotHistoryItem item)
     {
+        var pending = _openEditors.FirstOrDefault(editor =>
+            string.Equals(editor.PendingSavePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
+        if (pending is not null)
+        {
+            pending.Show();
+            pending.SetForeground();
+            return;
+        }
         if (_editors.TryGetValue(item.FilePath, out var existing))
         {
             existing.Show();
@@ -183,6 +150,9 @@ public sealed class CapturePipeline : IDisposable
         }
 
         var editor = new EditorWindow(item.FilePath, _settings.Theme);
+        editor.CanSaveTo = path => !_openEditors.Any(other => !ReferenceEquals(other, editor)
+            && (string.Equals(other.FilePath, path, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(other.PendingSavePath, path, StringComparison.OrdinalIgnoreCase)));
         _openEditors.Add(editor);
         var editorPath = item.FilePath;
         _editors[editorPath] = editor;

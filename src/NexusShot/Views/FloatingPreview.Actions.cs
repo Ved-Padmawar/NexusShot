@@ -1,4 +1,4 @@
-﻿using NexusShot.Core;
+using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
 
@@ -120,24 +120,35 @@ public sealed partial class FloatingPreview
         return clicked;
     }
 
-    private void Copy()
+    private bool _copying;
+
+    private void Copy() => _ = CopyAsync();
+
+    private async Task CopyAsync()
     {
-        if (_dismissing) return;
-        try
+        if (_dismissing || _copying) return;
+        _copying = true;
+        var path = _item.FilePath;
+        Exception? failure = null;
+        try { await MediaWorker.Run(() => { ClipboardImage.Copy(path); return true; }); }
+        catch (Exception exception) { failure = exception; }
+        Post(() =>
         {
-            ClipboardImage.Copy(_item.FilePath);
-            // Only a completed copy earns a tick. A second successful click restarts the hold.
-            _copied.Start(Environment.TickCount64);
-            WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, 16, IntPtr.Zero);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
-            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
-        {
-            _copied.Stop();
-            WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
-            Log.Error("preview.copy", exception, _item.FilePath);
-        }
-        Invalidate();
+            _copying = false;
+            if (_dismissing) return;
+            if (failure is null)
+            {
+                _copied.Start(Environment.TickCount64);
+                WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, 16, IntPtr.Zero);
+            }
+            else
+            {
+                _copied.Stop();
+                Log.Error("preview.copy", failure, path);
+                UserFeedback.Error(Handle, "Could not copy this image. Check that the file exists and retry.");
+            }
+            Invalidate();
+        });
     }
 
     private void StepCopyFeedback()
@@ -160,37 +171,40 @@ public sealed partial class FloatingPreview
 
     /// <summary>Writes a copy wherever the user picks, then dismisses: the capture has landed
     /// somewhere permanent, so the card has done its job.</summary>
-    private void SaveAs()
-    {
-        if (_dismissing) return;
+    private void SaveAs() => _ = SaveAsAsync();
 
-        // The picker pumps its own message loop, so the countdown keeps ticking behind it - and
-        // would close the window while the user is still typing a filename.
+    private async Task SaveAsAsync()
+    {
+        if (_dismissing || _savingAs) return;
         _remaining = _dismissSeconds;
         _savingAs = true;
-
         string? destination;
+        var source = _item.FilePath;
         try
         {
-            destination = FilePicker.SavePng(Handle, Path.GetFileName(_item.FilePath),
-                Path.GetDirectoryName(_item.FilePath));
+            destination = FilePicker.SavePng(Handle, Path.GetFileName(source), Path.GetDirectoryName(source));
+            if (destination is null) { _savingAs = false; return; }
         }
-        finally
+        catch (Exception exception)
         {
             _savingAs = false;
-        }
-
-        if (destination is null) return;
-
-        try
-        {
-            File.Copy(_item.FilePath, destination, overwrite: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
+            Log.Error("preview.save_picker", exception, source);
+            UserFeedback.Error(Handle, "Could not open the save dialog. Please retry.");
             return;
         }
-
-        Dismiss();
+        Exception? failure = null;
+        try { await MediaWorker.Run(() => { AtomicFile.Copy(source, destination); return true; }); }
+        catch (Exception exception) { failure = exception; }
+        Post(() =>
+        {
+            _savingAs = false;
+            if (_dismissing) return;
+            if (failure is null) Dismiss();
+            else
+            {
+                Log.Error("preview.save", failure, source);
+                UserFeedback.Error(Handle, "Could not save this image. Check the destination and available disk space.");
+            }
+        });
     }
 }

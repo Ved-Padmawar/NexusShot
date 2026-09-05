@@ -58,6 +58,10 @@ public sealed partial class EditorWindow
 
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
     {
+        if (msg == 0x0010 && !RequestClose()) return Handled; // WM_CLOSE
+        // Repaints and caption messages remain responsive; editing waits for the save result.
+        if ((_fileBusy || _confirmingClose) && msg is WmLButtonDown or WmLButtonUp or WmMouseMove or WmKeyDown or WmChar)
+            return Handled;
         switch (msg)
         {
             case UiThreadDispatch.Message:
@@ -453,6 +457,9 @@ public sealed partial class EditorWindow
                     return true;
                 case VIRTUAL_KEY.VK_Y:
                     Redo();
+                    return true;
+                case VIRTUAL_KEY.VK_S:
+                    Post(() => RunFileAction(Save));
                     return true;
             }
             return false;

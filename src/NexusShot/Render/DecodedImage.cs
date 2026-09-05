@@ -35,6 +35,8 @@ public sealed class DecodedImage : IDisposable
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
 
         var length = (long)width * height * 4;
+        if (length > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(width), "The pixel buffer exceeds the supported size.");
         return new DecodedImage(Marshal.AllocHGlobal((nint)length), width, height);
     }
 
@@ -42,8 +44,12 @@ public sealed class DecodedImage : IDisposable
     public static DecodedImage CopyFrom(ReadOnlySpan<byte> pixels, int width, int height)
     {
         var image = Allocate(width, height);
-        pixels[..image.ByteLength].CopyTo(image.Span);
-        return image;
+        try
+        {
+            pixels[..image.ByteLength].CopyTo(image.Span);
+            return image;
+        }
+        catch { image.Dispose(); throw; }
     }
 
     /// <summary>The pixels. Valid only while this instance is alive.</summary>

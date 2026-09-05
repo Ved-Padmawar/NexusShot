@@ -1,6 +1,6 @@
 namespace NexusShot.Core;
 
-/// <summary>Editor tools. Letters match the CleanShot X shortcuts.</summary>
+/// <summary>Editor tools. Letters match the shortcuts used by comparable capture tools.</summary>
 public enum EditorTool
 {
     Select,
