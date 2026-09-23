@@ -27,33 +27,32 @@
 
 **📸 Capture** — full virtual desktop, active window, and drag-selection region, with correct
 multi-monitor and per-monitor-DPI coordinates. The region picker draws a **frozen snapshot** of the
-screen, dimmed, with a crosshair and a live pixel-dimension readout. A live overlay has to fight the
-compositor and can catch its own dimming in the capture. The saved image is cropped from that same
-snapshot rather than re-grabbed afterwards, so an open menu or dropdown — which the overlay's own
-activation dismisses — survives into the shot, and what you select is exactly what you get.
+screen, dimmed, with a crosshair and a live pixel-dimension readout. The saved image is cropped from
+that same snapshot rather than re-grabbed afterwards, so an open menu or dropdown survives into the
+shot and what you select is exactly what you get. Captures are copied to the clipboard and saved
+automatically; both can be turned off in Settings.
 
-**🃏 Quick Access Overlay** — after each capture a borderless thumbnail card appears at the
+**🃏 Quick Access cards** — after each capture a borderless thumbnail card appears at the
 **bottom-left** of the work area and stacks upward as more captures arrive. It never steals focus
-(`WS_EX_NOACTIVATE`) and stays out of Alt-Tab and the taskbar. The card sizes itself to the
-capture's aspect ratio, so only the image shows — no frame or backdrop edge. Hovering reveals
-Copy, Save as, Edit, and Pin; the card can be dragged straight into another application, as a file
-or as its path into a text field. Auto-dismiss is configurable, pauses while the pointer is over the
-card or when pinned, and fades the card out to the left.
+and stays out of Alt-Tab and the taskbar. Hovering reveals Copy, Save as, Edit, and Pin; the card
+can be dragged straight into another application — as a file, or as its path into a text field.
+Auto-dismiss is configurable and pauses while the pointer is over the card or it is pinned.
 
-**🎨 Editor** — displays the screenshot at fit-to-window scale while keeping all annotation geometry
-in image-pixel space. Click-and-drag sets an annotation's position and size in one gesture, and
-each shape family gets its own selection model: boxes show eight resize grips, lines and arrows
-show endpoint grips, brush strokes (pen/blur/pixelate) leave only their effect until explicitly
-selected. Text annotations are editable objects — double-click (or click with the text tool) to
-edit in place, with the box itself as the wrapping text area. Crop is an interactive session: a
-handle-draggable frame with the outside dimmed, applied only on confirm (`Enter`) and discardable
-(`Esc`). Blur and pixelate run on the GPU. The colour picker takes a hex value or R/G/B directly, so
-a colour can be matched to a spec rather than dragged for by eye.
+**🎨 Editor** — rectangle, ellipse, line, arrow, pen, brush, eraser, text, numbered counter,
+highlight, blur, pixelate, spotlight, and crop. Annotations stay selectable and editable after they
+are drawn: boxes have eight resize grips, lines and arrows have endpoint grips, and text is edited
+in place, wrapping inside its box. Crop is a handle-draggable frame applied on `Enter` and discarded
+with `Esc`. Blur and pixelate run on the GPU. The colour picker takes a hex value or R/G/B directly,
+so a colour can be matched to a spec. Closing with unsaved edits asks first.
+
+**🗂 Shell** — a sidebar of every capture in the save folder, kept in sync with File Explorer, plus a
+detail pane to preview, copy, open in the editor, or delete. Settings live here too: save folder,
+auto-save, auto-copy, card dismiss time, theme (system / light / dark), and start with Windows.
 
 **⌨️ Global hotkeys** — `Ctrl+Shift+S` region, `Ctrl+Shift+F` full screen, `Ctrl+Shift+W` active
-window, `Ctrl+Shift+N` open the shell. All four are rebindable in Settings. Registration is
-best-effort: a binding another app already owns fails on its own, the rest still register, and the
-shell says which one clashed.
+window, `Ctrl+Shift+N` open the shell. All four can be rebound (including to a single key such as
+`F9`) or unbound in Settings. A binding another app already owns fails on its own, the rest still
+register, and the shell says which one clashed.
 
 ### Keyboard shortcuts
 
@@ -61,9 +60,8 @@ shell says which one clashed.
 | --- | --- |
 | **Shell** | `Esc` closes the open list, then Settings, then the selected capture, then the window |
 | **Editor tools** | `V` select · `R` rectangle · `E` ellipse · `L` line · `A` arrow · `D` pen · `M` brush · `X` eraser · `T` text · `N` counter · `H` highlight · `B` blur · `P` pixelate · `S` spotlight · `C` crop |
-| **Editor** | `Ctrl+Z` / `Ctrl+Y` undo / redo · `Del` delete selection · `1` toggle fit / 100% · `Enter` apply crop · `Esc` cancel |
-
-Save, Save as… and Copy live in the editor's footer.
+| **Editor** | `Ctrl+S` save · `Ctrl+Z` / `Ctrl+Y` undo / redo · `Del` delete selection · `1` toggle fit / 100% · `Enter` apply crop · `Esc` cancel |
+| **Hotkey recorder** | `Backspace` unbind · `Delete` restore default · `Esc` cancel |
 
 ---
 
@@ -79,16 +77,17 @@ Save, Save as… and Copy live in the editor's footer.
 
 ```powershell
 .\build.ps1                      # debug build, then run
-.\build.ps1 test                 # headless render + drag-timing check
+.\build.ps1 test                 # unit tests, then a headless render + drag-timing check
 .\build.ps1 release              # build the native executable
 ```
 
-The app starts in the notification area. The shell's close button hides it; use **Quit** on the
-tray menu to exit. A second launch raises the running instance rather than starting a rival — one
-process owns the global hotkeys, and a second could register none of them.
+The app starts in the notification area. The shell's close button hides it; use **Exit** on the
+tray menu to quit. A second launch raises the running instance instead of starting another one,
+because only one process can own the global hotkeys.
 
-> Screenshots are saved to `Pictures\NexusShot`. Settings and metadata-only history live in
-> `%APPDATA%\NexusShot`; a corrupt file falls back to defaults rather than refusing to start.
+> Screenshots are saved to `Pictures\NexusShot`. Settings and history live in `%APPDATA%\NexusShot`,
+> logs in `%LOCALAPPDATA%\NexusShot\logs`. A corrupt settings file falls back to defaults rather than
+> stopping the app from starting.
 
 ---
 
@@ -99,8 +98,8 @@ process owns the global hotkeys, and a second could register none of them.
 .\build.ps1 installer            # release + Inno Setup -> dist\NexusShot-<version>.exe
 ```
 
-`release` publishes a single Native AOT executable — no .NET runtime, no framework payload, so the
-target machine needs nothing installed. `installer` wraps that in Inno Setup.
+`release` publishes a single Native AOT executable (~9 MB) — no .NET runtime, no framework payload,
+so the target machine needs nothing installed. `installer` wraps that in Inno Setup.
 
 > **Prerequisite:** [Inno Setup 6](https://jrsoftware.org/isdl.php) — `winget install JRSoftware.InnoSetup`
 
@@ -109,244 +108,88 @@ target machine needs nothing installed. `installer` wraps that in Inno Setup.
 ## 🏛 Architecture
 
 ```text
-assets/icons/  icon-source.svg + export-icons.ps1 -> nexus-shot.ico
 src/NexusShot/
-  Core/       Framework-free editing logic and types
-              EditorDocument   state, gestures, undo/redo, selection, crop
-              Annotation       one annotation, in image-pixel space
-              BoxGeometry      shared crop/shape/text interaction geometry
+  Core/       Framework-free state and logic, unit-tested without a GPU
+              EditorDocument   annotations, gestures, selection, undo/redo, crop
+              BoxGeometry      shared crop/shape/text handles, hit testing, resize
               AdornerGeometry  the exact geometry of selection and crop adorners
-              Theme, Palette   design tokens as values, not resource dictionaries
-  Render/     Direct2D
+              AppSettings      settings + history persistence
+              Theme, Palette   design tokens and colours as values
+  Platform/   Win32 and COM interop: capture, tray, hotkeys, clipboard, drag-out,
+              file dialogs, folder watcher, single instance, background media queue
+  Render/     Direct2D / DirectWrite
               AnnotationRenderer  draws a document onto any D2D target
-              Ui, Icons           immediate-mode widgets, vector icons
+              Exporter            the same renderer, pointed at an offscreen target
+              Ui, Dropdown        immediate-mode widgets
               ColorPicker         hex / RGB picker with editable fields
               PixelEffectSource   blur and pixelate as GPU effects
-              Exporter            the same renderer, pointed at an offscreen target
-              ImageSurface        WIC decode + GPU upload
-  Platform/   Win32: capture, tray, hotkeys, clipboard, drag-out, single instance,
-              WindowInterop    the HWND calls more than one window needs
-  Views/      CaptionWindow    content extended into the titlebar
+  Views/      Windows and their message handling
               MainWindow       the shell: sidebar, detail pane, settings
               EditorWindow     canvas + EditorChrome (toolbar, footer)
               FloatingPreview  the quick-access card
               RegionOverlay    the frozen-snapshot region picker
-              TextEditor       inline text: a D2D-drawn caret, not a Win32 EDIT
-              UiThreadDispatch defers work out of a frame or a modal loop
-  App.cs      tray + hotkeys + lifetime
-  CapturePipeline.cs  everything after the pixels exist: filing, cards,
-              editors, history sync
+              TextEditor       inline text drawn in Direct2D
+  App.cs              tray + hotkeys + lifetime
+  CapturePipeline.cs  everything after the pixels exist: saving, cards, editors, history
+src/NexusShot.Tests/  unit tests for Core
 ```
 
-The app is **immediate mode**: there is no retained visual tree. Input mutates the document and
-asks for a repaint; a frame is one allocation-free pass over the annotation list. `WM_PAINT`
-coalesces invalidations, so a burst of pointer messages collapses into a single repaint.
-
-Measured on a 120-frame drag with 9 annotations live (including GPU blur and pixelate):
-**median 1.2 ms per frame**, against a 16.7 ms budget.
-
-The sections below document the non-obvious design decisions. Expand any that interest you.
+The UI is **immediate mode**: there is no retained visual tree. Input mutates the document and asks
+for a repaint; a frame is one allocation-free pass over the annotation list, and `WM_PAINT`
+coalesces a burst of pointer messages into a single repaint. File work — PNG encoding, clipboard,
+thumbnail decoding — runs off the UI thread.
 
 <details>
-<summary><b>Why this is not WinUI 3 any more</b></summary>
+<summary><b>NexusShot used to be built on WinUI 3 — why it was rewritten in raw Win32 + Direct2D</b></summary>
 
 <br />
 
-The previous build was WinUI 3, and its lag was structural rather than incidental. Every pointer
-move mutated a retained visual tree: find an annotation's elements, patch them, let layout re-run —
-work proportional to the scene, on the UI thread, per input event. The old renderer fought that with
-hand-rolled frame batching (buffer the samples, hook `CompositionTarget.Rendering`, flush once a
-frame) and still lagged when a drag started and stopped abruptly. Two releases went into the
-symptoms.
+Earlier versions of NexusShot were a WinUI 3 (XAML) app. Its lag was structural rather than
+incidental: every pointer move mutated a retained visual tree — find an annotation's elements,
+patch them, let layout re-run — work proportional to the scene, on the UI thread, per input event.
+Frame batching and other workarounds went into two releases and the editor still lagged.
 
-Immediate mode removes the thing that was slow instead of working around it. Several other problems
-turned out to be the same problem wearing different clothes:
+The rewrite drops the framework entirely: raw Win32 windows, Direct2D drawing, and immediate-mode
+rendering. That removed the thing that was slow rather than working around it, and several other
+problems turned out to be the same problem:
 
-| | WinUI 3 | now |
+| | WinUI 3 | Win32 + Direct2D |
 | --- | --- | --- |
-| **Erasing** | A XAML `Polyline` cannot have holes, so each stroke was rasterised into a `WriteableBitmap` and the erased pixels cleared in a software loop. | Stroke footprint *minus* the eraser's. One geometry, filled by the GPU, realized once and cached until the stroke changes. |
-| **Blur / pixelate** | C# per-pixel loops on the UI thread, producing a `WriteableBitmap` per stroke per frame. | `ID2D1Effect`. |
-| **Export** | A separate GDI+ flattener, kept in agreement with the on-screen renderer by hand. | The same renderer, pointed at an offscreen target. They cannot drift. |
-| **Blurry preview** | A XAML `Image` scales whatever bitmap it is given: either a pre-scaled thumbnail (soft) or the full image in the visual tree (heavy). | One bitmap per capture, uploaded at full resolution, rescaled by the GPU each frame. |
-| **Cursor lag** | Chased through `ProtectedCursor`. | `WM_SETCURSOR` + `SetCursor`: Windows draws it. |
-| **Payload** | 117 MB (Windows App SDK, self-contained). | **~8 MB**, single exe. |
-| **RAM idle** | ~140 MB | **~58 MB** |
+| **Erasing** | A XAML `Polyline` cannot have holes, so each stroke was rasterised into a bitmap and erased pixel by pixel in software. | Stroke geometry *minus* the eraser's, filled by the GPU. |
+| **Blur / pixelate** | Per-pixel C# loops on the UI thread, every frame. | `ID2D1Effect` on the GPU. |
+| **Export** | A separate GDI+ flattener, kept in agreement with the screen by hand. | The same renderer, pointed at an offscreen target — they cannot drift. |
+| **Preview sharpness** | A XAML `Image` got either a soft pre-scaled thumbnail or a heavy full-size bitmap. | One full-resolution GPU bitmap, rescaled each frame. |
+| **Cursor** | Chased through `ProtectedCursor`, and lagged. | `WM_SETCURSOR`: Windows draws it. |
+| **Payload** | 117 MB (Windows App SDK, self-contained). | **~9 MB**, single exe. |
+| **RAM idle** | ~140 MB | **~50 MB** |
 
-`EditorDocument`, `BoxGeometry`, `Annotation` and the adorner geometry ported over essentially
-unchanged. They never depended on the framework — only on `Windows.Foundation`'s `Point`/`Rect`,
-which `Core/Geometry.cs` now supplies.
-
-</details>
-
-<details>
-<summary><b>The shell browses; the editor edits</b></summary>
-
-<br />
-
-`MainWindow` is a sidebar of captures plus a detail pane. Annotating opens `EditorWindow` as its
-own window rather than docking it into that pane. A docked editor would surrender the sidebar's
-width from the image on every edit, permanently, to a list the user has stopped looking at.
-
-The shell opens with nothing selected. The detail pane is the only thing that decodes a capture at
-full resolution, and doing that before the first frame is a window that visibly takes a beat to
-appear.
+The editing model — `EditorDocument`, `BoxGeometry`, `Annotation` and the adorner geometry — carried
+over essentially unchanged, because it never depended on the framework.
 
 </details>
 
 <details>
-<summary><b>The titlebar is the client area</b></summary>
+<summary><b>Implementation notes</b></summary>
 
 <br />
 
-`CaptionWindow` extends the app's content into the titlebar, which is what the XAML build got from
-`ExtendsContentIntoTitleBar`. The caption is not a strip above the client area — it *is* the client
-area, painted by the app, with only the system buttons floating on top. That is what lets the
-shell's sidebar run unbroken from the top of the window to the bottom.
-
-`WM_NCCALCSIZE` claims the caption's height while leaving the resize borders alone. `WM_NCHITTEST`
-then hands back the parts the frame still owns: the drag region, and the eight resize edges. A
-maximised window is inset by `SM_CYSIZEFRAME + SM_CXPADDEDBORDER` — Windows deliberately oversizes
-it by exactly that, and ignoring it crops the top of the content.
-
-`WM_ERASEBKGND` is claimed and not honoured. The window class brush is white, and letting Windows
-paint it before the first Direct2D frame is what makes a window flash white as it opens.
-
-</details>
-
-<details>
-<summary><b>Immediate mode, and the one place it does not apply</b></summary>
-
-<br />
-
-A widget is a function call, not an object: `if (ui.Button(id, bounds, "Save")) { ... }`. The widget
-owns no state, so there is nothing to keep in sync with the model, and the flags the XAML build
-needed to suppress re-entrancy (`_isLoadingThickness`, `_isLoadingTextFormat`) have nothing to
-guard. Icons are vector paths — no icon font, no PNG assets, no `.pri` to forget to publish. The
-sidebar's brand mark is drawn from the icon's own 960-unit grid rather than shipped as a bitmap.
-
-The trap is **ordering**. `Interact()` is what sets a widget's hot/active state, so reading
-`IsHot(id)` before calling it styles the widget from the *previous* frame — which, since
-`BeginFrame` resets it, means no hover at all. Every widget calls `Interact` first and styles from
-the result. The same trap applies to state a click changes: the frame that handled the click has
-already drawn the old value, so it must invalidate to show the new one.
-
-Clip state is the other sharp edge. Direct2D counts pushes and pops itself, and an unbalanced stack
-— or a layer popped with the axis-aligned call — faults the device with `D2DERR_WRONG_STATE` and
-takes the app down. `Ui` records what each clip was pushed as, pops with the matching call, and
-unwinds anything a caller left open at the end of the frame.
-
-Text entry is drawn in Direct2D alongside the annotation, with caret, selection, grapheme-aware
-navigation, clipboard commands and local undo managed by `TextEditor` and `TextBoxController`.
-It is not a Win32 `EDIT` control: a child HWND over a Direct2D surface has no defined paint order,
-so the two invalidated each other every frame — the box flickered and its glyphs lagged a keystroke.
-The cost of owning the text surface is that full IME composition and UI Automation accessibility are
-not implemented.
+- **Custom titlebar.** Window content extends into the titlebar (`CaptionWindow`): `WM_NCCALCSIZE`
+  claims the caption, `WM_NCHITTEST` hands back the drag region and resize edges, and a maximised
+  window is inset by `SM_CYSIZEFRAME + SM_CXPADDEDBORDER`, which Windows oversizes it by.
+- **96 DPI render targets.** Input, window rects and images are all in physical pixels, so the
+  Direct2D target is pinned to 96 DPI and the chrome scales itself. That is also what makes "100%"
+  one image pixel per physical pixel.
+- **One factory per target.** Direct2D refuses to mix resources from different factories, so
+  `D2DResources` builds stroke styles and geometry from the factory that owns its target.
+- **Text is drawn, not a Win32 `EDIT`.** A child HWND over a Direct2D surface has no defined paint
+  order and flickered. The trade-off: full IME composition and UI Automation are not implemented.
+- **Clipboard.** Images go on as `PNG`, `CF_DIBV5` and `CF_DIB`, all by value — delay-rendered
+  data would vanish when the copying window closed and never reach Clipboard History (`Win`+`V`).
+- **Drag-out.** Cards offer `CF_HDROP` for apps that take files and `CF_UNICODETEXT` so a drop onto
+  a text field pastes the path.
+- **Rebinding a hotkey** unregisters all bindings while the recorder is armed; otherwise the key
+  being rebound fires its action and never reaches the recorder.
+- **Icons.** `assets/icons/icon-source.svg` is the source of truth for the app icon;
+  `export-icons.ps1` writes the `.ico`. UI glyphs come from Segoe Fluent Icons.
 
 </details>
-
-<details>
-<summary><b>Two things that will bite you</b></summary>
-
-<br />
-
-**Direct2D refuses to use resources from one factory with a target from another** — *"Objects used
-together must be created from the same factory instance."* Stroke styles and path geometries are
-*factory* resources, so they must come from whichever factory owns the target being drawn into.
-`D2DResources` takes its factory from its target, and everything that builds geometry goes through
-it. A process-wide factory looks tidy and fails at runtime.
-
-**The render target defaults to the system DPI.** On a scaled display D2D then scales every
-coordinate — while `ClientRect`, `WM_MOUSEMOVE` and the image are all already in physical pixels.
-The target is pinned to 96 DPI and the chrome scales itself. That is also what makes "100%" mean one
-image pixel to one *physical* pixel, which is the rule that keeps a screenshot pin-sharp.
-
-**`Widen` on a zero-length centreline returns empty geometry.** A tap with no drag is one point, so
-a stroke drawn that way has nothing to widen — and a stroke whose footprint is empty disappears the
-moment anything is subtracted from it. Dabs build an explicit circle instead, for the painted stroke
-and the eraser mask alike. This is only visible once an erasure exists, because the plain draw path
-special-cases a dab as a filled ellipse and never calls `Widen` at all.
-
-Also: the app manifest needs the ComCtl32 v6 dependency. Without it an unhandled exception dies
-inside its own `TaskDialog` and reports nothing at all.
-
-</details>
-
-<details>
-<summary><b>The clipboard, and why a copy can silently vanish</b></summary>
-
-<br />
-
-`ClipboardImage` publishes three formats, because no one of them is read by everything: the
-registered `PNG` format carries real alpha and is what modern apps prefer, `CF_DIBV5` is the Win32
-format that also carries alpha, and `CF_DIB` is what everything can still paste. The two DIBs are
-flattened onto white, whose alpha is widely ignored.
-
-Every format is placed **by value**. Delay-rendered clipboard data stays owned by the copying
-process: the paste target has to come back and ask for it, which fails the moment the window that
-copied goes away — and the shell's Clipboard History (`Win`+`V`) never records the entry at all.
-
-The copy takes the pixels it is handed rather than a path, so the automatic copy after a capture
-builds its DIBs from the bitmap that was just blitted instead of decoding the PNG it had written
-moments earlier. The path overload remains for the editor, which is copying a file it did not
-capture. Either way the work happens off the hotkey thread.
-
-`FileDrag` has the mirror-image problem. `CF_HDROP` is what Explorer, browsers and mail clients read
-as "here is a file", but a text field cannot accept a file at all — so the path is also offered as
-`CF_UNICODETEXT`. That is what makes dropping a card onto an address bar or a chat box paste the
-path rather than do nothing.
-
-</details>
-
-<details>
-<summary><b>Icons</b></summary>
-
-<br />
-
-`assets/icons/icon-source.svg` is the design source of truth, sharing the Nexus family's tile
-geometry and 135° cyan/steel split. `export-icons.ps1` redraws the same geometry with
-`System.Drawing` and writes a PNG-framed `.ico`. Keep the two in sync when the mark changes.
-
-`ApplicationIcon` only brands the **exe file**, which is what Explorer shows. The **taskbar** reads
-its icon from the *window*, and **Alt-Tab** reads the HWND's `ICON_BIG` — so `AppIcon.Apply` sends
-`WM_SETICON` for both sizes, loading the `HICON` from the module's own resource table rather than a
-filesystem path (which in an unpackaged app depends on the working directory). The shell suppresses
-its own caption icon with `WS_EX_DLGMODALFRAME`, because the sidebar already carries the brand.
-
-</details>
-
----
-
-## 🛠 Developer notes
-
-- **Nothing decodes on the first frame.** Inflating a PNG costs ~14 ms whether the result is a 4K
-  bitmap or a 52×34 chip. `ImageSurface` splits into `DecodeScaled` (CPU, any thread) and `Upload`
-  (GPU, must be the thread that owns the device); thumbnails decode on the thread pool and fill in as
-  they arrive. First frame went from **104 ms to 27 ms**.
-- **Capture never round-trips through a file.** `ScreenCapture` hands back pixels, not a path, so a
-  region pick uploads the frozen snapshot once and crops the selection straight out of memory. It
-  used to encode the whole virtual desktop to PNG, decode it again to display it, decode it a third
-  time to crop, then encode the result — five full-desktop passes where there are now two, and on a
-  dual-4K desktop each pass is ~63 MiB.
-- History thumbnails decode at thumbnail resolution and are held in a 200-entry LRU cache: a
-  capture scrolled well past is evicted and re-decodes on demand, so memory stays flat as the
-  history grows rather than climbing with it. The cap sits far above a screenful, so scrolling never
-  evicts a row it is about to draw again.
-- The selected detail image decodes for the preview's physical display size, including high DPI.
-  Growing the window requests a larger decode. Editors and exports still read the original file.
-  Hiding the shell releases its render target, caches, and pending pixels; a tray-only launch waits
-  until the shell is shown before creating graphics resources.
-- A `FileSystemWatcher` on the save folder keeps the sidebar synchronized with File Explorer:
-  external deletes remove rows, new PNGs appear automatically. The watcher fires on a thread-pool
-  thread, so its work is posted to the UI thread rather than mutating the history under a frame that
-  is drawing it.
-- **A hotkey has to stand aside to be rebound.** A key registered with `RegisterHotKey` is delivered
-  as `WM_HOTKEY` and never as a keystroke — so pressing the very key you are rebinding fires its
-  action and the recorder never sees it. The bindings are unregistered while a row is armed.
-- Capturing does **not** hide the shell, so NexusShot's own window can be captured.
-- The editor's Save overwrites the capture and refreshes its quick-access card, creating one if it
-  was already dismissed. Save as… writes a new file, points the editor at it, and gives it a card of
-  its own.
-- Closing an editor with unsaved edits offers to save, discard or cancel, and so does exiting from
-  the tray with editors still open. Cancel is the default, so a stray Enter never discards work.
-- Logs are JSON-lines under `%LOCALAPPDATA%\NexusShot\logs`, rotating at 1 MB. Image contents are
-  never logged.
