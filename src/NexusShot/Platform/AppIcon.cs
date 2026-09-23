@@ -70,22 +70,12 @@ public static partial class AppIcon
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
-    /// <summary>Blanks the caption text. The window keeps its icon for the shell.</summary>
-    public static void ClearCaption(IntPtr window)
-    {
-        if (window != IntPtr.Zero) SetWindowTextW(window, string.Empty);
-    }
-
     private const int GWL_EXSTYLE = -20;
     private const nint WS_EX_DLGMODALFRAME = 0x00000001;
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOMOVE = 0x0002;
     private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_FRAMECHANGED = 0x0020;
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowTextW", StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowTextW(IntPtr window, string text);
 
     private static IntPtr Load(int size)
     {

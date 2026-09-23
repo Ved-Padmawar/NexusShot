@@ -17,7 +17,10 @@ public sealed partial class EditorWindow
 
     /// <summary>Writes the flattened image over the original. A crop frame the user is still
     /// dragging is applied too: the footer says "Save to apply", so Save applies it.</summary>
-    private void Save() => StartFileAction(saveAs: false, copy: false);
+    private void Save() => StartFileAction(FileAction.Save);
+
+    /// <summary>What a file command does with the flattened image.</summary>
+    private enum FileAction { Save, SaveAs, Copy, CopyText }
 
     private void RunFileAction(Action action)
     {
@@ -31,12 +34,17 @@ public sealed partial class EditorWindow
     }
 
     /// <summary>Writes the flattened image somewhere new and continues editing it there.</summary>
-    private void SaveAs() => StartFileAction(saveAs: true, copy: false);
+    private void SaveAs() => StartFileAction(FileAction.SaveAs);
 
-    private void CopyToClipboard() => StartFileAction(saveAs: false, copy: true);
+    private void CopyToClipboard() => StartFileAction(FileAction.Copy);
 
-    private void StartFileAction(bool saveAs, bool copy)
+    /// <summary>Reads the flattened image, so text under a blur stays unread.</summary>
+    private void CopyText() => StartFileAction(FileAction.CopyText);
+
+    private void StartFileAction(FileAction action)
     {
+        var saveAs = action == FileAction.SaveAs;
+        var copy = action is FileAction.Copy or FileAction.CopyText;
         if (_image is null || _fileBusy) return;
         _fileBusy = true;
         try
@@ -48,8 +56,13 @@ public sealed partial class EditorWindow
             if (!copy && CanSaveTo?.Invoke(request.Destination) == false)
                 throw new InvalidOperationException("That file is already open in another editor. Choose a different name.");
             if (!copy) PendingSavePath = request.Destination;
-            ShowToast(copy ? "Copying…" : "Saving…");
-            _ = ExecuteFileAction(request, saveAs, copy);
+            ShowToast(action switch
+            {
+                FileAction.Copy => "Copying…",
+                FileAction.CopyText => "Reading text…",
+                _ => "Saving…",
+            });
+            _ = ExecuteFileAction(request, action);
         }
         catch
         {
@@ -61,16 +74,19 @@ public sealed partial class EditorWindow
         }
     }
 
-    private async Task ExecuteFileAction(ExportRequest request, bool saveAs, bool copy)
+    private async Task ExecuteFileAction(ExportRequest request, FileAction action)
     {
+        var saveAs = action == FileAction.SaveAs;
         Exception? failure = null;
         DecodedImage? savedPixels = null;
         var saved = false;
+        var lines = 0;
         try
         {
             savedPixels = await MediaWorker.Run(() =>
             {
-                if (copy) { request.CopyToClipboard(); return null; }
+                if (action == FileAction.Copy) { request.CopyToClipboard(); return null; }
+                if (action == FileAction.CopyText) { lines = request.CopyText(); return null; }
                 request.Save();
                 saved = true;
                 return ImageSurface.Decode(request.Destination);
@@ -90,6 +106,7 @@ public sealed partial class EditorWindow
                 if (saved)
                 {
                     _files.CompleteSave(request);
+                    UpdateTitle();
                     _effects?.Dispose();
                     _effects = null;
                     _image?.Dispose();
@@ -103,13 +120,18 @@ public sealed partial class EditorWindow
                     Invalidate();
                     return;
                 }
+                if (action == FileAction.CopyText && failure is InvalidOperationException)
+                    UserFeedback.Error(Handle, failure.Message);
                 ShowToast("Could not complete action. Check the file or clipboard and retry.");
                 return;
             }
-            if (copy) _copied.Start(Environment.TickCount64);
+            if (action == FileAction.Copy) _copied.Start(Environment.TickCount64);
+            else if (action == FileAction.CopyText)
+                ShowToast(lines == 0 ? "No text found" : $"Copied {lines} line{(lines == 1 ? "" : "s")} of text");
             else
             {
                 _files.CompleteSave(request);
+                UpdateTitle();
                 RunFileAction(() =>
                 {
                     if (saveAs) SavedAs?.Invoke(_files.Path);

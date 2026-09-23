@@ -18,6 +18,10 @@ public sealed class TrayIcon : IDisposable
     private const uint NIF_MESSAGE = 0x01;
     private const uint NIF_ICON = 0x02;
     private const uint NIF_TIP = 0x04;
+    private const uint NIF_INFO = 0x10;
+
+    private const uint NIIF_INFO = 0x01;
+    private const uint NIIF_ERROR = 0x03;
 
     private const uint TPM_RIGHTBUTTON = 0x0002;
     private const uint TPM_RETURNCMD = 0x0100;
@@ -53,6 +57,28 @@ public sealed class TrayIcon : IDisposable
         CaptureWindow = 3,
         OpenMain = 4,
         Exit = 5,
+        RestoreClosed = 6,
+        CaptureText = 7,
+        TimedCapture = 8,
+    }
+
+    /// <summary>A Windows notification: never takes focus, and respects Do Not Disturb.</summary>
+    public bool Notify(string message, bool error)
+    {
+        if (!_added) return false;
+
+        var data = new NOTIFYICONDATAW
+        {
+            cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATAW>(),
+            hWnd = _window,
+            uID = _id,
+            uFlags = NIF_INFO,
+            szInfoTitle = "NexusShot",
+            // The shell drops a message longer than the 255-character field.
+            szInfo = message.Length > 255 ? message[..255] : message,
+            dwInfoFlags = error ? NIIF_ERROR : NIIF_INFO,
+        };
+        return Shell_NotifyIconW(NIM_MODIFY, ref data);
     }
 
     /// <summary>
@@ -82,7 +108,10 @@ public sealed class TrayIcon : IDisposable
             AppendMenuW(menu, MF_STRING, (nuint)Command.CaptureRegion, "Capture region");
             AppendMenuW(menu, MF_STRING, (nuint)Command.CaptureFullScreen, "Capture full screen");
             AppendMenuW(menu, MF_STRING, (nuint)Command.CaptureWindow, "Capture active window");
+            AppendMenuW(menu, MF_STRING, (nuint)Command.TimedCapture, "Timed capture");
+            AppendMenuW(menu, MF_STRING, (nuint)Command.CaptureText, "Capture text");
             AppendMenuW(menu, MF_SEPARATOR, 0, null);
+            AppendMenuW(menu, MF_STRING, (nuint)Command.RestoreClosed, "Restore closed captures");
             AppendMenuW(menu, MF_STRING, (nuint)Command.OpenMain, "Open NexusShot");
             AppendMenuW(menu, MF_SEPARATOR, 0, null);
             AppendMenuW(menu, MF_STRING, (nuint)Command.Exit, "Exit");

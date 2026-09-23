@@ -49,6 +49,7 @@ public sealed class EditorChrome(Ui ui)
     public bool SavePressed { get; private set; }
     public bool SaveAsPressed { get; private set; }
     public bool CopyPressed { get; private set; }
+    public bool CopyTextPressed { get; private set; }
     public bool? FitPicked { get; private set; }
 
     private double S(double units) => units * Scale;
@@ -83,7 +84,7 @@ public sealed class EditorChrome(Ui ui)
         _copied = copied;
         ToolPicked = null;
         UndoPressed = RedoPressed = DeletePressed = false;
-        SavePressed = SaveAsPressed = CopyPressed = false;
+        SavePressed = SaveAsPressed = CopyPressed = CopyTextPressed = false;
         FitPicked = null;
 
         ui.Scale = Scale;
@@ -325,10 +326,17 @@ public sealed class EditorChrome(Ui ui)
             accent: _copied > 0.5, confirmation: _copied))
             CopyPressed = true;
 
+        var copyText = ui.ButtonWidth("Copy text", font, glyph);
+        right -= copyText + S(8);
+        if (ui.Button(Ui.Id("editor.copytext"), new Rect(right, y, copyText, S(32)), "Copy text",
+            glyph: Icons.Text, glyphSize: glyph, fontSize: font))
+            CopyTextPressed = true;
+
         // Save still gets a badge: it says which file it wrote, which the button cannot.
         if (toast is null) return;
 
-        var badge = new Rect(right - S(88), y, S(80), S(32));
+        var badgeWidth = ui.MeasureText(toast, font) + S(24);
+        var badge = new Rect(right - badgeWidth - S(8), y, badgeWidth, S(32));
         ui.FillRounded(badge, (float)S(Metrics.RadiusControl), ui.Theme.Accent);
         ui.Text(toast, badge, ui.Theme.TextOnAccent, (float)font, align: TextAlign.Center);
     }

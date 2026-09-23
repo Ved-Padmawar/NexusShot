@@ -68,7 +68,7 @@ internal static class RenderTest
             + $"(first frame {frames[0]:F3} ms)");
 
         var output = Path.Combine(Path.GetDirectoryName(imagePath)!, "render-test.png");
-        Exporter.SavePng(document, imagePath, output);
+        Exporter.Save(document, imagePath, output);
         Console.WriteLine($"exported {output}");
 
         // Crop. The session opens on the whole image and is resized by its handles, so this drags
@@ -82,7 +82,7 @@ internal static class RenderTest
         document.CommitCrop();
 
         var cropped = Path.Combine(Path.GetDirectoryName(imagePath)!, "render-test-cropped.png");
-        Exporter.SavePng(document, imagePath, cropped);
+        Exporter.Save(document, imagePath, cropped);
 
         using var croppedImage = ImageSurface.Decode(cropped);
         var (croppedWidth, croppedHeight) = (croppedImage.Width, croppedImage.Height);
@@ -103,14 +103,14 @@ internal static class RenderTest
         var output = Path.Combine(directory, "pixel-probe-result.png");
         using var canvas = DecodedImage.Allocate(128, 128);
         canvas.Span.Fill(255);
-        PngWriter.Write(source, canvas);
+        ImageWriter.Write(source, canvas);
 
         foreach (var tool in new[] { EditorTool.Rectangle, EditorTool.Ellipse, EditorTool.Line })
         {
             var document = new EditorDocument();
             document.SetImageSize(128, 128);
             Draw(document, tool, "#FF0000", 8, (32, 32), (96, 96));
-            Exporter.SavePng(document, source, output);
+            Exporter.Save(document, source, output);
             using var probe = ImageSurface.Decode(output);
             var pixels = probe.Span;
             CheckPixel(pixels, 4, 4, false); // no effect outside the annotation
@@ -122,7 +122,7 @@ internal static class RenderTest
         erased.SetImageSize(128, 128);
         Stroke(erased, EditorTool.Pen, "#FF0000", 16, [new(20, 64), new(108, 64)]);
         Stroke(erased, EditorTool.Eraser, "#000000", 24, [new(64, 64)]);
-        Exporter.SavePng(erased, source, output);
+        Exporter.Save(erased, source, output);
         using var erasedProbe = ImageSurface.Decode(output);
         var erasedPixels = erasedProbe.Span;
         CheckPixel(erasedPixels, 32, 64, true);
@@ -139,7 +139,7 @@ internal static class RenderTest
             canvas.Span[offset + 1] = (byte)y;
             canvas.Span[offset + 2] = 0;
         }
-        PngWriter.Write(source, canvas);
+        ImageWriter.Write(source, canvas);
         var crop = new EditorDocument();
         crop.SetImageSize(128, 128);
         crop.BeginCropSession();
@@ -148,7 +148,7 @@ internal static class RenderTest
         crop.BeginGesture(new(32, 32));
         crop.EndGesture(new(48, 48));
         crop.CommitCrop();
-        Exporter.SavePng(crop, source, output);
+        Exporter.Save(crop, source, output);
         using var cropProbe = ImageSurface.Decode(output);
         var cropped = cropProbe.Span;
         var (width, height) = (cropProbe.Width, cropProbe.Height);
@@ -179,18 +179,18 @@ internal static class RenderTest
             document.SetImageSize(width, height);
             Draw(document, tool, "#FF3B30", 24, (80, 80), (420, 280));
             if (tool == EditorTool.Text) document.Annotations[0].Text = "Text export verification";
-            Exporter.SavePng(document, source, output);
+            Exporter.Save(document, source, output);
             using var drawn = ImageSurface.Decode(output);
             if (drawn.Width != width || drawn.Height != height || drawn.Span.SequenceEqual(originalImage.Span))
                 throw new InvalidOperationException($"{tool} did not produce visible exported pixels.");
 
             document.Undo();
-            Exporter.SavePng(document, source, output);
+            Exporter.Save(document, source, output);
             using (var undone = ImageSurface.Decode(output))
             if (!undone.Span.SequenceEqual(originalImage.Span))
                 throw new InvalidOperationException($"Undo did not restore the source for {tool}.");
             document.Redo();
-            Exporter.SavePng(document, source, output);
+            Exporter.Save(document, source, output);
             using (var redone = ImageSurface.Decode(output))
             if (!redone.Span.SequenceEqual(drawn.Span))
                 throw new InvalidOperationException($"Redo changed the exported pixels for {tool}.");
@@ -202,7 +202,7 @@ internal static class RenderTest
             var document = new EditorDocument();
             document.SetImageSize(width, height);
             Stroke(document, tool, "#000000", 24, [new Point(120, 100)]);
-            Exporter.SavePng(document, source, output);
+            Exporter.Save(document, source, output);
             using var probe = ImageSurface.Decode(output);
             var pixels = probe.Span;
             if (pixels.SequenceEqual(originalImage.Span))
@@ -219,7 +219,7 @@ internal static class RenderTest
         {
             try
             {
-                Exporter.SavePng(empty, source, output);
+                Exporter.Save(empty, source, output);
                 throw new InvalidOperationException("Locked destination unexpectedly overwritten.");
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }

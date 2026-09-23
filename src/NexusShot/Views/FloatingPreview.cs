@@ -17,7 +17,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     {
         RenderTarget?.Dispose();
         RenderTarget = null;
-        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions);
+        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions, software: true);
     }
     // This tool window has no taskbar icon; avoid the dependency's per-window owned icon.
     protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
@@ -36,6 +36,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private const nuint DismissAnimationTimerId = 2;
     private const nuint CopyFeedbackTimerId = 3;
     private readonly ConfirmFeedback _copied = new();
+    private readonly ConfirmFeedback _textCopied = new();
 
     /// <summary>Card actions - save-as, edit, pin, dismiss - are posted rather than run inline: each
     /// unwinds into a reflow or a modal loop, and neither may run inside DoDragDrop or this card's
@@ -44,14 +45,11 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private void Post(Action work) => _dispatch.Post(work);
 
     // Design units; scaled per-monitor.
-    private const double CardWidth = 136;
-    private const double MinCardHeight = 46;
-    private const double MaxCardHeight = 194;
     private const double StackGap = 10;
     private const double EdgeMargin = 18;
 
-    private ScreenshotHistoryItem _item;
-    private readonly int _dismissSeconds;
+    private readonly QuickAccess _stack;
+    private readonly QuickAccessCard _card;
 
     private D2DResources? _resources;
     private Ui? _ui;
@@ -61,55 +59,41 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private DecodedImage? _thumbnailPixels;
 
     private bool _hovered;
-    private int _remaining;
 
-    public bool IsPinned { get; private set; }
-    public string FilePath => _item.FilePath;
+    public QuickAccessCard Card => _card;
 
     public event Action<FloatingPreview>? Dismissed;
     public event Action<ScreenshotHistoryItem>? EditRequested;
-    public event Action? PinnedChanged;
 
     private double _scale = 1;
     private double S(double units) => units * _scale;
 
-    public FloatingPreview(ScreenshotHistoryItem item, int dismissSeconds)
+    public FloatingPreview(QuickAccess stack, QuickAccessCard card)
         : base("NexusShot preview",
             (WINDOW_STYLE)WS_POPUP,
             (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
     {
-        _item = item;
-        _dismissSeconds = dismissSeconds;
-        _remaining = dismissSeconds;
+        _stack = stack;
+        _card = card;
     }
 
-    /// <summary>Re-points the card at a re-saved capture: the file is the same, the pixels are not.
-    /// The stack re-flows afterwards, since the new image may be a different shape.</summary>
-    public void Refresh(ScreenshotHistoryItem item)
+    /// <summary>Drops the thumbnail after the capture was re-saved: the file is the same, the
+    /// pixels are not.</summary>
+    public void Refresh()
     {
-        _item = item;
-
         _thumbnail?.Dispose();
         _thumbnail = null;
         _thumbnailPixels?.Dispose();
         _thumbnailPixels = null;
 
-        _remaining = _dismissSeconds;
+        _stack.ResetCountdown(_card);
         Invalidate();
     }
 
-    /// <summary>The card's size in physical pixels, for the given monitor scale.</summary>
-    public static Size CardSize(ScreenshotHistoryItem item, double scale)
-    {
-        // The card takes the capture's aspect ratio, clamped so a very tall or very wide capture
-        // still produces a usable card rather than a sliver.
-        var aspect = item.Width > 0 && item.Height > 0
-            ? (double)item.Height / item.Width
-            : 110.0 / 168.0;
+    private static Size CardSize(double scale) =>
+        new(Math.Round(CardLayout.Width * scale), Math.Round(CardLayout.Height * scale));
 
-        var height = Math.Clamp(CardWidth * aspect, MinCardHeight, MaxCardHeight);
-        return new Size(Math.Round(CardWidth * scale), Math.Round(height * scale));
-    }
+    private Rect Scaled(Rect design) => new(S(design.X), S(design.Y), S(design.Width), S(design.Height));
 
     /// <summary>Places the card at its slot in the bottom-left stack.</summary>
     public void PlaceAt(RectInt workArea, double scale, double stackOffset)
@@ -118,7 +102,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         if (_dismissing) return;
 
         _scale = scale;
-        var size = CardSize(_item, scale);
+        var size = CardSize(scale);
 
         var x = workArea.X + (int)Math.Round(EdgeMargin * scale);
         var y = workArea.Bottom
@@ -135,7 +119,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     }
 
     /// <summary>The height this card occupies in the stack, including the gap below the next one.</summary>
-    public double StackHeight(double scale) => CardSize(_item, scale).Height + StackGap * scale;
+    public static double StackHeight(double scale) => CardSize(scale).Height + StackGap * scale;
 
     protected override void OnCreated(object? sender, EventArgs e)
     {
@@ -145,20 +129,20 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
         ApplyDwmChrome();
 
-        // Zero means "keep it until acted on", so no timer at all.
-        if (_dismissSeconds > 0) WindowInterop.SetTimer(Handle, DismissTimerId, 1000, IntPtr.Zero);
+        // Always running: the setting is read per tick, so a change reaches cards already up.
+        WindowInterop.SetTimer(Handle, DismissTimerId, 1000, IntPtr.Zero);
     }
 
-    /// <summary>Rounds the card at the frame. DWM clips the window itself, so the corners are cut
-    /// out of the thumbnail - a stroked rounded rectangle on a square window would leave the image's
-    /// real corners showing through underneath. The border is suppressed so DWM's hairline cannot
-    /// read as a light edge against a dark capture.</summary>
+    /// <summary>Rounds the card at the frame, and lets DWM draw its border: a hairline exactly on
+    /// the rounded edge, which a stroke of our own could only approximate. Accent while hovered, none
+    /// otherwise, so it cannot read as a light edge against a dark capture.</summary>
     private void ApplyDwmChrome()
     {
         var corner = DWMWCP_ROUND;
         DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
 
-        var border = DWMWA_COLOR_NONE;
+        var accent = Theme.Dark.Accent;
+        var border = _hovered ? accent.R | accent.G << 8 | accent.B << 16 : DWMWA_COLOR_NONE;
         DwmSetWindowAttribute(Handle, DWMWA_BORDER_COLOR, ref border, sizeof(int));
     }
 
@@ -184,8 +168,8 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 // Decoded in two halves rather than via LoadScaled: the pixels are kept so a drag
                 // can build its picture from them instead of decoding the file a second time.
                 _thumbnailPixels?.Dispose();
-                _thumbnailPixels = ImageSurface.DecodeScaled(_item.FilePath,
-                    maxWidth: (int)(CardWidth * 2), maxHeight: (int)(MaxCardHeight * 2));
+                _thumbnailPixels = ImageSurface.DecodeScaled(_card.Item.FilePath,
+                    maxWidth: (int)(CardLayout.Width * 2), maxHeight: (int)(CardLayout.Height * 2));
                 _thumbnail = ImageSurface.Upload(_thumbnailPixels, context);
             }
             catch (Exception exception) when (exception is IOException or InvalidOperationException
@@ -197,23 +181,14 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
         _ui.BeginFrame(target, PointerInClient(), _pointerDown);
 
-        // The card's height is clamped, so on an extreme capture it is not the image's aspect ratio
-        // and stretching to fit would squash it. Cover and clip instead. No border: DWM rounds the
-        // frame, so a stroke would be clipped at the corners.
-        _ui.PushClip(card);
+        // Covered edge to edge; DWM rounds the window, so the overhang is clipped with the corners.
         target.DrawBitmap(
             _thumbnail.Bitmap, 1f,
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-            AnnotationRenderer.ToRect(card.Cover(new Size(_thumbnail.Width, _thumbnail.Height))));
-        _ui.PopClip();
+            AnnotationRenderer.ToRect(Scaled(CardLayout.Image(new Size(_thumbnail.Width, _thumbnail.Height)))));
 
-        if (IsPinned && !_hovered) DrawPin(_ui, card);
-
-        if (_hovered)
-        {
-            DrawActions(_ui, card);
-            DrawClose(_ui, card);
-        }
+        if (_card.IsPinned && !_hovered) DrawPin(_ui);
+        if (_hovered) DrawActions(_ui, card);
 
         _ui.EndFrame();
 
@@ -291,6 +266,9 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     /// <summary>True when the press landed on an action button, which is not a drag.</summary>
     private bool _pressedAction;
 
+    /// <summary>True while DoDragDrop's modal loop runs with this card as the source.</summary>
+    private bool _dragging;
+
     private Point PointerInClient()
     {
         WindowInterop.GetCursorPos(out var screen);
@@ -311,6 +289,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 {
                     _hovered = true;
                     TrackLeave();
+                    ApplyDwmChrome();
                 }
 
                 // Past the threshold with the button down, and not on an action: the user is
@@ -328,8 +307,12 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
                         // A completed drop means the capture reached its destination, so the card is
                         // done.
-                        if (FileDrag.Start(_item.FilePath, BuildDragImage(origin)))
-                            Post(Dismiss);
+                        // DoDragDrop pumps timers while the cursor is off the card; hold the countdown.
+                        _dragging = true;
+                        bool dropped;
+                        try { dropped = FileDrag.Start(_card.Item.FilePath, BuildDragImage(origin)); }
+                        finally { _dragging = false; }
+                        if (dropped) Post(Dismiss);
 
                         return new LRESULT { Value = 0 };
                     }
@@ -346,15 +329,16 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 // A live press is a drag beginning - leaving the card is how it starts, so it must
                 // not be cancelled here.
                 _hovered = false;
+                ApplyDwmChrome();
                 if (!_pointerDown) _pressOrigin = null;
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmLButtonDown:
                 _pointerDown = true;
-                _pressOrigin = PointerInClient();
-
-                _pressedAction = _ui?.WantsPointer ?? false;
+                var press = PointerInClient();
+                _pressOrigin = press;
+                _pressedAction = CardLayout.ButtonAt(new Point(press.X / _scale, press.Y / _scale)) is not null;
 
                 // Without capture the moves stop arriving the moment the cursor clears the card -
                 // which is exactly when a drag-out passes its threshold.
@@ -382,15 +366,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                     return new LRESULT { Value = 0 };
                 }
 
-                // The countdown pauses under the pointer, while pinned, and behind the save
-                // dialog: a timer that runs while you are reaching for a button will eventually
-                // lose you a capture.
-                if (_hovered || IsPinned || _copying || _savingAs)
-                {
-                    _remaining = _dismissSeconds;
-                    return new LRESULT { Value = 0 };
-                }
-                if (--_remaining <= 0) Dismiss();
+                if (_stack.Tick(_card, held: _hovered || _dragging || _copying || _savingAs)) Dismiss();
                 return new LRESULT { Value = 0 };
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
@@ -404,11 +380,10 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         // runs on the UI thread, between the press and the drag actually starting.
         if (_thumbnailPixels is not { } decoded) return null;
 
-        // The press is in card space and the thumbnail is decoded at its own size, so the hotspot
-        // is carried across rather than used raw.
-        var card = CardSize(_item, _scale);
-        var x = card.Width > 0 ? press.X / card.Width * decoded.Width : 0;
-        var y = card.Height > 0 ? press.Y / card.Height * decoded.Height : 0;
+        // The press is in card space; the hotspot is in the fitted thumbnail's own pixels.
+        var image = Scaled(CardLayout.Image(new Size(decoded.Width, decoded.Height)));
+        var x = image.Width > 0 ? (press.X - image.X) / image.Width * decoded.Width : 0;
+        var y = image.Height > 0 ? (press.Y - image.Y) / image.Height * decoded.Height : 0;
 
         return DragImage.FromPixels(
             decoded.Span, decoded.Width, decoded.Height,

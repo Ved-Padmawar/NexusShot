@@ -8,7 +8,7 @@ namespace NexusShot.Views;
 /// The settings pane and the row widgets it is built from.
 ///
 /// Split from the shell because none of this is reachable from anywhere else: the pane owns its own
-/// scroll, its dropdowns, the number-field draft and the hotkey recorder table.
+/// scroll, its dropdowns, the number-field draft and the hotkey recorder rows.
 /// </summary>
 public sealed partial class MainWindow
 {
@@ -152,6 +152,16 @@ public sealed partial class MainWindow
                 value =>
                 {
                     _settings.PreviewDismissSeconds = value;
+                    SaveSettings();
+                }));
+
+        y = Row(ui, x, y, width,
+            "Timed capture delay",
+            "Seconds to count down before a timed capture, in the default capture mode.",
+            row => NumberField(ui, Ui.Id("settings.timerdelay"), ActionSlot(row, S(120)), _settings.TimedCaptureSeconds, 1, 30,
+                value =>
+                {
+                    _settings.TimedCaptureSeconds = value;
                     SaveSettings();
                 }));
 

@@ -13,7 +13,7 @@ namespace NexusShot.Views;
 public sealed partial class MainWindow
 {
     private void DrawThumbnail(
-        Ui ui, IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect slot)
+        IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect slot)
     {
         var bitmap = GetThumbnail(target, item);
         if (bitmap is null) return;
@@ -311,6 +311,17 @@ public sealed partial class MainWindow
         catch (Exception exception) when (exception is ArgumentException or IOException)
         {
             return false;
+        }
+    }
+
+    private void Share(ScreenshotHistoryItem item)
+    {
+        try { ShareSheet.Share(Handle, item.FilePath); }
+        catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException
+            or InvalidOperationException)
+        {
+            Log.Error("history.share", exception, item.FilePath);
+            UserFeedback.Error(Handle, "Could not open the share sheet. Please retry.");
         }
     }
 

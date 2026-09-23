@@ -1,6 +1,4 @@
-﻿using ToolCursor = DirectN.Extensions.Utilities.Cursor;
-using NexusShot.Core;
-using NexusShot.Render;
+﻿using NexusShot.Core;
 using NexusShot.Platform;
 
 namespace NexusShot.Views;

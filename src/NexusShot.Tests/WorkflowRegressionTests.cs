@@ -247,7 +247,7 @@ public class WorkflowRegressionTests : IDisposable
         path ??= Path.Combine(_directory, "source.png");
         using var image = DecodedImage.Allocate(width, height);
         image.Span.Fill(255);
-        PngWriter.Write(path, image);
+        ImageWriter.Write(path, image);
         return path;
     });
 }

@@ -2,49 +2,21 @@ using System.Runtime.InteropServices;
 
 namespace NexusShot.Platform;
 
-/// <summary>Unicode text on the clipboard, for the inline text editor's cut/copy/paste.</summary>
+/// <summary>Unicode text on the clipboard: the inline text editor's cut/copy/paste, and recognised
+/// text.</summary>
 internal static partial class ClipboardText
 {
     private const uint CF_UNICODETEXT = 13;
-    private const uint GMEM_MOVEABLE = 0x0002;
 
+    /// <summary>Throws when the clipboard could not be written.</summary>
     public static void Copy(string text)
     {
         if (text.Length == 0) return;
-        if (!OpenClipboard(IntPtr.Zero)) return;
-
-        try
+        ClipboardWriter.Write(() => ClipboardWriter.Place(CF_UNICODETEXT, (text.Length + 1) * 2, block =>
         {
-            EmptyClipboard();
-
-            var bytes = (text.Length + 1) * 2;
-            var memory = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes);
-            if (memory == IntPtr.Zero) return;
-
-            var target = GlobalLock(memory);
-            if (target == IntPtr.Zero)
-            {
-                GlobalFree(memory);
-                return;
-            }
-
-            try
-            {
-                Marshal.Copy(text.ToCharArray(), 0, target, text.Length);
-                Marshal.WriteInt16(target, text.Length * 2, 0);
-            }
-            finally
-            {
-                GlobalUnlock(memory);
-            }
-
-            // The clipboard owns the block once this succeeds; freeing it here would double-free.
-            if (SetClipboardData(CF_UNICODETEXT, memory) == IntPtr.Zero) GlobalFree(memory);
-        }
-        finally
-        {
-            CloseClipboard();
-        }
+            MemoryMarshal.AsBytes(text.AsSpan()).CopyTo(block);
+            block[^2..].Clear();
+        }));
     }
 
     public static string? Paste()
@@ -85,20 +57,10 @@ internal static partial class ClipboardText
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool EmptyClipboard();
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool IsClipboardFormatAvailable(uint format);
 
     [LibraryImport("user32.dll")]
     private static partial IntPtr GetClipboardData(uint format);
-
-    [LibraryImport("user32.dll")]
-    private static partial IntPtr SetClipboardData(uint format, IntPtr data);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
 
     [LibraryImport("kernel32.dll")]
     private static partial IntPtr GlobalLock(IntPtr memory);
@@ -106,7 +68,4 @@ internal static partial class ClipboardText
     [LibraryImport("kernel32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GlobalUnlock(IntPtr memory);
-
-    [LibraryImport("kernel32.dll")]
-    private static partial IntPtr GlobalFree(IntPtr memory);
 }

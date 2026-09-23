@@ -38,15 +38,29 @@ public sealed class EditorFiles(EditorDocument document)
 /// <summary>Owned by one worker after preparation; contains no live view state.</summary>
 public sealed record ExportRequest(EditorDocument Document, string Source, string Destination)
 {
-    public void Save() => Exporter.SavePng(Document, Source, Destination);
+    public void Save() => Exporter.Save(Document, Source, Destination);
 
-    public void CopyToClipboard()
+    public void CopyToClipboard() => WithFlattened(ClipboardImage.Copy);
+
+    /// <summary>The number of lines of text copied; zero when there was none.</summary>
+    public int CopyText()
+    {
+        var lines = 0;
+        WithFlattened(path =>
+        {
+            using var pixels = ImageSurface.Decode(path);
+            lines = TextRecognition.CopyText(pixels);
+        });
+        return lines;
+    }
+
+    private void WithFlattened(Action<string> use)
     {
         var temporary = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"nexusshot-{Guid.NewGuid():N}.png");
         try
         {
-            Exporter.SavePng(Document, Source, temporary);
-            ClipboardImage.Copy(temporary);
+            Exporter.Save(Document, Source, temporary);
+            use(temporary);
         }
         finally
         {

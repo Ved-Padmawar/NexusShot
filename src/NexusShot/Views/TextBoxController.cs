@@ -122,15 +122,12 @@ internal sealed class TextBoxController(EditorDocument document)
                 break;
 
             case VIRTUAL_KEY.VK_C when control:
-                if (editor.HasSelection) ClipboardText.Copy(editor.SelectedText);
+                if (editor.HasSelection) CopySelection(editor);
                 break;
 
+            // Only removed once it is safely on the clipboard: a cut that failed must not lose it.
             case VIRTUAL_KEY.VK_X when control:
-                if (editor.HasSelection)
-                {
-                    ClipboardText.Copy(editor.SelectedText);
-                    editor.Backspace();
-                }
+                if (editor.HasSelection && CopySelection(editor)) editor.Backspace();
                 break;
 
             case VIRTUAL_KEY.VK_V when control:
@@ -158,6 +155,21 @@ internal sealed class TextBoxController(EditorDocument document)
         }
 
         return TextKeyResult.Handled;
+    }
+
+    /// <summary>A busy clipboard fails this one keystroke; it must not take the editor with it.</summary>
+    private static bool CopySelection(TextEditor editor)
+    {
+        try
+        {
+            ClipboardText.Copy(editor.SelectedText);
+            return true;
+        }
+        catch (InvalidOperationException exception)
+        {
+            Log.Error("text.copy", exception);
+            return false;
+        }
     }
 }
 

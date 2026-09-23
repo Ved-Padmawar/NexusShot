@@ -12,14 +12,15 @@ public class StorageTests : IDisposable
         var storage = new Storage(_directory);
         File.WriteAllText(storage.SettingsPath, """
             {"ScreenshotFolder":null,"CaptureRegionHotkey":null,"CaptureFullScreenHotkey":null,
-             "CaptureActiveWindowHotkey":null,"OpenMainWindowHotkey":null,"Theme":999,"PreviewDismissSeconds":-1}
+             "CaptureActiveWindowHotkey":null,"OpenMainWindowHotkey":null,"RestoreClosedHotkey":null,
+             "CaptureTextHotkey":null,"TimedCaptureHotkey":null,"Theme":999,"PreviewDismissSeconds":-1}
             """);
         var settings = storage.LoadSettings();
         Assert.False(string.IsNullOrWhiteSpace(settings.ScreenshotFolder));
         Assert.NotNull(settings.CaptureRegionHotkey);
         Assert.NotNull(settings.CaptureFullScreenHotkey);
         Assert.NotNull(settings.CaptureActiveWindowHotkey);
-        Assert.NotNull(settings.OpenMainWindowHotkey);
+        foreach (var id in HotkeyIds.All) Assert.NotNull(settings.Hotkey(id));
         Assert.Equal(AppTheme.System, settings.Theme);
         Assert.Equal(0, settings.PreviewDismissSeconds);
     }

@@ -5,7 +5,8 @@ using NexusShot.Render;
 namespace NexusShot.Views;
 
 /// <summary>
-/// The card's buttons: copy, save as, edit, pin, close, and the transient feedback copy shows.
+/// The card's buttons: copy, copy text, save as, edit, pin, close, and the transient feedback the
+/// copies show.
 ///
 /// Separated from the window itself, which owns placement, the fade animation and the drag source.
 /// </summary>
@@ -23,66 +24,63 @@ public sealed partial class FloatingPreview
     private static readonly Rgba CloseHover = new(0xC4, 0x2B, 0x1C, 0xFF);
     private static readonly Rgba CloseBorder = new(0xFF, 0xFF, 0xFF, 0x59);
 
-    /// <summary>Dismisses the card without acting on the capture.</summary>
-    private void DrawClose(Ui ui, Rect card)
+    /// <summary>The hover state: a scrim, and each button where <see cref="CardLayout"/> puts it.</summary>
+    private void DrawActions(Ui ui, Rect card)
     {
-        var size = S(16);
-        var bounds = new Rect(card.Right - size - S(4), S(4), size, size);
+        ui.FillRect(card, ui.Theme.HoverScrim);
+        var glyph = S(9);
+        var now = Environment.TickCount64;
 
+        // Pin: the accent when engaged, so its state is legible without a label.
+        if (ActionButton(ui, Ui.Id("preview.pin"), ButtonRect(CardAction.Pin), Icons.Pin, glyph, _card.IsPinned))
+            _stack.TogglePin(_card);
+
+        if (ActionButton(ui, Ui.Id("preview.edit"), ButtonRect(CardAction.Edit), Icons.Edit, glyph, false))
+            Post(RaiseEditRequested);
+
+        if (ActionButton(ui, Ui.Id("preview.save"), ButtonRect(CardAction.SaveAs), Icons.Save, glyph, false))
+            Post(SaveAs);
+
+        // Copy leaves the card up: you may still want to drag it, edit it, or copy it again.
+        if (PillButton(ui, Ui.Id("preview.copy"), ButtonRect(CardAction.Copy), "Copy", _copied.Progress(now)))
+            Post(Copy);
+
+        if (PillButton(ui, Ui.Id("preview.copytext"), ButtonRect(CardAction.CopyText), "Copy text", _textCopied.Progress(now)))
+            Post(CopyText);
+
+        DrawClose(ui, ButtonRect(CardAction.Close));
+    }
+
+    /// <summary>A text pill that confirms itself by reading "Copied" for a moment.</summary>
+    private bool PillButton(Ui ui, int id, Rect bounds, string label, double confirmation)
+    {
+        var clicked = ui.Interact(id, bounds);
+        var radius = (float)(bounds.Height / 2);
+
+        ui.FillRounded(bounds, radius, ui.IsHot(id) || ui.IsActive(id) ? ui.Theme.Accent : ActionBackground);
+        ui.StrokeRounded(bounds, radius, ActionBorder);
+        ui.Text(confirmation > 0.5 ? "Copied" : label, bounds, Rgba.White, (float)S(10),
+            align: TextAlign.Center);
+        return clicked;
+    }
+
+    private Rect ButtonRect(CardAction action) => Scaled(CardLayout.Button(action));
+
+    /// <summary>Dismisses the card without acting on the capture.</summary>
+    private void DrawClose(Ui ui, Rect bounds)
+    {
         var id = Ui.Id("preview.close");
         var clicked = ui.Interact(id, bounds);
         var hot = ui.IsHot(id) || ui.IsActive(id);
 
         var center = bounds.Center;
-        var radius = (float)(size / 2);
+        var radius = (float)(bounds.Width / 2);
         ui.FillCircle(center, radius, hot ? CloseHover : CloseBackground);
         ui.StrokeCircle(center, radius, CloseBorder);
-        ui.Icon(Icons.Close, bounds, Rgba.White, S(8));
+        ui.Icon(Icons.Close, bounds, Rgba.White, S(7));
 
         // Acted on last: Dismiss tears the window down, and the frame still has to finish.
         if (clicked) Dismiss();
-    }
-
-    /// <summary>The hover actions: a full-card scrim behind a centred row of circular buttons.</summary>
-    private void DrawActions(Ui ui, Rect card)
-    {
-        ui.FillRect(card, ui.Theme.HoverScrim);
-
-        const int count = 4;
-        var size = S(22);
-        var spacing = S(5);
-        var totalWidth = size * count + spacing * (count - 1);
-        var x = card.Center.X - totalWidth / 2;
-        var y = card.Center.Y - size / 2;
-        var glyph = S(10);
-
-        // Copy leaves the card up: the capture is on the clipboard, but you may still want to drag
-        // it, edit it, or copy it again.
-        if (ActionButton(ui, Ui.Id("preview.copy"), new Rect(x, y, size, size), Icons.Copy, glyph, false, _copied.Progress(Environment.TickCount64)))
-        {
-            Post(Copy);
-        }
-        x += size + spacing;
-
-        if (ActionButton(ui, Ui.Id("preview.save"), new Rect(x, y, size, size), Icons.Save, glyph, false))
-        {
-            Post(SaveAs);
-        }
-        x += size + spacing;
-
-        if (ActionButton(ui, Ui.Id("preview.edit"), new Rect(x, y, size, size), Icons.Edit, glyph, false))
-        {
-            Post(RaiseEditRequested);
-        }
-        x += size + spacing;
-
-        // Pin: the accent when engaged, so its state is legible without a label.
-        if (ActionButton(ui, Ui.Id("preview.pin"), new Rect(x, y, size, size), Icons.Pin, glyph, IsPinned))
-        {
-            IsPinned = !IsPinned;
-            _remaining = _dismissSeconds;
-            Post(() => PinnedChanged?.Invoke());
-        }
     }
 
     /// <summary>Posted rather than handled inline from the button click: dismissing here must not
@@ -90,13 +88,12 @@ public sealed partial class FloatingPreview
     private void RaiseEditRequested()
     {
         if (_dismissing) return;
-        EditRequested?.Invoke(_item);
+        EditRequested?.Invoke(_card.Item);
         Dismiss();
     }
 
     /// <summary>A circular overlay action button, washed a little lighter on hover and press.</summary>
-    private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected,
-        double confirmation = 0)
+    private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected)
     {
         var clicked = ui.Interact(id, bounds);
 
@@ -111,11 +108,7 @@ public sealed partial class FloatingPreview
         else if (ui.IsHot(id)) ui.FillCircle(center, radius, ActionOverlayHover);
 
         ui.StrokeCircle(center, radius, ActionBorder);
-        if (confirmation < 1)
-            ui.Icon(glyph, bounds, Rgba.White.WithAlpha((byte)(255 * (1 - confirmation))), glyphSize);
-        if (confirmation > 0)
-            ui.Icon(Icons.Tick, bounds, Rgba.White.WithAlpha((byte)(255 * confirmation)),
-                glyphSize * (0.8 + 0.2 * confirmation));
+        ui.Icon(glyph, bounds, Rgba.White, glyphSize);
 
         return clicked;
     }
@@ -128,7 +121,7 @@ public sealed partial class FloatingPreview
     {
         if (_dismissing || _copying) return;
         _copying = true;
-        var path = _item.FilePath;
+        var path = _card.Item.FilePath;
         Exception? failure = null;
         try { await MediaWorker.Run(() => { ClipboardImage.Copy(path); return true; }); }
         catch (Exception exception) { failure = exception; }
@@ -151,9 +144,51 @@ public sealed partial class FloatingPreview
         });
     }
 
+    private void CopyText() => _ = CopyTextAsync();
+
+    /// <summary>Success shows as the button's tick, like Copy; only "no text" and failures notify.</summary>
+    private async Task CopyTextAsync()
+    {
+        if (_dismissing || _copying) return;
+        _copying = true;
+        var path = _card.Item.FilePath;
+        var lines = 0;
+        Exception? failure = null;
+        try
+        {
+            lines = await MediaWorker.Run(() =>
+            {
+                using var pixels = ImageSurface.Decode(path);
+                return TextRecognition.CopyText(pixels);
+            });
+        }
+        catch (Exception exception) { failure = exception; }
+        Post(() =>
+        {
+            _copying = false;
+            if (_dismissing) return;
+            if (failure is not null)
+            {
+                Log.Error("preview.copy_text", failure, path);
+                UserFeedback.Error(Handle, failure is InvalidOperationException
+                    ? failure.Message
+                    : "Could not read the text in this image. Please retry.");
+            }
+            else if (lines == 0) UserFeedback.Info(Handle, "No text found in this capture.");
+            else
+            {
+                _textCopied.Start(Environment.TickCount64);
+                WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, 16, IntPtr.Zero);
+            }
+            Invalidate();
+        });
+    }
+
+    /// <summary>One timer steps both copy confirmations.</summary>
     private void StepCopyFeedback()
     {
-        if (_copied.NextFrameDelay(Environment.TickCount64) is { } delay)
+        var now = Environment.TickCount64;
+        if (new[] { _copied.NextFrameDelay(now), _textCopied.NextFrameDelay(now) }.Min() is { } delay)
             WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, delay, IntPtr.Zero);
         else
             WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
@@ -161,12 +196,12 @@ public sealed partial class FloatingPreview
         if (_hovered) Invalidate();
     }
 
-    /// <summary>A pinned card that is not hovered still says so, quietly, in the corner.</summary>
-    private void DrawPin(Ui ui, Rect card)
+    /// <summary>A pinned card that is not hovered still says so, quietly, where the pin button sits.</summary>
+    private void DrawPin(Ui ui)
     {
-        var badge = new Rect(card.Right - S(24), S(5), S(18), S(18));
+        var badge = ButtonRect(CardAction.Pin);
         ui.FillRounded(badge, (float)S(4), ui.Theme.HoverScrim);
-        ui.Icon(Icons.Pin, badge, ui.Theme.Accent, S(11));
+        ui.Icon(Icons.Pin, badge, ui.Theme.Accent, S(9));
     }
 
     /// <summary>Writes a copy wherever the user picks, then dismisses: the capture has landed
@@ -176,10 +211,9 @@ public sealed partial class FloatingPreview
     private async Task SaveAsAsync()
     {
         if (_dismissing || _savingAs) return;
-        _remaining = _dismissSeconds;
         _savingAs = true;
         string? destination;
-        var source = _item.FilePath;
+        var source = _card.Item.FilePath;
         try
         {
             destination = FilePicker.SavePng(Handle, Path.GetFileName(source), Path.GetDirectoryName(source));

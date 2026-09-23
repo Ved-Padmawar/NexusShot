@@ -37,6 +37,7 @@ public static class Icons
     public const string Close = "\uE711";
     public const string EmptyState = "\uEB9F";
     public const string Pin = "\uE718";
+    public const string Share = "\uE72D";
     public const string ChevronDown = "\uE70D";
     public const string CaptionMinimise = "\uE921";
     public const string CaptionMaximise = "\uE922";

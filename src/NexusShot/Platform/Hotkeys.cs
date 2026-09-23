@@ -3,14 +3,6 @@ using NexusShot.Core;
 
 namespace NexusShot.Platform;
 
-public enum HotkeyId
-{
-    CaptureRegion = 1,
-    CaptureFullScreen = 2,
-    CaptureActiveWindow = 3,
-    OpenMainWindow = 4,
-}
-
 /// <summary>
 /// Application-wide hotkeys.
 ///
@@ -31,10 +23,7 @@ public sealed partial class Hotkeys(IntPtr window) : IDisposable
         UnregisterAll();
 
         var failed = new List<HotkeyId>();
-        Register(HotkeyId.CaptureRegion, settings.CaptureRegionHotkey, failed);
-        Register(HotkeyId.CaptureFullScreen, settings.CaptureFullScreenHotkey, failed);
-        Register(HotkeyId.CaptureActiveWindow, settings.CaptureActiveWindowHotkey, failed);
-        Register(HotkeyId.OpenMainWindow, settings.OpenMainWindowHotkey, failed);
+        foreach (var id in HotkeyIds.All) Register(id, settings.Hotkey(id), failed);
         return failed;
     }
 

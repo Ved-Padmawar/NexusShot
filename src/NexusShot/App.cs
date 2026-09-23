@@ -44,6 +44,7 @@ public sealed class App : IDisposable
         _main.Center();
 
         _tray = new TrayIcon(_main.Handle, "NexusShot", AppIcon.Small);
+        UserFeedback.Tray = _tray;
         _hotkeys = new Hotkeys(_main.Handle);
         ApplyHotkeys();
 
@@ -83,6 +84,12 @@ public sealed class App : IDisposable
     /// <summary>Returns true when the message was ours.</summary>
     private bool OnMessage(uint message, long wParam, long lParam)
     {
+        if (message == Platform.SingleInstance.WM_COPYDATA)
+        {
+            if (Platform.SingleInstance.ReadForwardedFile(lParam) is { } file) Open([file]);
+            return true;
+        }
+
         // A second launch asking us to come to the front.
         if (Platform.SingleInstance.WM_SHOW_EXISTING != 0 && message == Platform.SingleInstance.WM_SHOW_EXISTING)
         {
@@ -102,6 +109,15 @@ public sealed class App : IDisposable
                     return true;
                 case TrayIcon.Command.CaptureWindow:
                     Capture(CaptureMode.ActiveWindow);
+                    return true;
+                case TrayIcon.Command.TimedCapture:
+                    TimedCapture();
+                    return true;
+                case TrayIcon.Command.CaptureText:
+                    CaptureText();
+                    return true;
+                case TrayIcon.Command.RestoreClosed:
+                    _pipeline.ToggleRestoreStrip();
                     return true;
                 case TrayIcon.Command.OpenMain:
                     ShowMain();
@@ -130,10 +146,22 @@ public sealed class App : IDisposable
                 case HotkeyId.OpenMainWindow:
                     ShowMain();
                     return true;
+                case HotkeyId.RestoreClosed:
+                    _pipeline.ToggleRestoreStrip();
+                    return true;
+                case HotkeyId.CaptureText:
+                    CaptureText();
+                    return true;
+                case HotkeyId.TimedCapture:
+                    TimedCapture();
+                    return true;
             }
         }
         return false;
     }
+
+    /// <summary>Opens images in the editor: from Explorer, or handed over by a second launch.</summary>
+    public void Open(IReadOnlyList<string> paths) => _pipeline.Open(paths);
 
     private void ShowMain()
     {
@@ -173,6 +201,70 @@ public sealed class App : IDisposable
             Log.Error("capture.failed", exception, mode.ToString());
             UserFeedback.Error(_main.Handle, "Could not capture the screen. Please retry.");
         }
+    }
+
+    private CountdownBadge? _countdown;
+
+    /// <summary>Counts down, then captures in the default mode. Asking again while it counts
+    /// cancels it.</summary>
+    private void TimedCapture()
+    {
+        if (_countdown is not null)
+        {
+            _countdown.Cancel();
+            return;
+        }
+        if (_captureRunning) return;
+
+        _countdown = new CountdownBadge(_settings.TimedCaptureSeconds);
+        _countdown.Dismissed += () => _countdown = null;
+        // Posted: Elapsed fires inside WM_DESTROY, too early for the region picker's own message loop.
+        _countdown.Elapsed += () => _main.Post(() => Capture(_settings.DefaultCaptureMode));
+        _countdown.Start();
+    }
+
+    /// <summary>Picks a region and copies the text in it. Nothing is saved and no card appears: the
+    /// text is the result, and a notification says how much there was.</summary>
+    private void CaptureText()
+    {
+        if (_captureRunning) return;
+        _captureRunning = true;
+        try
+        {
+            var pixels = RegionOverlay.Pick();
+            if (pixels is null) { _captureRunning = false; return; }
+            _ = FinishCaptureText(pixels);
+        }
+        catch (Exception exception)
+        {
+            _captureRunning = false;
+            Log.Error("capture_text.failed", exception);
+            UserFeedback.Error(_main.Handle, "Could not capture the screen. Please retry.");
+        }
+    }
+
+    private async Task FinishCaptureText(DecodedImage pixels)
+    {
+        var lines = 0;
+        Exception? failure = null;
+        try { lines = await MediaWorker.Run(() => TextRecognition.CopyText(pixels)); }
+        catch (Exception exception) { failure = exception; }
+        finally { pixels.Dispose(); }
+        _main.Post(() =>
+        {
+            _captureRunning = false;
+            if (_disposed) return;
+            if (failure is not null)
+            {
+                Log.Error("capture_text.failed", failure);
+                UserFeedback.Error(_main.Handle, failure is InvalidOperationException
+                    ? failure.Message
+                    : "Could not read the text in that area. Please retry.");
+            }
+            else UserFeedback.Info(_main.Handle, lines == 0
+                ? "No text found in that area."
+                : $"Copied {lines} line{(lines == 1 ? "" : "s")} of text.");
+        });
     }
 
     private async Task FinishCapture(DecodedImage pixels, string folder, bool autoSave, bool autoCopy)
@@ -374,10 +466,12 @@ public sealed class App : IDisposable
         _main.SettingsChanged -= OnSettingsChanged;
         _main.ThemeChanged -= RethemeEditors;
 
+        _countdown?.Cancel();
         _pipeline.Dispose();
 
         _watcher?.Dispose();
         _hotkeys.Dispose();
+        UserFeedback.Tray = null;
         _tray.Dispose();
         _main.Dispose();
     }

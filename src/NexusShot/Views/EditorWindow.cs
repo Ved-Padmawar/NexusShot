@@ -1,4 +1,4 @@
-using ToolCursor = DirectN.Extensions.Utilities.Cursor;
+using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Render;
 using NexusShot.Platform;
@@ -91,9 +91,9 @@ public sealed partial class EditorWindow : CaptionWindow
     {
         base.OnCreated(sender, e);
 
-        // The chrome carries the filename, so the caption shows no icon or title of its own.
+        // The chrome carries the filename, so the caption shows no icon. The title stays for Alt+Tab.
         AppIcon.ApplyLargeOnly(Handle);
-        AppIcon.ClearCaption(Handle);
+        UpdateTitle();
         SystemTheme.ApplyFrame(Handle, SystemTheme.Resolve(_theme));
 
         _document.Changed += (_, _) => Invalidate();
@@ -326,6 +326,7 @@ public sealed partial class EditorWindow : CaptionWindow
         if (_chrome.SavePressed) Post(() => RunFileAction(Save));
         if (_chrome.SaveAsPressed) Post(() => RunFileAction(SaveAs));
         if (_chrome.CopyPressed) Post(() => RunFileAction(CopyToClipboard));
+        if (_chrome.CopyTextPressed) Post(() => RunFileAction(CopyText));
 
         if (_chrome.FitPicked is { } fit && fit != _fitToViewport)
         {
@@ -338,4 +339,10 @@ public sealed partial class EditorWindow : CaptionWindow
         RefreshCursor();
     }
 
+    /// <summary>Alt+Tab and the taskbar name the window by the file it is editing.</summary>
+    private void UpdateTitle() => SetWindowTextW(Handle, $"{_files.FileName} - NexusShot");
+
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowTextW", StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWindowTextW(IntPtr window, string text);
 }

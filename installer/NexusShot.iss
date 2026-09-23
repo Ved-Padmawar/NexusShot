@@ -35,6 +35,8 @@ OutputDir=..\dist
 OutputBaseFilename=NexusShot-{#AppVersion}
 SetupIconFile=..\assets\icons\nexus-shot.ico
 UninstallDisplayIcon={app}\{#AppExeName}
+; Installed apps shows the bare name; the version stays in its own column via AppVersion.
+UninstallDisplayName={#AppName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -52,6 +54,20 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Named explicitly rather than globbed, because the installer is itself written into the publish
 ; directory and a wildcard would package the previous build inside the new one.
 Source: "{#PublishDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+
+[Registry]
+; "Open with" for the image types the editor reads (Core/ImageFiles.cs). An Applications entry
+; offers NexusShot without taking over any type's default app.
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#AppName}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExeName}"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; ValueType: string; ValueName: ".png"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; ValueType: string; ValueName: ".jpg"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; ValueType: string; ValueName: ".jpeg"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\SupportedTypes"; ValueType: string; ValueName: ".bmp"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\.png\OpenWithList\{#AppExeName}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\.jpg\OpenWithList\{#AppExeName}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\.jpeg\OpenWithList\{#AppExeName}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\.bmp\OpenWithList\{#AppExeName}"; Flags: uninsdeletekey
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"

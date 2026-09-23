@@ -17,7 +17,6 @@ internal static partial class ClipboardImage
 {
     private const uint CF_DIB = 8;
     private const uint CF_DIBV5 = 17;
-    private const uint GMEM_MOVEABLE = 0x0002;
 
     private const int BITMAPINFOHEADER_SIZE = 40;
     private const int BITMAPV5HEADER_SIZE = 124;
@@ -25,9 +24,6 @@ internal static partial class ClipboardImage
     private const uint BI_RGB = 0;
     private const uint BI_BITFIELDS = 3;
     private const uint LCS_sRGB = 0x73524742;   // 'sRGB'
-
-    private const int OpenAttempts = 5;
-    private const int OpenRetryDelayMs = 15;
 
     /// <summary>The shell registers "PNG" by name; the atom is stable for the session.</summary>
     private static readonly uint CF_PNG = RegisterClipboardFormatW("PNG");
@@ -54,122 +50,32 @@ internal static partial class ClipboardImage
 
         if (width <= 0 || height <= 0) return;
 
-        // EmptyClipboard needs a real owner before SetClipboardData. This hidden message-only
-        // window is created on the copying thread and owns no delayed-rendered data.
-        var owner = CreateWindowExW(0, "STATIC", "NexusShot clipboard", 0,
-            0, 0, 0, 0, new IntPtr(-3), IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
-        if (owner == IntPtr.Zero) throw new InvalidOperationException("Could not create the clipboard owner.");
-        try
+        ClipboardWriter.Write(() =>
         {
-            if (!TryOpenClipboard(owner)) throw new InvalidOperationException("The clipboard is busy. Please retry.");
-            Publish(image, pngPath, width, height);
-        }
-        finally { DestroyWindow(owner); }
-    }
-
-    private static void Publish(DecodedImage image, string? pngPath, int width, int height)
-    {
-        try
-        {
-            if (!EmptyClipboard()) throw new InvalidOperationException("Could not clear the clipboard.");
-
             if (CF_PNG != 0 && pngPath is not null)
             {
                 try
-                { Place(CF_PNG, File.ReadAllBytes(pngPath)); }
+                { ClipboardWriter.PlaceFile(CF_PNG, pngPath); }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
                     // Losing the lossless format still leaves the DIBs below.
                 }
             }
 
-            PlaceDib(CF_DIBV5, image.Span, width, height, v5: true);
-            PlaceDib(CF_DIB, image.Span, width, height, v5: false);
-        }
-        finally
-        {
-            CloseClipboard();
-        }
+            PlaceDib(CF_DIBV5, image, v5: true);
+            PlaceDib(CF_DIB, image, v5: false);
+        });
     }
 
-    /// <summary>
-    /// The clipboard is a single system-wide resource, and any process holding it makes
-    /// OpenClipboard fail outright. Clipboard managers and Office hold it for a few milliseconds at
-    /// a time, so one attempt loses that race often enough to drop captures.
-    /// </summary>
-    private static bool TryOpenClipboard(IntPtr owner)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            if (OpenClipboard(owner)) return true;
-            if (attempt == OpenAttempts - 1) return false;
-
-            Thread.Sleep(OpenRetryDelayMs << attempt);
-        }
-    }
-
-    /// <summary>Copies a block onto the clipboard, which takes ownership on success.</summary>
-    private static void Place(uint format, byte[] bytes)
-    {
-        var memory = GlobalAlloc(GMEM_MOVEABLE, (nuint)bytes.Length);
-        if (memory == IntPtr.Zero) throw new InvalidOperationException("Could not allocate clipboard data.");
-
-        var target = GlobalLock(memory);
-        if (target == IntPtr.Zero)
-        {
-            GlobalFree(memory);
-            throw new InvalidOperationException("Could not lock clipboard data.");
-        }
-
-        try
-        { Marshal.Copy(bytes, 0, target, bytes.Length); }
-        finally { GlobalUnlock(memory); }
-
-        // The clipboard owns it on success; freeing it here would be a double free.
-        if (SetClipboardData(format, memory) == IntPtr.Zero)
-        {
-            GlobalFree(memory);
-            throw new InvalidOperationException("Could not publish clipboard data.");
-        }
-    }
-
-    /// <summary>
-    /// Builds a packed DIB directly inside the clipboard's own moveable block, which the clipboard
-    /// then takes ownership of.
-    ///
-    /// A full-screen DIB is several megabytes, so staging it in a byte[] first put one array per
-    /// format straight onto the large object heap and left it there until the next gen-2 collection.
-    /// </summary>
-    private static void PlaceDib(uint format, ReadOnlySpan<byte> premultipliedBgra, int width, int height, bool v5)
+    /// <summary>A packed DIB, built in the clipboard's own block: a full-screen DIB is several
+    /// megabytes.</summary>
+    private static void PlaceDib(uint format, DecodedImage image, bool v5)
     {
         var headerSize = v5 ? BITMAPV5HEADER_SIZE : BITMAPINFOHEADER_SIZE;
-        var stride = width * 4;
+        var stride = image.Width * 4;
 
-        var memory = GlobalAlloc(GMEM_MOVEABLE, (nuint)(headerSize + stride * height));
-        if (memory == IntPtr.Zero) throw new InvalidOperationException("Could not allocate clipboard data.");
-
-        var target = GlobalLock(memory);
-        if (target == IntPtr.Zero)
-        {
-            GlobalFree(memory);
-            throw new InvalidOperationException("Could not lock clipboard data.");
-        }
-
-        try
-        {
-            unsafe
-            {
-                WriteDib(new Span<byte>((void*)target, headerSize + stride * height),
-                    premultipliedBgra, width, height, headerSize, stride, v5);
-            }
-        }
-        finally { GlobalUnlock(memory); }
-
-        if (SetClipboardData(format, memory) == IntPtr.Zero)
-        {
-            GlobalFree(memory);
-            throw new InvalidOperationException("Could not publish clipboard data.");
-        }
+        ClipboardWriter.Place(format, headerSize + stride * image.Height, block =>
+            WriteDib(block, image.Span, image.Width, image.Height, headerSize, stride, v5));
     }
 
     /// <summary><paramref name="v5"/> emits a BITMAPV5HEADER, which states the channel masks and
@@ -219,42 +125,6 @@ internal static partial class ClipboardImage
         }
     }
 
-    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial IntPtr CreateWindowExW(uint extendedStyle, string className, string title,
-        uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DestroyWindow(IntPtr window);
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool OpenClipboard(IntPtr owner);
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool CloseClipboard();
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool EmptyClipboard();
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    private static partial IntPtr SetClipboardData(uint format, IntPtr data);
-
     [LibraryImport("user32.dll", EntryPoint = "RegisterClipboardFormatW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint RegisterClipboardFormatW(string format);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial IntPtr GlobalAlloc(uint flags, nuint bytes);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial IntPtr GlobalLock(IntPtr memory);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GlobalUnlock(IntPtr memory);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial IntPtr GlobalFree(IntPtr memory);
 }

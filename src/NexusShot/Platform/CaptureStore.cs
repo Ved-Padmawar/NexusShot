@@ -14,7 +14,7 @@ internal static class CaptureStore
         var temporary = Path.Combine(directory, $".nexusshot-{Guid.NewGuid():N}.tmp");
         try
         {
-            PngWriter.Write(temporary, pixels);
+            ImageWriter.Write(temporary, pixels);
             var captured = DateTimeOffset.Now;
             var name = autoSave ? CaptureName.For(captured.LocalDateTime) : $"NexusShot_{Guid.NewGuid():N}";
             for (var suffix = 0; ; suffix++)

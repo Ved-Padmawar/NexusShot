@@ -110,6 +110,39 @@ public sealed class Ui(D2DResources resources)
             AnnotationRenderer.ToRect(bounds), D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_ALIASED);
     }
 
+    /// <summary>A bitmap drawn into <paramref name="destination"/>, clipped to a rounded
+    /// <paramref name="bounds"/> through a geometric layer mask.</summary>
+    public void DrawBitmapRounded(IComObject<ID2D1Bitmap> bitmap, Rect bounds, float radius, Rect destination)
+    {
+        using var context = _target.AsDeviceContext();
+        if (context is null) return;
+
+        using var mask = resources.Factory.CreateRoundedRectangleGeometry(Rounded(bounds, radius));
+
+        // An AddRef'd raw pointer, as the AOT-generated layer struct wants; released after the pop.
+        var maskPointer = ComObject.GetOrCreateComInstance(mask.Object);
+        try
+        {
+            context.PushLayer(new D2D1_LAYER_PARAMETERS1
+            {
+                contentBounds = AnnotationRenderer.ToRect(bounds),
+                geometricMask = maskPointer,
+                maskAntialiasMode = D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform = D2D_MATRIX_3X2_F.Identity(),
+                opacity = 1,
+                layerOptions = D2D1_LAYER_OPTIONS1.D2D1_LAYER_OPTIONS1_NONE,
+            });
+            _target.DrawBitmap(bitmap, 1f,
+                D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                AnnotationRenderer.ToRect(destination));
+            context.PopLayer();
+        }
+        finally
+        {
+            if (maskPointer != 0) System.Runtime.InteropServices.Marshal.Release(maskPointer);
+        }
+    }
+
     public void PopClip()
     {
         if (_clips.Count == 0) return;

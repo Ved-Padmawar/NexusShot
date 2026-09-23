@@ -58,7 +58,7 @@ public static partial class ScreenCapture
 
     /// <summary>
     /// Blits the region and hands back the pixels, premultiplied BGRA and top-down - the format
-    /// both <see cref="PngWriter"/> and <see cref="ImageSurface.Upload"/> already take.
+    /// both <see cref="ImageWriter"/> and <see cref="ImageSurface.Upload"/> already take.
     ///
     /// Returning pixels rather than a path is deliberate: the region picker needs the same bitmap
     /// three times over (to display, to crop, to encode), and routing it through a temp PNG meant

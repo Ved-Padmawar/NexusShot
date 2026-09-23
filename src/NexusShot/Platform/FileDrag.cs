@@ -1,14 +1,15 @@
 ﻿using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+using NexusShot.Core;
 
 namespace NexusShot.Platform;
 
 /// <summary>
 /// Drags a file out of the app.
 ///
-/// Two formats: CF_HDROP is what Explorer, browsers and mail clients read as "here is a file", and
-/// CF_UNICODETEXT is what makes a drop onto a text field paste the path rather than do nothing - a
-/// text field cannot accept a file at all.
+/// The data object is the shell's own, the one Explorer drags: a hand-built CF_HDROP-only object was
+/// refused by targets that read the shell ID list or file contents. CF_UNICODETEXT is added so a
+/// text field, which cannot take a file, gets the path.
 ///
 /// The COM interfaces are declared here rather than taken from System.Runtime.InteropServices
 /// .ComTypes: those are marshalled by the classic runtime marshaller, which AOT trims away
@@ -18,24 +19,20 @@ public static partial class FileDrag
 {
     private const uint DROPEFFECT_NONE = 0;
     private const uint DROPEFFECT_COPY = 1;
+    private const uint DROPEFFECT_LINK = 4;
     private const uint CLSCTX_INPROC_SERVER = 1;
     private const int S_OK = 0;
-    private const int S_FALSE = 1;
-    private const int E_NOTIMPL = unchecked((int)0x80004001);
-    private const int DV_E_FORMATETC = unchecked((int)0x80040064);
-    private const int OLE_E_ADVISENOTSUPPORTED = unchecked((int)0x80040003);
     private const int DRAGDROP_S_DROP = 0x00040100;
     private const int DRAGDROP_S_CANCEL = 0x00040101;
     private const int DRAGDROP_S_USEDEFAULTCURSORS = 0x00040102;
 
-    private const short CF_HDROP = 15;
     private const short CF_UNICODETEXT = 13;
-
-    /// <summary>The formats offered, in preference order: a real file first, its path as a fallback.</summary>
-    private static readonly short[] Formats = [CF_HDROP, CF_UNICODETEXT];
-
     private const uint TYMED_HGLOBAL = 1;
     private const uint GMEM_MOVEABLE = 0x0002;
+
+    private static readonly Guid IID_IShellItem = new("43826d1e-e718-42ee-bc55-a1e261c37bfe");
+    private static readonly Guid IID_IDataObject = new("0000010e-0000-0000-C000-000000000046");
+    private static readonly Guid BHID_DataObject = new("B8C0BD9F-ED24-455C-83E6-D5390C4FE8C4");
 
     /// <summary>
     /// Runs the drag, returning true when it ended in a drop rather than a cancel. Blocks until then,
@@ -53,24 +50,30 @@ public static partial class FileDrag
 
         try
         {
+            if (ShellItems.FromPath(path, IID_IShellItem) is not { } item) return false;
+            using (item)
+                item.Item.BindToHandler(IntPtr.Zero, BHID_DataObject, IID_IDataObject, out data);
+            if (data == IntPtr.Zero) return false;
+
+            AttachText(data, path);
+
             unsafe
             {
-                data = (IntPtr)ComInterfaceMarshaller<IDataObject>
-                    .ConvertToUnmanaged(new FileDataObject(path));
-                source = (IntPtr)ComInterfaceMarshaller<IDropSource>
-                    .ConvertToUnmanaged(new DropSource());
+                source = (IntPtr)ComInterfaceMarshaller<IDropSource>.ConvertToUnmanaged(new DropSource());
             }
-            if (data == IntPtr.Zero || source == IntPtr.Zero) return false;
+            if (source == IntPtr.Zero) return false;
 
             if (image is not null) AttachImage(data, image);
 
-            var hr = DoDragDrop(data, source, DROPEFFECT_COPY, out var effect);
+            // Never move: that would take the capture out of its folder and out of history.
+            var hr = DoDragDrop(data, source, DROPEFFECT_COPY | DROPEFFECT_LINK, out var effect);
 
             // Anything else - a cancel, an Escape, a target that refused it - is not a drop.
             return hr == DRAGDROP_S_DROP && effect != DROPEFFECT_NONE;
         }
-        catch (COMException)
+        catch (Exception exception) when (exception is COMException or IOException or UnauthorizedAccessException)
         {
+            Log.Error("drag.start", exception, path);
             return false;
         }
         finally
@@ -78,6 +81,52 @@ public static partial class FileDrag
             if (data != IntPtr.Zero) Marshal.Release(data);
             if (source != IntPtr.Zero) Marshal.Release(source);
         }
+    }
+
+    /// <summary>Best-effort: a data object that refuses the extra format still drags the file.</summary>
+    private static unsafe void AttachText(IntPtr data, string path)
+    {
+        var block = BuildText(path);
+        if (block == IntPtr.Zero) return;
+
+        var target = ComInterfaceMarshaller<IDataObject>.ConvertToManaged((void*)data);
+        var format = new FORMATETC
+        {
+            cfFormat = CF_UNICODETEXT,
+            dwAspect = 1,          // DVASPECT_CONTENT
+            lindex = -1,
+            tymed = TYMED_HGLOBAL,
+        };
+        var medium = new STGMEDIUM { tymed = TYMED_HGLOBAL, unionmember = block };
+
+        // fRelease = TRUE hands the block over on success; on failure it is still ours.
+        if (target is null || target.SetData(format, medium, 1) != S_OK) GlobalFree(block);
+    }
+
+    /// <summary>The path as a null-terminated wide string.</summary>
+    private static IntPtr BuildText(string text)
+    {
+        var memory = GlobalAlloc(GMEM_MOVEABLE, (nuint)((text.Length + 1) * 2));
+        if (memory == IntPtr.Zero) return IntPtr.Zero;
+
+        var block = GlobalLock(memory);
+        if (block == IntPtr.Zero)
+        {
+            GlobalFree(memory);
+            return IntPtr.Zero;
+        }
+
+        try
+        {
+            Marshal.Copy(text.ToCharArray(), 0, block, text.Length);
+            Marshal.WriteInt16(block, text.Length * 2, 0);
+        }
+        finally
+        {
+            GlobalUnlock(memory);
+        }
+
+        return memory;
     }
 
     /// <summary>Gives the data object a drag picture, so the card follows the cursor.</summary>
@@ -115,216 +164,6 @@ public static partial class FileDrag
     }
 
     [GeneratedComClass]
-    internal sealed partial class FileDataObject(string path) : IDataObject
-    {
-        /// <summary>Formats the drag-image helper stored on us. InitializeFromBitmap does not keep the
-        /// picture itself - it writes it into the data object under private formats and reads them
-        /// back during the drag, so a data object that refuses SetData gets no drag image at all.</summary>
-        private readonly Dictionary<short, STGMEDIUM> _stored = [];
-
-        public int GetData(in FORMATETC format, out STGMEDIUM medium)
-        {
-            medium = default;
-
-            if (_stored.TryGetValue(format.cfFormat, out var stored))
-            {
-                medium = DuplicateMedium(stored, format.cfFormat);
-                return medium.unionmember != IntPtr.Zero ? S_OK : DV_E_FORMATETC;
-            }
-
-            if ((format.tymed & TYMED_HGLOBAL) == 0) return DV_E_FORMATETC;
-
-            var block = format.cfFormat switch
-            {
-                CF_HDROP => BuildDropFiles(path),
-                CF_UNICODETEXT => BuildText(path),
-                _ => IntPtr.Zero,
-            };
-            if (block == IntPtr.Zero) return DV_E_FORMATETC;
-
-            medium = new STGMEDIUM
-            {
-                tymed = TYMED_HGLOBAL,
-                unionmember = block,
-                pUnkForRelease = IntPtr.Zero,
-            };
-            return S_OK;
-        }
-
-        /// <summary>A caller-owned copy. OLE calls ReleaseStgMedium on whatever GetData returns, so
-        /// handing back the stored handle would free data we still own.</summary>
-        private static STGMEDIUM DuplicateMedium(in STGMEDIUM src, short cfFormat)
-        {
-            if (src.tymed != TYMED_HGLOBAL || src.unionmember == IntPtr.Zero) return src;
-
-            var dup = OleDuplicateData(src.unionmember, (ushort)cfFormat, 0);
-            if (dup == IntPtr.Zero) return default;
-            return new STGMEDIUM { tymed = src.tymed, unionmember = dup, pUnkForRelease = IntPtr.Zero };
-        }
-
-        public int GetDataHere(in FORMATETC format, ref STGMEDIUM medium) => E_NOTIMPL;
-
-        public int QueryGetData(in FORMATETC format)
-        {
-            if (_stored.ContainsKey(format.cfFormat)) return S_OK;
-
-            return Array.IndexOf(Formats, format.cfFormat) >= 0 && (format.tymed & TYMED_HGLOBAL) != 0
-                ? S_OK
-                : DV_E_FORMATETC;
-        }
-
-        public int GetCanonicalFormatEtc(in FORMATETC format, out FORMATETC result)
-        {
-            result = default;
-            return E_NOTIMPL;
-        }
-
-        public int SetData(in FORMATETC format, in STGMEDIUM medium, int release)
-        {
-            if (release != 0)
-            {
-                _stored[format.cfFormat] = medium;
-            }
-            else
-            {
-                _stored[format.cfFormat] = DuplicateMedium(medium, format.cfFormat);
-            }
-            return S_OK;
-        }
-
-        public int EnumFormatEtc(uint direction, out IEnumFORMATETC? enumerator)
-        {
-            const uint DATADIR_GET = 1;
-            enumerator = direction == DATADIR_GET ? new FormatEnumerator() : null;
-            return enumerator is null ? E_NOTIMPL : S_OK;
-        }
-
-        public int DAdvise(in FORMATETC format, uint advf, IntPtr sink, out uint connection)
-        {
-            connection = 0;
-            return OLE_E_ADVISENOTSUPPORTED;
-        }
-
-        public int DUnadvise(uint connection) => OLE_E_ADVISENOTSUPPORTED;
-
-        public int EnumDAdvise(out IntPtr enumerator)
-        {
-            enumerator = IntPtr.Zero;
-            return OLE_E_ADVISENOTSUPPORTED;
-        }
-
-        /// <summary>A DROPFILES header, then the path, double-null-terminated.</summary>
-        private static IntPtr BuildDropFiles(string file)
-        {
-            var header = Marshal.SizeOf<DROPFILES>();
-            var bytes = (file.Length + 2) * 2;
-
-            var memory = GlobalAlloc(GMEM_MOVEABLE, (nuint)(header + bytes));
-            if (memory == IntPtr.Zero) throw new OutOfMemoryException();
-
-            var block = GlobalLock(memory);
-            if (block == IntPtr.Zero)
-            {
-                GlobalFree(memory);
-                throw new OutOfMemoryException();
-            }
-
-            try
-            {
-                Marshal.StructureToPtr(new DROPFILES { pFiles = (uint)header, fWide = 1 }, block, false);
-
-                var text = block + header;
-                Marshal.Copy(file.ToCharArray(), 0, text, file.Length);
-
-                // Two nulls: one ends the string, one ends the list.
-                Marshal.WriteInt16(text, file.Length * 2, 0);
-                Marshal.WriteInt16(text, (file.Length + 1) * 2, 0);
-            }
-            finally
-            {
-                GlobalUnlock(memory);
-            }
-
-            return memory;
-        }
-
-        /// <summary>The path as a null-terminated wide string, for a target that takes text.</summary>
-        private static IntPtr BuildText(string text)
-        {
-            var bytes = (text.Length + 1) * 2;
-
-            var memory = GlobalAlloc(GMEM_MOVEABLE, (nuint)bytes);
-            if (memory == IntPtr.Zero) throw new OutOfMemoryException();
-
-            var block = GlobalLock(memory);
-            if (block == IntPtr.Zero)
-            {
-                GlobalFree(memory);
-                throw new OutOfMemoryException();
-            }
-
-            try
-            {
-                Marshal.Copy(text.ToCharArray(), 0, block, text.Length);
-                Marshal.WriteInt16(block, text.Length * 2, 0);
-            }
-            finally
-            {
-                GlobalUnlock(memory);
-            }
-
-            return memory;
-        }
-    }
-
-    [GeneratedComClass]
-    internal sealed partial class FormatEnumerator : IEnumFORMATETC
-    {
-        private int _index;
-
-        public int Next(uint count, [MarshalUsing(CountElementName = nameof(count))] FORMATETC[] formats,
-            out uint fetched)
-        {
-            fetched = 0;
-
-            while (fetched < count && _index < Formats.Length)
-            {
-                formats[fetched] = new FORMATETC
-                {
-                    cfFormat = Formats[_index],
-                    dwAspect = 1,          // DVASPECT_CONTENT
-                    lindex = -1,
-                    ptd = IntPtr.Zero,
-                    tymed = TYMED_HGLOBAL,
-                };
-
-                _index++;
-                fetched++;
-            }
-
-            return fetched == count ? S_OK : S_FALSE;
-        }
-
-        public int Skip(uint count)
-        {
-            _index += (int)count;
-            return _index > Formats.Length ? S_FALSE : S_OK;
-        }
-
-        public int Reset()
-        {
-            _index = 0;
-            return S_OK;
-        }
-
-        public int Clone(out IEnumFORMATETC? clone)
-        {
-            clone = new FormatEnumerator { _index = _index };
-            return S_OK;
-        }
-    }
-
-    [GeneratedComClass]
     internal sealed partial class DropSource : IDropSource
     {
         private const uint MK_LBUTTON = 0x0001;
@@ -339,6 +178,7 @@ public static partial class FileDrag
         public int GiveFeedback(uint effect) => DRAGDROP_S_USEDEFAULTCURSORS;
     }
 
+    /// <summary>Only SetData is called; the rest are declared to keep the vtable in order.</summary>
     [GeneratedComInterface]
     [Guid("0000010e-0000-0000-C000-000000000046")]
     internal partial interface IDataObject
@@ -348,22 +188,10 @@ public static partial class FileDrag
         [PreserveSig] int QueryGetData(in FORMATETC format);
         [PreserveSig] int GetCanonicalFormatEtc(in FORMATETC format, out FORMATETC result);
         [PreserveSig] int SetData(in FORMATETC format, in STGMEDIUM medium, int release);
-        [PreserveSig] int EnumFormatEtc(uint direction, out IEnumFORMATETC? enumerator);
+        [PreserveSig] int EnumFormatEtc(uint direction, out IntPtr enumerator);
         [PreserveSig] int DAdvise(in FORMATETC format, uint advf, IntPtr sink, out uint connection);
         [PreserveSig] int DUnadvise(uint connection);
         [PreserveSig] int EnumDAdvise(out IntPtr enumerator);
-    }
-
-    [GeneratedComInterface]
-    [Guid("00000103-0000-0000-C000-000000000046")]
-    internal partial interface IEnumFORMATETC
-    {
-        [PreserveSig]
-        int Next(uint count,
-            [MarshalUsing(CountElementName = nameof(count))] FORMATETC[] formats, out uint fetched);
-        [PreserveSig] int Skip(uint count);
-        [PreserveSig] int Reset();
-        [PreserveSig] int Clone(out IEnumFORMATETC? clone);
     }
 
     [GeneratedComInterface]
@@ -390,16 +218,6 @@ public static partial class FileDrag
         public uint tymed;
         public IntPtr unionmember;
         public IntPtr pUnkForRelease;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct DROPFILES
-    {
-        public uint pFiles;
-        public int X;
-        public int Y;
-        public int fNC;
-        public int fWide;
     }
 
     // ============================  DRAG IMAGE  ============================
@@ -437,9 +255,6 @@ public static partial class FileDrag
     [LibraryImport("gdi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DeleteObject(IntPtr handle);
-
-    [LibraryImport("ole32.dll")]
-    private static partial IntPtr OleDuplicateData(IntPtr src, ushort cfFormat, uint flags);
 
     [LibraryImport("ole32.dll")]
     private static partial int DoDragDrop(IntPtr data, IntPtr source, uint allowed, out uint effect);

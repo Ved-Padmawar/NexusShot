@@ -28,10 +28,11 @@ internal static partial class Program
             {
                 var (width, height) = Render.ImageSurface.ReadSize(args[1]);
                 using var application = new Application();
-                using var preview = new FloatingPreview(new Core.ScreenshotHistoryItem
+                var stack = new Core.QuickAccess(new Core.AppSettings { PreviewDismissSeconds = 0 });
+                using var preview = new FloatingPreview(stack, stack.Show(new Core.ScreenshotHistoryItem
                 {
                     FilePath = args[1], CapturedAt = DateTimeOffset.Now, Width = width, Height = height,
-                }, 0);
+                }));
                 preview.PlaceAt(Platform.Monitors.WorkAreaUnderCursor(),
                     Platform.Monitors.DpiScaleUnderCursor(preview.Handle), 0);
                 preview.Show();
@@ -46,22 +47,15 @@ internal static partial class Program
                 return;
             }
 
-            // Opening a file goes straight to the editor, so NexusShot can be a file association. An
-            // editor owns no hotkeys and no tray icon, so it is exempt from the single-instance rule.
-            if (args.Length == 1 && File.Exists(args[0]))
-            {
-                RunEditor(args[0]);
-                return;
-            }
-
-            // A second launch raises the running instance instead of starting a rival that could not
-            // register a single hotkey.
-            if (!Platform.SingleInstance.Claim()) return;
+            // A file from "Open with" opens in the running instance, so a save gets a card like a capture.
+            var file = args.Length == 1 && File.Exists(args[0]) ? Path.GetFullPath(args[0]) : null;
+            if (!Platform.SingleInstance.Claim(file)) return;
 
             try
             {
                 using var app = new App();
-                app.Run(showWindow: !Platform.Startup.IsStartupLaunch(args));
+                if (file is not null) app.Open([file]);
+                app.Run(showWindow: file is null && !Platform.Startup.IsStartupLaunch(args));
             }
             finally
             {
@@ -77,21 +71,6 @@ internal static partial class Program
         {
             OleUninitialize();
         }
-    }
-
-    private static void RunEditor(string path)
-    {
-        using var application = new Application();
-        using var window = new EditorWindow(path);
-
-        // ResizeClient is in physical pixels and the app is per-monitor DPI aware, so the requested
-        // size has to be scaled or the window comes out half-size on a scaled display.
-        var scale = Functions.GetDpiForWindow(window.Handle) / 96.0;
-        window.ResizeClient((int)(1180 * scale), (int)(820 * scale));
-        window.Center();
-        window.Show();
-        window.SetForeground();
-        application.Run();
     }
 
     private static void LogCrash(Exception? exception)

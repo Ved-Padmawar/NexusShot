@@ -30,13 +30,19 @@ multi-monitor and per-monitor-DPI coordinates. The region picker draws a **froze
 screen, dimmed, with a crosshair and a live pixel-dimension readout. The saved image is cropped from
 that same snapshot rather than re-grabbed afterwards, so an open menu or dropdown survives into the
 shot and what you select is exactly what you get. Captures are copied to the clipboard and saved
-automatically; both can be turned off in Settings.
+automatically; both can be turned off in Settings. A **timed capture** counts down first, so a menu
+or tooltip can be opened for the shot.
 
-**🃏 Quick Access cards** — after each capture a borderless thumbnail card appears at the
-**bottom-left** of the work area and stacks upward as more captures arrive. It never steals focus
-and stays out of Alt-Tab and the taskbar. Hovering reveals Copy, Save as, Edit, and Pin; the card
-can be dragged straight into another application — as a file, or as its path into a text field.
-Auto-dismiss is configurable and pauses while the pointer is over the card or it is pinned.
+**🔤 Capture text** — select a region and its text goes straight to the clipboard, using the OCR built
+into Windows (offline). Cards and the editor can copy an image's text too.
+
+**🃏 Quick Access cards** — after each capture a thumbnail card appears at the **bottom-left** and
+stacks upward. It never steals focus. Hovering shows Pin, Close, Edit and Save as in the corners and
+Copy / Copy text in the centre; drag the card anywhere else into another app — as a file, or as its
+path into a text field. Auto-dismiss is configurable and pauses while hovered, pinned or dragged.
+
+**↩️ Restore closed cards** — `Ctrl+Shift+H` shows recently closed captures in a strip at the top of
+the screen; click Restore to bring one back.
 
 **🎨 Editor** — rectangle, ellipse, line, arrow, pen, brush, eraser, text, numbered counter,
 highlight, blur, pixelate, spotlight, and crop. Annotations stay selectable and editable after they
@@ -46,11 +52,14 @@ with `Esc`. Blur and pixelate run on the GPU. The colour picker takes a hex valu
 so a colour can be matched to a spec. Closing with unsaved edits asks first.
 
 **🗂 Shell** — a sidebar of every capture in the save folder, kept in sync with File Explorer, plus a
-detail pane to preview, copy, open in the editor, or delete. Settings live here too: save folder,
-auto-save, auto-copy, card dismiss time, theme (system / light / dark), and start with Windows.
+detail pane to preview, copy, share (Windows share sheet), open in the editor, or delete. Drop an
+image on it, or use **Open with** in Explorer, to edit any PNG, JPEG or BMP. Settings live here too:
+save folder, auto-save, auto-copy, card dismiss time, timer delay, theme, and start with Windows.
+Errors and results arrive as Windows notifications, never as blocking dialogs.
 
 **⌨️ Global hotkeys** — `Ctrl+Shift+S` region, `Ctrl+Shift+F` full screen, `Ctrl+Shift+W` active
-window, `Ctrl+Shift+N` open the shell. All four can be rebound (including to a single key such as
+window, `Ctrl+Shift+O` capture text, `Ctrl+Shift+H` restore closed cards, `Ctrl+Shift+N` open the
+shell; timed capture is unbound by default. All can be rebound (including to a single key such as
 `F9`) or unbound in Settings. A binding another app already owns fails on its own, the rest still
 register, and the shell says which one clashed.
 
@@ -83,7 +92,7 @@ register, and the shell says which one clashed.
 
 The app starts in the notification area. The shell's close button hides it; use **Exit** on the
 tray menu to quit. A second launch raises the running instance instead of starting another one,
-because only one process can own the global hotkeys.
+because only one process can own the global hotkeys; a file opened from Explorer is handed to it.
 
 > Screenshots are saved to `Pictures\NexusShot`. Settings and history live in `%APPDATA%\NexusShot`,
 > logs in `%LOCALAPPDATA%\NexusShot\logs`. A corrupt settings file falls back to defaults rather than
@@ -98,7 +107,7 @@ because only one process can own the global hotkeys.
 .\build.ps1 installer            # release + Inno Setup -> dist\NexusShot-<version>.exe
 ```
 
-`release` publishes a single Native AOT executable (~9 MB) — no .NET runtime, no framework payload,
+`release` publishes a single Native AOT executable (~12 MB) — no .NET runtime, no framework payload,
 so the target machine needs nothing installed. `installer` wraps that in Inno Setup.
 
 > **Prerequisite:** [Inno Setup 6](https://jrsoftware.org/isdl.php) — `winget install JRSoftware.InnoSetup`
@@ -111,12 +120,15 @@ so the target machine needs nothing installed. `installer` wraps that in Inno Se
 src/NexusShot/
   Core/       Framework-free state and logic, unit-tested without a GPU
               EditorDocument   annotations, gestures, selection, undo/redo, crop
+              QuickAccess      the card stack: open, pinned, countdown, recently closed
+              CardLayout       one card size, button and pill positions
               BoxGeometry      shared crop/shape/text handles, hit testing, resize
               AdornerGeometry  the exact geometry of selection and crop adorners
               AppSettings      settings + history persistence
               Theme, Palette   design tokens and colours as values
-  Platform/   Win32 and COM interop: capture, tray, hotkeys, clipboard, drag-out,
-              file dialogs, folder watcher, single instance, background media queue
+  Platform/   Win32, COM and WinRT interop: capture, tray notifications, hotkeys, clipboard,
+              drag-out, OCR, share sheet, file dialogs, folder watcher, single instance,
+              background media queue
   Render/     Direct2D / DirectWrite
               AnnotationRenderer  draws a document onto any D2D target
               Exporter            the same renderer, pointed at an offscreen target
@@ -127,6 +139,7 @@ src/NexusShot/
               MainWindow       the shell: sidebar, detail pane, settings
               EditorWindow     canvas + EditorChrome (toolbar, footer)
               FloatingPreview  the quick-access card
+              RestoreStrip     recently closed captures
               RegionOverlay    the frozen-snapshot region picker
               TextEditor       inline text drawn in Direct2D
   App.cs              tray + hotkeys + lifetime
@@ -160,8 +173,8 @@ problems turned out to be the same problem:
 | **Export** | A separate GDI+ flattener, kept in agreement with the screen by hand. | The same renderer, pointed at an offscreen target — they cannot drift. |
 | **Preview sharpness** | A XAML `Image` got either a soft pre-scaled thumbnail or a heavy full-size bitmap. | One full-resolution GPU bitmap, rescaled each frame. |
 | **Cursor** | Chased through `ProtectedCursor`, and lagged. | `WM_SETCURSOR`: Windows draws it. |
-| **Payload** | 117 MB (Windows App SDK, self-contained). | **~9 MB**, single exe. |
-| **RAM idle** | ~140 MB | **~50 MB** |
+| **Payload** | 117 MB (Windows App SDK, self-contained). | **~12 MB**, single exe. |
+| **RAM idle** | ~140 MB | **~10 MB** |
 
 The editing model — `EditorDocument`, `BoxGeometry`, `Annotation` and the adorner geometry — carried
 over essentially unchanged, because it never depended on the framework.
@@ -185,8 +198,10 @@ over essentially unchanged, because it never depended on the framework.
   order and flickered. The trade-off: full IME composition and UI Automation are not implemented.
 - **Clipboard.** Images go on as `PNG`, `CF_DIBV5` and `CF_DIB`, all by value — delay-rendered
   data would vanish when the copying window closed and never reach Clipboard History (`Win`+`V`).
-- **Drag-out.** Cards offer `CF_HDROP` for apps that take files and `CF_UNICODETEXT` so a drop onto
-  a text field pastes the path.
+- **Drag-out.** Cards drag the shell's own data object (every format Explorer offers) plus
+  `CF_UNICODETEXT`, so a drop onto a text field pastes the path.
+- **Idle memory.** Small windows render in software, the export device is released after use, and
+  large buffers never go through the managed heap, so the app settles back to ~10 MB.
 - **Rebinding a hotkey** unregisters all bindings while the recorder is armed; otherwise the key
   being rebound fires its action and never reaches the recorder.
 - **Icons.** `assets/icons/icon-source.svg` is the source of truth for the app icon;

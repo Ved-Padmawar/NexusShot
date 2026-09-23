@@ -13,10 +13,21 @@ namespace NexusShot.Render;
 /// </summary>
 public static class Exporter
 {
-    /// <summary>One device for every export: building D3D11 + DXGI + D2D costs tens of
-    /// milliseconds, which is the whole latency budget for a Copy. Lives for the process.</summary>
+    /// <summary>One device per burst of exports: building it costs tens of milliseconds, but holding
+    /// it idle costs over 100 MB and a score of driver threads, so it is released after a pause.</summary>
     private static readonly object _deviceLock = new();
     private static IComObject<ID2D1Device>? _sharedDevice;
+    private static readonly Timer _release = new(_ => ReleaseDevice());
+    private static readonly TimeSpan KeepAlive = TimeSpan.FromSeconds(30);
+
+    private static void ReleaseDevice()
+    {
+        lock (_deviceLock)
+        {
+            _sharedDevice?.Dispose();
+            _sharedDevice = null;
+        }
+    }
 
     private static IComObject<ID2D1Device> GetSharedDevice()
     {
@@ -32,24 +43,28 @@ public static class Exporter
     }
 
     /// <summary>
-    /// Renders the image plus its annotations, honouring the crop, and writes a PNG.
+    /// Renders the image plus its annotations, honouring the crop, and writes it in the format
+    /// <paramref name="path"/> names.
     ///
     /// Rendering happens on a D3D device context (not a WIC render target) so the GPU effects the
     /// preview uses are available here too - a WIC target cannot host ID2D1Effect, and falling back
     /// to the placeholder would mean the exported blur silently differed from the one on screen.
-    /// The result is copied out to a WIC bitmap only to be encoded.
+    /// <paramref name="cropOverride"/> crops without the document committing to it - a copy shows
+    /// what is on screen, but must not silently discard the uncropped original.
     /// </summary>
-    /// <summary><paramref name="cropOverride"/> crops without the document committing to it - a copy
-    /// shows what is on screen, but must not silently discard the uncropped original.</summary>
-    public static void SavePng(
+    public static void Save(
         EditorDocument document, string sourcePath, string path, Rect? cropOverride = null)
     {
         // The app uses one media worker; headless callers may not. All access to the
         // single-threaded factory and shared device must be serialized, not just creation.
-        lock (_deviceLock) SavePngCore(document, sourcePath, path, cropOverride);
+        lock (_deviceLock)
+        {
+            SaveCore(document, sourcePath, path, cropOverride);
+            _release.Change(KeepAlive, Timeout.InfiniteTimeSpan);
+        }
     }
 
-    private static void SavePngCore(
+    private static void SaveCore(
         EditorDocument document, string sourcePath, string path, Rect? cropOverride)
     {
         var crop = cropOverride
@@ -117,7 +132,7 @@ public static class Exporter
         var temporary = Path.Combine(Path.GetDirectoryName(destination)!, $".nexusshot-{Guid.NewGuid():N}.tmp");
         try
         {
-            WritePng(staging, (int)width, (int)height, temporary);
+            Write(staging, (int)width, (int)height, temporary, ImageFiles.FormatOf(destination));
             File.Move(temporary, destination, overwrite: true);
         }
         finally
@@ -134,15 +149,15 @@ public static class Exporter
         alphaMode = D2D1_ALPHA_MODE.D2D1_ALPHA_MODE_PREMULTIPLIED,
     };
 
-    /// <summary>Maps the rendered pixels back to the CPU and encodes them as PNG.</summary>
-    private static void WritePng(IComObject<ID2D1Bitmap1> staging, int width, int height, string path)
+    /// <summary>Maps the rendered pixels back to the CPU and encodes them.</summary>
+    private static void Write(IComObject<ID2D1Bitmap1> staging, int width, int height, string path, ImageFormat format)
     {
         staging.Object.Map(D2D1_MAP_OPTIONS.D2D1_MAP_OPTIONS_READ, out var mapped).ThrowOnError();
         try
         {
             // Encoded straight out of the mapped rows. The pitch is the GPU's rather than width*4,
             // so it is passed through as the stride instead of repacking into a second buffer.
-            PngWriter.Write(path, mapped.bits, width, height, (int)mapped.pitch);
+            ImageWriter.Write(path, mapped.bits, width, height, (int)mapped.pitch, format);
         }
         finally
         {

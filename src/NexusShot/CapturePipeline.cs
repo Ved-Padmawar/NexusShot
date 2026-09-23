@@ -21,10 +21,16 @@ public sealed class CapturePipeline : IDisposable
     /// <summary>Editors, keyed by the file they are editing, so a second Edit on the same capture
     /// raises the window that is already open rather than opening another.</summary>
     private readonly Dictionary<string, EditorWindow> _editors = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<EditorWindow> _openEditors = [];
+    /// <summary>By reference: DirectN windows compare by handle, which is zero once destroyed, so a
+    /// handle-keyed set could never remove a closed editor.</summary>
+    private readonly HashSet<EditorWindow> _openEditors = new(ReferenceEqualityComparer.Instance);
 
-    /// <summary>The quick-access cards, newest first. They stack upward from the bottom-left.</summary>
-    private readonly List<FloatingPreview> _previews = [];
+    /// <summary>The window per open card; the cards themselves belong to <see cref="QuickAccess"/>.</summary>
+    private readonly Dictionary<QuickAccessCard, FloatingPreview> _previews = [];
+
+    public QuickAccess QuickAccess { get; }
+
+    private RestoreStrip? _strip;
 
     public CapturePipeline(Storage storage, AppSettings settings,
         List<ScreenshotHistoryItem> history, MainWindow main)
@@ -33,8 +39,10 @@ public sealed class CapturePipeline : IDisposable
         _settings = settings;
         _history = history;
         _main = main;
+        QuickAccess = new QuickAccess(settings);
 
         _main.EditRequested += Edit;
+        _main.OpenRequested += Open;
     }
 
     public void Land(ScreenshotHistoryItem item)
@@ -46,14 +54,57 @@ public sealed class CapturePipeline : IDisposable
 
     public void RefreshExistingPreview(ScreenshotHistoryItem item)
     {
-        var card = _previews.FirstOrDefault(preview =>
-            string.Equals(preview.FilePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
-        if (card is null) return;
-        try { card.Refresh(item); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
-            or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
-        { Log.Error("preview.refresh", exception, item.FilePath); }
-        ReflowPreviews();
+        if (QuickAccess.Find(item.FilePath) is not null) ShowPreview(item);
+    }
+
+    /// <summary>Opens image files in the editor; they join the history only once saved.</summary>
+    public void Open(IReadOnlyList<string> paths)
+    {
+        var images = paths.Where(ImageFiles.CanOpen).ToArray();
+        if (images.Length == 0)
+        {
+            UserFeedback.Info(_main.Handle, "NexusShot opens PNG, JPEG and BMP images.");
+            return;
+        }
+
+        foreach (var path in images)
+            Edit(new ScreenshotHistoryItem { FilePath = path, CapturedAt = DateTimeOffset.Now });
+    }
+
+    /// <summary>Opens the restore strip, or closes it if it is already up.</summary>
+    public void ToggleRestoreStrip()
+    {
+        if (_strip is not null)
+        {
+            _strip.Close();
+            return;
+        }
+
+        _strip = new RestoreStrip(QuickAccess);
+        _strip.RestoreRequested += item =>
+        {
+            if (!Restore(item)) UserFeedback.Error(_main.Handle, $"{item.FileName} no longer exists.");
+        };
+        _strip.HistoryRequested += () =>
+        {
+            _main.Show();
+            _main.SetForeground();
+        };
+        _strip.Dismissed += () => _strip = null;
+        _strip.Open();
+    }
+
+    /// <summary>False when the file is gone, which also drops it from the restore list.</summary>
+    public bool Restore(ScreenshotHistoryItem item)
+    {
+        if (!File.Exists(item.FilePath))
+        {
+            QuickAccess.Forget(item.FilePath);
+            return false;
+        }
+
+        ShowPreview(item);
+        return true;
     }
 
     public void CloseEditors(Action completed)
@@ -66,39 +117,27 @@ public sealed class CapturePipeline : IDisposable
         completed();
     }
 
-    /// <summary>Updates the card showing a re-saved capture, or brings a new one up if that card was
-    /// already dismissed.</summary>
-    private void RefreshPreview(ScreenshotHistoryItem item)
+    /// <summary>Shows a card for the capture, or refreshes the one already up, then reflows.</summary>
+    private void ShowPreview(ScreenshotHistoryItem item)
     {
-        var card = _previews.FirstOrDefault(preview =>
-            string.Equals(preview.FilePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
-
-        if (card is null)
+        var card = QuickAccess.Show(item);
+        if (_previews.TryGetValue(card, out var existing))
         {
-            ShowPreview(item);
+            existing.Refresh();
+            ReflowPreviews();
             return;
         }
 
-        card.Refresh(item);
-        ReflowPreviews();
-    }
-
-    /// <summary>Shows a quick-access card for a fresh capture, and reflows the stack.</summary>
-    private void ShowPreview(ScreenshotHistoryItem item)
-    {
-        var preview = new FloatingPreview(item, _settings.PreviewDismissSeconds);
-
+        var preview = new FloatingPreview(QuickAccess, card);
         preview.EditRequested += Edit;
-        preview.PinnedChanged += ReflowPreviews;
-        preview.Dismissed += card =>
+        preview.Dismissed += closed =>
         {
-            _previews.Remove(card);
+            QuickAccess.Close(closed.Card);
+            _previews.Remove(closed.Card);
             ReflowPreviews();
         };
 
-        // Newest at the bottom of the stack, so the most recent capture is nearest the corner and
-        // older ones ride up above it.
-        _previews.Insert(0, preview);
+        _previews[card] = preview;
         ReflowPreviews();
         preview.Show();
     }
@@ -116,10 +155,13 @@ public sealed class CapturePipeline : IDisposable
         var work = Monitors.WorkAreaUnderCursor();
         var scale = Monitors.DpiScaleUnderCursor(_main.Handle);
 
+        // Newest nearest the corner; older cards ride up above it.
         var offset = 0.0;
-        foreach (var preview in _previews.ToArray())
+        foreach (var card in QuickAccess.Open.ToArray())
         {
-            var height = preview.StackHeight(scale);
+            if (!_previews.TryGetValue(card, out var preview)) continue;
+
+            var height = FloatingPreview.StackHeight(scale);
 
             if (offset + height > work.Height * 0.8)
             {
@@ -186,7 +228,7 @@ public sealed class CapturePipeline : IDisposable
             _main.DropCache(path);
             _main.Invalidate();
 
-            RefreshPreview(entry ?? new ScreenshotHistoryItem
+            ShowPreview(entry ?? new ScreenshotHistoryItem
             {
                 FilePath = path,
                 CapturedAt = DateTimeOffset.Now,
@@ -211,7 +253,7 @@ public sealed class CapturePipeline : IDisposable
                 existing.Height = height;
                 _storage.SaveHistory(_history);
                 _main.Invalidate();
-                RefreshPreview(existing);
+                ShowPreview(existing);
                 return;
             }
 
@@ -243,11 +285,13 @@ public sealed class CapturePipeline : IDisposable
     public void Dispose()
     {
         _main.EditRequested -= Edit;
+        _main.OpenRequested -= Open;
         foreach (var editor in _openEditors.ToArray()) editor.Dispose();
         _openEditors.Clear();
         _editors.Clear();
 
-        foreach (var preview in _previews.ToArray()) preview.Dispose();
+        foreach (var preview in _previews.Values.ToArray()) preview.Dispose();
+        _strip?.Dispose();
         _previews.Clear();
     }
 }

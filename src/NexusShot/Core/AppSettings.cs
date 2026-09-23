@@ -8,6 +8,35 @@ public enum CaptureMode { Region, FullScreen, ActiveWindow }
 
 public enum AppTheme { System, Light, Dark }
 
+/// <summary>Every global shortcut. The value is the id RegisterHotKey is given.</summary>
+public enum HotkeyId
+{
+    CaptureRegion = 1,
+    CaptureFullScreen = 2,
+    CaptureActiveWindow = 3,
+    OpenMainWindow = 4,
+    RestoreClosed = 5,
+    CaptureText = 6,
+    TimedCapture = 7,
+}
+
+public static class HotkeyIds
+{
+    public static readonly HotkeyId[] All = Enum.GetValues<HotkeyId>();
+
+    public static string Title(this HotkeyId id) => id switch
+    {
+        HotkeyId.CaptureRegion => "Capture region",
+        HotkeyId.CaptureFullScreen => "Capture full screen",
+        HotkeyId.CaptureActiveWindow => "Capture active window",
+        HotkeyId.OpenMainWindow => "Open NexusShot",
+        HotkeyId.RestoreClosed => "Restore closed captures",
+        HotkeyId.CaptureText => "Capture text",
+        HotkeyId.TimedCapture => "Timed capture",
+        _ => id.ToString(),
+    };
+}
+
 /// <summary>
 /// A persisted global shortcut: raw Win32 modifier flags (ALT=1, CONTROL=2, SHIFT=4, WIN=8) plus a
 /// virtual-key code. Modifier-less bindings are valid - a single key like F9 or PrtScn is a
@@ -34,6 +63,10 @@ public sealed class AppSettings
     /// <summary>Seconds before a floating preview auto-dismisses. Zero keeps it until acted on.</summary>
     public int PreviewDismissSeconds { get; set; }
 
+    /// <summary>The countdown before a timed capture, long enough to open a menu or hover a
+    /// tooltip that a keypress would close.</summary>
+    public int TimedCaptureSeconds { get; set; } = 5;
+
     public bool CopyToClipboardAutomatically { get; set; } = true;
     public bool SaveAutomatically { get; set; } = true;
     public bool StartWithWindows { get; set; }
@@ -43,6 +76,24 @@ public sealed class AppSettings
     public HotkeyBinding CaptureFullScreenHotkey { get; set; } = new() { Modifiers = ControlShift, Key = 'F' };
     public HotkeyBinding CaptureActiveWindowHotkey { get; set; } = new() { Modifiers = ControlShift, Key = 'W' };
     public HotkeyBinding OpenMainWindowHotkey { get; set; } = new() { Modifiers = ControlShift, Key = 'N' };
+    public HotkeyBinding RestoreClosedHotkey { get; set; } = new() { Modifiers = ControlShift, Key = 'H' };
+    public HotkeyBinding CaptureTextHotkey { get; set; } = new() { Modifiers = ControlShift, Key = 'O' };
+
+    /// <summary>Unbound by default: the tray menu reaches it, and a delay is rarely wanted from a
+    /// shortcut you are already pressing.</summary>
+    public HotkeyBinding TimedCaptureHotkey { get; set; } = new();
+
+    public HotkeyBinding Hotkey(HotkeyId id) => id switch
+    {
+        HotkeyId.CaptureRegion => CaptureRegionHotkey,
+        HotkeyId.CaptureFullScreen => CaptureFullScreenHotkey,
+        HotkeyId.CaptureActiveWindow => CaptureActiveWindowHotkey,
+        HotkeyId.OpenMainWindow => OpenMainWindowHotkey,
+        HotkeyId.RestoreClosed => RestoreClosedHotkey,
+        HotkeyId.CaptureText => CaptureTextHotkey,
+        HotkeyId.TimedCapture => TimedCaptureHotkey,
+        _ => throw new ArgumentOutOfRangeException(nameof(id)),
+    };
 }
 
 public sealed class ScreenshotHistoryItem
@@ -105,8 +156,12 @@ public sealed class Storage
         settings.CaptureFullScreenHotkey ??= defaults.CaptureFullScreenHotkey;
         settings.CaptureActiveWindowHotkey ??= defaults.CaptureActiveWindowHotkey;
         settings.OpenMainWindowHotkey ??= defaults.OpenMainWindowHotkey;
+        settings.RestoreClosedHotkey ??= defaults.RestoreClosedHotkey;
+        settings.CaptureTextHotkey ??= defaults.CaptureTextHotkey;
+        settings.TimedCaptureHotkey ??= defaults.TimedCaptureHotkey;
         if (string.IsNullOrWhiteSpace(settings.ScreenshotFolder)) settings.ScreenshotFolder = defaults.ScreenshotFolder;
         settings.PreviewDismissSeconds = Math.Clamp(settings.PreviewDismissSeconds, 0, 120);
+        settings.TimedCaptureSeconds = Math.Clamp(settings.TimedCaptureSeconds, 1, 30);
         if (!Enum.IsDefined(settings.Theme)) settings.Theme = AppTheme.System;
         if (!Enum.IsDefined(settings.DefaultCaptureMode)) settings.DefaultCaptureMode = CaptureMode.Region;
         return settings;

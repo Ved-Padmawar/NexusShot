@@ -20,15 +20,16 @@ public class UiIdTests
         var names = new[]
         {
             "main.newcapture", "main.settings", "main.edit", "main.copy", "main.remove",
-            "main.reveal", "main.dismiss", "main.history.clear", "main.history.row",
+            "main.reveal", "main.share", "main.dismiss", "main.history.clear", "main.history.row",
             "capture.region", "capture.fullscreen", "capture.window",
             "settings.autocopy", "settings.autosave", "settings.startup", "settings.theme",
             "settings.capturemode", "settings.folder.change", "settings.reset",
-            "settings.dismissdelay",
-            "hotkey.region", "hotkey.fullscreen", "hotkey.window", "hotkey.open",
-            "preview.copy", "preview.save", "preview.edit", "preview.pin", "preview.close",
+            "settings.dismissdelay", "settings.timerdelay", "restore.tile", "restore.history",
+            "hotkey.CaptureRegion", "hotkey.CaptureFullScreen", "hotkey.CaptureActiveWindow", "hotkey.OpenMainWindow",
+            "hotkey.RestoreClosed", "hotkey.CaptureText", "hotkey.TimedCapture",
+            "preview.copy", "preview.copytext", "preview.save", "preview.edit", "preview.pin", "preview.close",
             "editor.undo", "editor.redo", "editor.delete", "editor.save", "editor.saveas",
-            "editor.copy", "editor.zoom.fit", "editor.zoom.actual", "editor.colour.chip",
+            "editor.copy", "editor.copytext", "editor.zoom.fit", "editor.zoom.actual", "editor.colour.chip",
             "editor.thickness",
             "picker.field", "picker.hue", "picker.hex",
         };
@@ -60,7 +61,7 @@ public class UiIdTests
     [Fact]
     public void DerivedIdsAreDistinctFromTheirOwner()
     {
-        var owner = Ui.Id("hotkey.region");
+        var owner = Ui.Id("hotkey.CaptureRegion");
         Assert.NotEqual(owner, Ui.Id(owner, 1));
     }
 }
