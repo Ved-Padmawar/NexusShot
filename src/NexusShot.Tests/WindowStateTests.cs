@@ -25,12 +25,12 @@ public class WindowStateTests
     public void EditorsKeepIndependentDpiMetrics()
     {
         // Layout metrics do not access the drawing target.
-        var first = new EditorChrome(null!) { Scale = 1, CaptionHeight = 32 };
-        var second = new EditorChrome(null!) { Scale = 2, CaptionHeight = 64 };
-        Assert.Equal(78, first.ChromeTop);
-        Assert.Equal(156, second.ChromeTop);
+        var first = new EditorChrome(null!) { Scale = 1 };
+        var second = new EditorChrome(null!) { Scale = 2 };
+        Assert.Equal(52, first.TopBand);
+        Assert.Equal(104, second.TopBand);
         second.Scale = 1.5;
-        Assert.Equal(40, first.FooterHeight);
-        Assert.Equal(60, second.FooterHeight);
+        Assert.Equal(new Core.Rect(76, 60, 884, 564), first.Well(1000, 700));
+        Assert.Equal(new Core.Rect(114, 90, 826, 496), second.Well(1000, 700));
     }
 }

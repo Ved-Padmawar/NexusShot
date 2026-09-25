@@ -1,32 +1,33 @@
-﻿using NexusShot.Core;
+using NexusShot.Core;
 using NexusShot.Render;
 
 namespace NexusShot.Views;
 
 /// <summary>
-/// The editor's toolbar and status footer. Tools are grouped with hairline separators; colour and
-/// thickness sit in the centre; Copy and Save live in the footer because they act on the document
-/// rather than on the drawing.
+/// The editor's chrome, all of it floating over the stage: the title and file actions in the top
+/// band, the tool rail down the left, undo bottom-left, zoom bottom-right, and the style bar
+/// bottom-centre. There is no title strip - the stage runs to the window's top edge.
 ///
-/// There is no state here: each control reads the document when it draws, so it cannot be stale.
+/// Style changes (colour, size, fill, formatting, the crop frame) go straight to the document through
+/// its own setters. Everything that needs the window - switching tools, undo past an open text box,
+/// files, zoom, the eyedropper - is reported as intent and applied by the window.
 /// </summary>
-public sealed class EditorChrome(Ui ui)
+public sealed class EditorChrome(Ui ui) : IDisposable
 {
-    /// <summary>The display scale. The render target is pinned at 96 DPI so a unit is a physical
-    /// pixel; the chrome scales itself, which is what keeps "100%" meaning one image pixel to one
-    /// physical pixel rather than one DIP.</summary>
+    private readonly BrandMark _brand = new();
+
+    public void Dispose() => _brand.Dispose();
+
     public double Scale { get; set; } = 1;
+    private double S(double units) => units * Scale;
 
-    /// <summary>The strip the window's own caption buttons occupy, above the toolbar.</summary>
-    public double CaptionHeight { get; set; }
+    /// <summary>The draggable band across the top, and the stage's insets for the image: clear of
+    /// the title, the rail and the bottom pills.</summary>
+    public double TopBand => S(52);
+    public Rect Well(double width, double height) =>
+        new(S(76), S(60), Math.Max(1, width - S(76) - S(40)), Math.Max(1, height - S(60) - S(76)));
 
-    public double ToolbarHeight => 46 * Scale;
-    public double ChromeTop => CaptionHeight + ToolbarHeight;
-    public double FooterHeight => 40 * Scale;
-
-    private double TileSize => 32 * Scale;
-
-    /// <summary>Tools, in toolbar order, with a null marking a group separator.</summary>
+    /// <summary>Tools, in rail order, with a null marking a group separator.</summary>
     private static readonly EditorTool?[] Groups =
     [
         EditorTool.Select,
@@ -40,310 +41,518 @@ public sealed class EditorChrome(Ui ui)
         EditorTool.Crop,
     ];
 
-    /// <summary>What the user asked for this frame. The window applies it; the chrome reports
-    /// intent and never mutates anything it does not own.</summary>
-    public EditorTool? ToolPicked { get; private set; }
-    public bool UndoPressed { get; private set; }
-    public bool RedoPressed { get; private set; }
-    public bool DeletePressed { get; private set; }
-    public bool SavePressed { get; private set; }
-    public bool SaveAsPressed { get; private set; }
-    public bool CopyPressed { get; private set; }
-    public bool CopyTextPressed { get; private set; }
-    public bool? FitPicked { get; private set; }
+    public enum Command
+    {
+        None, Undo, Redo, Save, SaveAs, CopyAndClose, CopyText, Share,
+        ZoomIn, ZoomOut, ZoomActual, ZoomFit, PickFromScreen,
+    }
 
-    private double S(double units) => units * Scale;
+    /// <summary>What the user asked for this frame; applied by the window after the frame.</summary>
+    public EditorTool? ToolPicked { get; private set; }
+    public Command Requested { get; private set; }
+
+    /// <summary>Text for the clipboard - the picker's copy button.</summary>
+    public string? CopyRequested { get; private set; }
 
     private readonly ColorPicker _picker = new();
-    private Rect _pickerAnchor;
 
-    /// <summary>True while the picker is open, so the canvas ignores clicks that land on it.</summary>
-    public bool PopupOpen => _picker.IsOpen;
+    /// <summary>The rectangles the chrome occupies this frame. The canvas ignores presses inside them,
+    /// gaps between buttons included - a click that misses a tool must not draw under the rail.</summary>
+    private readonly List<Rect> _covered = [];
 
-    /// <summary>True while one of the picker's boxes has the keyboard, so the window sends keys there
-    /// rather than treating them as tool shortcuts.</summary>
-    public bool TextFieldFocused => _picker.IsEditing;
+    public bool Covers(Point client) =>
+        _picker.Contains(client) || _covered.Exists(rect => rect.Contains(client));
 
-    /// <summary>Routes a key to the focused colour box, applying the colour if it commits.</summary>
-    public bool HandleKey(
-        EditorDocument document, char character, bool backspace, bool enter, bool escape)
+    public bool PickerOpen => _picker.IsOpen;
+    public void ClosePicker() => _picker.Close();
+    public void AdoptPickedColor(Rgba color) => _picker.Adopt(color);
+    public Func<bool> ShiftDown { set => _picker.IsShiftDown = value; }
+
+    public sealed record Frame(
+        EditorDocument Document, AppSettings Settings, double Width, double Height, double CaptionButtonsWidth,
+        string Title, double Zoom, Rect ImageOnScreen, double ImageScale, Point ImageOrigin,
+        string? Toast, bool Busy);
+
+    public void Draw(Frame frame)
     {
-        if (!_picker.IsEditing) return false;
-
-        if (_picker.HandleKey(character, backspace, enter, escape, out var colour)
-            && colour is { } picked)
-            document.SetColor(picked.ToHex());
-
-        return true;
-    }
-
-    public void Draw(
-        EditorDocument document, double width, double height, string title, bool fit, string? toast,
-        double copied)
-    {
-        _copied = copied;
         ToolPicked = null;
-        UndoPressed = RedoPressed = DeletePressed = false;
-        SavePressed = SaveAsPressed = CopyPressed = CopyTextPressed = false;
-        FitPicked = null;
-
+        Requested = Command.None;
+        CopyRequested = null;
+        _covered.Clear();
         ui.Scale = Scale;
-        DrawToolbar(document, width);
-        DrawCaptionTitle(title, width);
-        DrawFooter(document, width, height, fit, toast);
 
-        // Last, so it paints over the toolbar rather than under it.
-        if (_picker.Draw(ui, _pickerAnchor, Scale) is { } colour)
-            document.SetColor(colour.ToHex());
+        var document = frame.Document;
+        DrawTitle(frame);
+        DrawActions(frame);
+        DrawRail(document, frame.Height);
+        DrawHistory(document, frame.Height);
+        DrawZoom(frame);
+
+        if (document.PendingCrop is { } crop) DrawCropBar(frame, crop);
+        else DrawStyleBar(frame);
+
+        DrawToast(frame);
+        DrawPicker(frame);
     }
 
-    /// <summary>The file being edited, centred in the caption strip the window paints itself.</summary>
-    private void DrawCaptionTitle(string title, double width)
-    {
-        if (CaptionHeight <= 0) return;
+    // ============================  TITLE & ACTIONS  ============================
 
-        ui.Text(title, new Rect(0, 0, width, CaptionHeight),
-            ui.Theme.TextTertiary, (float)S(Metrics.FontCaption), align: TextAlign.Center);
+    private void DrawTitle(Frame frame)
+    {
+        var theme = ui.Theme;
+        var document = frame.Document;
+        var band = new Rect(S(18), 0, frame.Width, S(44));
+
+        var tile = new Rect(band.X, band.Center.Y - S(10), Math.Round(S(20)), Math.Round(S(20)));
+        _brand.Draw(ui, tile);
+
+        var x = tile.Right + S(10);
+        var font = S(12.5);
+        var maximum = frame.Width - frame.CaptionButtonsWidth - S(12) - ActionsWidth() - S(24) - x;
+
+        var crop = document.PendingCrop ?? document.CropBounds;
+        var size = crop is { } c
+            ? $"{(int)c.Width} × {(int)c.Height}"
+            : $"{(int)document.ImageWidth} × {(int)document.ImageHeight}";
+        var count = document.Annotations.Count;
+        var details = count == 0 ? size : $"{size} · {count} annotation{(count == 1 ? "" : "s")}";
+
+        var detailsWidth = ui.MeasureText(details, font);
+        var chipWidth = document.HasUnsavedChanges ? ui.MeasureText("Edited", S(11), Weight.Semibold) + S(14) : 0;
+        var nameWidth = Math.Max(S(40), maximum - detailsWidth - chipWidth - S(20));
+
+        var name = ui.Ellipsize(frame.Title, nameWidth, font, Weight.Semibold);
+        var measured = ui.MeasureText(name, font, Weight.Semibold);
+        ui.Text(name, new Rect(x, band.Y, measured + 1, band.Height), theme.TextPrimary, font, Weight.Semibold);
+        x += measured + S(10);
+
+        ui.Text(details, new Rect(x, band.Y, detailsWidth + 1, band.Height), theme.TextTertiary, font);
+        x += detailsWidth + S(10);
+
+        if (chipWidth <= 0) return;
+        var chip = new Rect(x, band.Center.Y - S(9), chipWidth, S(18));
+        ui.FillRounded(chip, (float)S(9), theme.AccentSoft);
+        ui.Text("Edited", chip, theme.AccentText, S(11), Weight.Semibold, TextAlign.Center);
     }
 
-    private void DrawToolbar(EditorDocument document, double width)
+    private double ActionsWidth() =>
+        S(32) * 2 + S(6) * 4
+        + ui.ButtonWidth("Save as…", Icons.Folder, small: true) + ui.ButtonWidth("Save", Icons.Save, small: true)
+        + ui.ButtonWidth("Copy & close", Icons.Copy, small: true);
+
+    private void DrawActions(Frame frame)
     {
-        var top = CaptionHeight;
-        var bar = new Rect(0, top, width, ToolbarHeight);
+        var right = frame.Width - frame.CaptionButtonsWidth - S(12);
+        var y = S(8);
+        var enabled = !frame.Busy;
 
-        // The caption strip and the toolbar share one surface, so the chrome reads as a single bar
-        // running to the window's top edge rather than a toolbar beneath a titlebar.
-        ui.FillRect(new Rect(0, 0, width, CaptionHeight + ToolbarHeight), ui.Theme.SurfaceRaised);
-        ui.FillRect(new Rect(0, bar.Bottom - 1, width, 1), ui.Theme.StrokeSubtle);
+        Rect Take(double width, double height)
+        {
+            right -= width;
+            var rect = new Rect(right, y + (S(28) - height) / 2, width, height);
+            right -= S(6);
+            _covered.Add(rect);
+            return rect;
+        }
 
-        var tile = TileSize;
-        var y = top + (ToolbarHeight - tile) / 2;
-        var glyph = S(15);
+        var copyClose = Take(ui.ButtonWidth("Copy & close", Icons.Copy, small: true), S(28));
+        if (ui.Button(Ui.Id("editor.copyclose"), copyClose, "Copy & close", ButtonStyle.Primary,
+            Icons.Copy, small: true, enabled: enabled)) Requested = Command.CopyAndClose;
 
-        // ---- tools, left, in groups ----
-        var x = S(12);
+        var save = Take(ui.ButtonWidth("Save", Icons.Save, small: true), S(28));
+        if (ui.Button(Ui.Id("editor.save"), save, "Save", ButtonStyle.Outline, Icons.Save, small: true, enabled: enabled,
+            tooltip: "Save  (Ctrl S)")) Requested = Command.Save;
+
+        var saveAs = Take(ui.ButtonWidth("Save as…", Icons.Folder, small: true), S(28));
+        if (ui.Button(Ui.Id("editor.saveas"), saveAs, "Save as…", ButtonStyle.Outline, Icons.Folder, small: true, enabled: enabled))
+            Requested = Command.SaveAs;
+
+        if (ui.IconButton(Ui.Id("editor.share"), Take(S(32), S(32)), Icons.Share, "Share", enabled: enabled))
+            Requested = Command.Share;
+        if (ui.IconButton(Ui.Id("editor.copytext"), Take(S(32), S(32)), Icons.Ocr, "Copy text (OCR)", enabled: enabled))
+            Requested = Command.CopyText;
+    }
+
+    // ============================  RAIL, UNDO, ZOOM  ============================
+
+    private void DrawRail(EditorDocument document, double height)
+    {
+        var button = S(32);
+        var gap = S(2);
+        var separator = S(11);
+
+        var tools = Groups.Count(entry => entry is not null);
+        var separators = Groups.Length - tools;
+        var content = tools * button + separators * separator + (Groups.Length - 1) * gap;
+        var pill = new Rect(S(14), Math.Max(TopBand, (height - content - S(8)) / 2), button + S(8), content + S(8));
+        ui.Pill(pill);
+        _covered.Add(pill);
+
+        var y = pill.Y + S(4);
         foreach (var entry in Groups)
         {
             if (entry is not { } tool)
             {
-                // A separator: a hairline the height of a tile's inner content.
-                x += S(6);
-                ui.Separator(x, y + S(7), tile - S(14));
-                x += S(7);
+                ui.Separator(new Point(pill.Center.X, y + separator / 2), vertical: false);
+                y += separator + gap;
                 continue;
             }
 
-            if (ui.Tile((int)tool + 100, new Rect(x, y, tile, tile),
-                document.ActiveTool == tool, Glyph(tool), glyph, Label(tool)))
+            var bounds = new Rect(pill.X + S(4), y, button, button);
+            if (ui.IconButton(Ui.Id(Ui.Id("editor.tool"), (int)tool), bounds, Glyph(tool), Name(tool), Shortcut(tool),
+                on: document.ActiveTool == tool, side: TipSide.Right))
                 ToolPicked = tool;
-
-            x += tile + S(1);
+            y += button + gap;
         }
-
-        // ---- actions, right ----
-        var right = width - S(12);
-
-        right -= tile;
-        if (ui.Tile(Ui.Id("editor.delete"), new Rect(right, y, tile, tile), false, Icons.Delete, S(14), "Delete  (Del)",
-            destructive: true))
-            DeletePressed = true;
-
-        right -= tile + S(2);
-        if (ui.Tile(Ui.Id("editor.redo"), new Rect(right, y, tile, tile), false, Icons.Redo, S(14), "Redo  (Ctrl+Y)")
-            && document.CanRedo)
-            RedoPressed = true;
-
-        right -= tile + S(2);
-        if (ui.Tile(Ui.Id("editor.undo"), new Rect(right, y, tile, tile), false, Icons.Undo, S(14), "Undo  (Ctrl+Z)")
-            && document.CanUndo)
-            UndoPressed = true;
-
-        // ---- colour and thickness, centred in what is left ----
-        DrawColorAndThickness(document, x + S(14), right - S(14), y, tile);
     }
 
-    /// <summary>
-    /// The swatches, the live colour chip, and the thickness slider - centred between the tools and
-    /// the actions. The chip states the current colour rather than merely advertising that colours
-    /// exist, which is why it carries the hex.
-    /// </summary>
-    private void DrawColorAndThickness(
-        EditorDocument document, double left, double right, double y, double tile)
+    private void DrawHistory(EditorDocument document, double height)
     {
-        var swatch = S(26);
-        var swatchSpan = Palette.Swatches.Length * (swatch + S(2));
-        var chip = S(104);
-        var slider = S(120);
+        var pill = new Rect(S(14), height - S(16) - S(36), S(4) + S(28) * 2 + S(2) + S(4), S(36));
+        ui.Pill(pill);
+        _covered.Add(pill);
 
-        var content = swatchSpan + S(12) + chip + S(18) + S(46) + slider + S(30);
-        var available = right - left;
+        var undo = new Rect(pill.X + S(4), pill.Y + S(4), S(28), S(28));
+        if (ui.IconButton(Ui.Id("editor.undo"), undo, Icons.Undo, "Undo", "Ctrl Z", enabled: document.CanUndo, iconSize: 15))
+            Requested = Command.Undo;
+        if (ui.IconButton(Ui.Id("editor.redo"), undo with { X = undo.Right + S(2) }, Icons.Redo, "Redo", "Ctrl Y",
+            enabled: document.CanRedo, iconSize: 15))
+            Requested = Command.Redo;
+    }
 
-        // Narrow window: drop the slider's label and shrink its track rather than dropping the whole
-        // group. Losing the swatches entirely because the window is 100px short is worse than a
-        // tighter slider.
-        if (available < content)
+    private void DrawZoom(Frame frame)
+    {
+        var width = S(4 + 28 + 2 + 48 + 2 + 28 + 2 + 11 + 2 + 28 + 4);
+        var pill = new Rect(frame.Width - S(16) - width, frame.Height - S(16) - S(36), width, S(36));
+        ui.Pill(pill);
+        _covered.Add(pill);
+
+        var x = pill.X + S(4);
+        var y = pill.Y + S(4);
+        if (ui.IconButton(Ui.Id("zoom.out"), new Rect(x, y, S(28), S(28)), Icons.Minus, "Zoom out", "Ctrl −", iconSize: 15))
+            Requested = Command.ZoomOut;
+        x += S(30);
+
+        var percent = $"{Math.Round(frame.Zoom * 100)}%";
+        var value = new Rect(x, y, S(48), S(28));
+        var valueId = Ui.Id("zoom.actual");
+        if (ui.Interact(valueId, value)) Requested = Command.ZoomActual;
+        if (ui.IsHot(valueId)) ui.FillRounded(value, (float)S(Metrics.RadiusSm), ui.Theme.SurfaceHover);
+        ui.Text(percent, value, ui.Theme.TextSecondary, S(Metrics.FontSm), Weight.Semibold, TextAlign.Center);
+        ui.Tip(valueId, value, "Actual size", "Ctrl 0");
+        x += S(50);
+
+        if (ui.IconButton(Ui.Id("zoom.in"), new Rect(x, y, S(28), S(28)), Icons.Plus, "Zoom in", "Ctrl +", iconSize: 15))
+            Requested = Command.ZoomIn;
+        x += S(30);
+
+        ui.Separator(new Point(x + S(5), pill.Center.Y));
+        x += S(13);
+        if (ui.IconButton(Ui.Id("zoom.fit"), new Rect(x, y, S(28), S(28)), Icons.Fit, "Fit", "Ctrl 9", iconSize: 15))
+            Requested = Command.ZoomFit;
+    }
+
+    // ============================  STYLE BAR  ============================
+
+    /// <summary>
+    /// The style bar shows only the groups the current tool uses, in a fixed order at a fixed
+    /// height. Its width follows the content, animated, so it never carries dead space and never
+    /// jumps between tools. The tool in question is the selection's when there is one: the bar edits
+    /// what is selected.
+    /// </summary>
+    private void DrawStyleBar(Frame frame)
+    {
+        var document = frame.Document;
+        var selected = document.Selected;
+        var tool = selected?.Tool ?? document.ActiveTool;
+
+        var hasColor = tool is not (EditorTool.Blur or EditorTool.Pixelate or EditorTool.Eraser or EditorTool.Spotlight);
+        var hasSize = tool is not (EditorTool.Highlight or EditorTool.Spotlight);
+        var hasFill = tool is EditorTool.Rectangle or EditorTool.Ellipse;
+        var isText = tool is EditorTool.Text;
+        var isCounter = tool is EditorTool.Counter;
+
+        // Measure first: the pill animates toward this width, and the groups lay out inside it.
+        var groups = new List<(double Width, Action<Rect> Draw)>();
+        if (hasColor) groups.Add((ColorGroupWidth(), rect => DrawColorGroup(rect, document)));
+        if (hasSize) groups.Add((SizeLabelWidth(document) + S(10 + 112 + 10 + 44), rect => DrawSizeGroup(rect, document)));
+        if (hasFill) groups.Add((S(30 * 3 + 4), rect => DrawFillGroup(rect, document)));
+        if (isText) groups.Add((S(30 * 3 + 4), rect => DrawTextGroup(rect, document)));
+        if (isCounter) groups.Add((CounterGroupWidth(document), rect => DrawCounterGroup(rect, document)));
+        if (selected is not null) groups.Add((S(28), rect => DrawDeleteButton(rect, document)));
+        if (groups.Count == 0)
         {
-            slider = Math.Max(S(60), slider - (content - available));
-            content = swatchSpan + S(12) + chip + S(18) + S(46) + slider + S(30);
-            if (available < content) return;
+            var hint = tool == EditorTool.Spotlight ? "Drag to spotlight an area · Shift for square" : "Drag to highlight";
+            var width = ui.MeasureText(hint, S(Metrics.FontSm));
+            groups.Add((width, rect => ui.Text(hint, rect, ui.Theme.TextTertiary, S(Metrics.FontSm))));
         }
 
-        var x = left + (available - content) / 2;
+        var gap = S(10);
+        var content = groups.Sum(group => group.Width) + (groups.Count - 1) * (gap * 2 + 1);
+        var target = content + S(12) + S(10);
+        var width_ = ui.Animate(Ui.Id("editor.stylebar"), target, Metrics.Motion);
 
-        // Indexed, never hashed: string.GetHashCode is randomized per process, so a hashed id is a
-        // different arbitrary int every launch - free to collide with the slider, the chip or a
-        // tool, which is what made the colour change on its own when those were touched.
+        var pill = new Rect(Math.Round((frame.Width - width_) / 2), frame.Height - S(16) - S(44), width_, S(44));
+        ui.Pill(pill);
+        _covered.Add(pill);
+
+        // Clipped while it resizes, so a group arriving or leaving never draws past the pill.
+        ui.PushClip(pill);
+        var x = pill.X + S(12) + (width_ - target) / 2;
+        var row = new Rect(0, pill.Y + S(4), 0, S(36));
+        for (var i = 0; i < groups.Count; i++)
+        {
+            if (i > 0)
+            {
+                ui.Separator(new Point(x + gap, pill.Center.Y));
+                x += gap * 2 + 1;
+            }
+            groups[i].Draw(row with { X = x, Width = groups[i].Width });
+            x += groups[i].Width;
+        }
+        ui.PopClip();
+    }
+
+    private double ColorGroupWidth() => Palette.Swatches.Length * S(20) + (Palette.Swatches.Length - 1) * S(7) + S(3) + ChipWidth();
+    private double ChipWidth() => S(5 + 16 + 6 + 44 + 6 + 15 + 6) + S(24);
+
+    private Rect _chip;
+
+    private void DrawColorGroup(Rect row, EditorDocument document)
+    {
+        var current = Palette.Parse(document.Selected?.ColorHex ?? document.ColorHex);
+        var x = row.X;
         for (var i = 0; i < Palette.Swatches.Length; i++)
         {
             var hex = Palette.Swatches[i];
-            if (ui.Swatch(9040 + i, new Rect(x, y, swatch, tile),
-                Palette.Parse(hex), document.ColorHex == hex))
+            var dot = new Rect(x, row.Center.Y - S(10), S(20), S(20));
+            if (ui.Swatch(Ui.Id(Ui.Id("editor.swatch"), i), dot, Palette.Parse(hex),
+                current == Palette.Parse(hex), ui.Theme.SurfaceRaised))
+            {
+                _picker.Close();
                 document.SetColor(hex);
-            x += swatch + S(2);
+            }
+            x += S(27);
         }
-        x += S(12);
 
-        // The live colour chip: a 16px well, the hex, and a chevron. Clicking it opens the picker,
-        // so any colour is reachable and not just the six swatches.
-        var chipBounds = new Rect(x, y + S(3), chip, tile - S(6));
-        var open = _picker.IsOpen;
-
-        var chipId = Ui.Id("editor.colour.chip");
-        if (ui.Interact(chipId, chipBounds))
+        _chip = new Rect(x - S(4), row.Center.Y - S(14), ChipWidth(), S(28));
+        var id = Ui.Id("editor.chip");
+        if (ui.Interact(id, _chip))
         {
-            if (open) _picker.Close();
-            else _picker.Open(Palette.Parse(document.ColorHex));
+            if (_picker.IsOpen) _picker.Close();
+            else _picker.Open(current);
         }
 
-        ui.FillRounded(chipBounds, (float)S(Metrics.RadiusControl),
-            open ? ui.Theme.FillSelected
-            : ui.IsHot(chipId) ? ui.Theme.FillHover
-            : ui.Theme.SurfaceOverlay);
-        ui.StrokeRounded(chipBounds, (float)S(Metrics.RadiusControl), ui.Theme.StrokeSubtle);
+        var custom = Array.IndexOf(Palette.Swatches, current.ToHex()) < 0;
+        var radius = (float)S(Metrics.RadiusSm);
+        if (ui.IsHot(id)) ui.FillRounded(_chip, radius, ui.Theme.SurfaceHover);
+        ui.StrokeRounded(_chip, radius, _picker.IsOpen || custom ? ui.Theme.StrokeStrong : ui.Theme.StrokeDefault);
 
-        var well = new Rect(chipBounds.X + S(7), chipBounds.Center.Y - S(8), S(16), S(16));
-        ui.FillRounded(well, (float)S(4), Palette.Parse(document.ColorHex));
-        ui.StrokeRounded(well, (float)S(4), ui.Theme.StrokeStrong);
+        var well = new Rect(_chip.X + S(5), _chip.Center.Y - S(8), S(16), S(16));
+        ui.FillChecker(well, (float)S(4));
+        ui.FillRounded(well, (float)S(4), current);
+        ui.StrokeRounded(well, (float)S(4), ui.Theme.StrokeDefault);
 
-        ui.Text(document.ColorHex.ToUpperInvariant(),
-            new Rect(well.Right + S(7), chipBounds.Y, chip - S(38), chipBounds.Height),
-            ui.Theme.TextSecondary, (float)S(Metrics.FontCaption), monospace: true);
-
-        ui.Icon(Icons.ChevronDown,
-            new Rect(chipBounds.Right - S(16), chipBounds.Y, S(12), chipBounds.Height),
-            ui.Theme.TextTertiary, S(8));
-
-        _pickerAnchor = chipBounds;
-        x += chip + S(18);
-
-        // The slider means "size"; the range and the label follow whatever the tool actually sizes.
-        var tool = document.ActiveTool;
-        var isPaint = tool is EditorTool.Brush or EditorTool.Eraser;
-        var isText = tool is EditorTool.Text;
-
-        var maximum = isPaint ? 300 : isText ? 96 : 20;
-        var label = isPaint ? "Size" : isText ? "Font" : "Width";
-
-        var thickness = document.ActiveThickness;
-
-        ui.Text(label, new Rect(x, y, S(42), tile),
-            ui.Theme.TextTertiary, (float)S(Metrics.FontCaption));
-        x += S(46);
-
-        var sliderId = Ui.Id("editor.thickness");
-        if (ui.Slider(sliderId, new Rect(x, y, slider, tile), isText ? 8 : 1, maximum, ref thickness))
-            document.SetStrokeThickness(thickness, isAdjusting: true);
-        if (!ui.IsActive(sliderId)) document.EndThicknessAdjustment();
-        x += slider + S(6);
-
-        ui.Text(((int)Math.Round(thickness)).ToString(), new Rect(x, y, S(24), tile),
-            ui.Theme.TextSecondary, (float)S(Metrics.FontCaption));
+        var text = current.ToHex()[1..7];
+        ui.Text(text, new Rect(well.Right + S(6), _chip.Y, S(48), _chip.Height), ui.Theme.TextSecondary, S(11), face: Face.Mono);
+        if (current.A < 255)
+            ui.Text($"{Math.Round(current.A / 2.55)}%", new Rect(well.Right + S(52), _chip.Y, S(26), _chip.Height),
+                ui.Theme.TextTertiary, S(10.5), face: Face.Mono);
+        ui.Icon(Icons.ChevronDown, new Rect(_chip.Right - S(21), _chip.Y, S(15), _chip.Height), ui.Theme.TextTertiary, S(14));
+        if (!_picker.IsOpen) ui.Tip(id, _chip, "Any colour");
     }
 
-    /// <summary>
-    /// The footer: status and zoom on the left, Copy and Save on the right.
-    ///
-    /// Copy and Save belong here rather than in the toolbar. The toolbar is for what you are drawing
-    /// with; these act on the whole document, and putting them among the tools made them read as
-    /// floating - which is exactly how they looked.
-    /// </summary>
-    private void DrawFooter(
-        EditorDocument document, double width, double height, bool fit, string? toast)
+    /// <summary>The size control: a slider for feel, a number box for precision. The label and the
+    /// range follow what the tool actually sizes - a brush's footprint, a font, or a stroke.</summary>
+    private void DrawSizeGroup(Rect row, EditorDocument document)
     {
-        var bar = new Rect(0, height - FooterHeight, width, FooterHeight);
-        ui.FillRect(bar, ui.Theme.SurfaceRaised);
-        ui.FillRect(new Rect(0, bar.Y, width, 1), ui.Theme.StrokeSubtle);
+        var (label, min, max) = SizeRange(document.SizingTool);
+        var labelWidth = SizeLabelWidth(document);
+        ui.Text(label.ToUpperInvariant(), new Rect(row.X, row.Y, labelWidth, row.Height), ui.Theme.TextTertiary, S(11), Weight.Bold);
 
-        var y = bar.Y + (bar.Height - S(32)) / 2;
+        var value = document.ActiveThickness;
+        var slider = new Rect(row.X + labelWidth + S(10), row.Y, S(112), row.Height);
+        var sliderId = Ui.Id("editor.size");
+        if (ui.Slider(sliderId, slider, min, max, ref value))
+            document.SetStrokeThickness(Math.Round(value), isAdjusting: true);
+        ui.Tip(sliderId, slider, $"{label} {min}–{max}");
 
-        var crop = (document.PendingCrop ?? document.CropBounds) is { } c
-            ? $"   ·   Crop {(int)c.Width}×{(int)c.Height} — Enter to apply, Esc to cancel"
-            : string.Empty;
-
-        var status = $"{(int)document.ImageWidth}×{(int)document.ImageHeight}"
-            + $"   ·   {document.Annotations.Count} annotation(s){crop}";
-
-        ui.Text(status, new Rect(S(14), bar.Y, width * 0.45, bar.Height),
-            ui.Theme.TextTertiary, (float)S(Metrics.FontCaption));
-
-        // Zoom, left of centre.
-        var x = width * 0.5 - S(66);
-        if (ui.Button(Ui.Id("editor.zoom.fit"), new Rect(x, y, S(58), S(32)), "Fit",
-            fontSize: S(Metrics.FontCaption), toggled: fit))
-            FitPicked = true;
-
-        x += S(62);
-        if (ui.Button(Ui.Id("editor.zoom.actual"), new Rect(x, y, S(58), S(32)), "100%",
-            fontSize: S(Metrics.FontCaption), toggled: !fit))
-            FitPicked = false;
-
-        // Actions, right. Buttons hug their content rather than being fixed-width blocks.
-        var right = width - S(14);
-        var font = S(Metrics.FontBody);
-        var glyph = S(13);
-
-        var save = ui.ButtonWidth("Save", font, glyph);
-        right -= save;
-        if (ui.Button(Ui.Id("editor.save"), new Rect(right, y, save, S(32)), "Save",
-            primary: true, glyph: Icons.Save, glyphSize: glyph, fontSize: font))
-            SavePressed = true;
-
-        var saveAs = ui.ButtonWidth("Save as…", font);
-        right -= saveAs + S(8);
-        // Not 9022: the toolbar's Undo tile owns that, and a shared id lights both up.
-        if (ui.Button(Ui.Id("editor.saveas"), new Rect(right, y, saveAs, S(32)), "Save as…", fontSize: font))
-            SaveAsPressed = true;
-
-        // The copy confirms itself: the icon cross-fades to a tick and the label reads "Copied".
-        // The width is measured from the wider of the two labels so the button does not resize
-        // under the pointer as it swaps.
-        var copyLabel = _copied > 0.5 ? "Copied" : "Copy";
-        var copy = ui.ButtonWidth("Copied", font, glyph);
-        right -= copy + S(8);
-
-        if (ui.Button(Ui.Id("editor.copy"), new Rect(right, y, copy, S(32)), copyLabel,
-            glyph: Icons.Copy, glyphSize: glyph, fontSize: font,
-            accent: _copied > 0.5, confirmation: _copied))
-            CopyPressed = true;
-
-        var copyText = ui.ButtonWidth("Copy text", font, glyph);
-        right -= copyText + S(8);
-        if (ui.Button(Ui.Id("editor.copytext"), new Rect(right, y, copyText, S(32)), "Copy text",
-            glyph: Icons.Text, glyphSize: glyph, fontSize: font))
-            CopyTextPressed = true;
-
-        // Save still gets a badge: it says which file it wrote, which the button cannot.
-        if (toast is null) return;
-
-        var badgeWidth = ui.MeasureText(toast, font) + S(24);
-        var badge = new Rect(right - badgeWidth - S(8), y, badgeWidth, S(32));
-        ui.FillRounded(badge, (float)S(Metrics.RadiusControl), ui.Theme.Accent);
-        ui.Text(toast, badge, ui.Theme.TextOnAccent, (float)font, align: TextAlign.Center);
+        var box = new Rect(slider.Right + S(10), row.Center.Y - S(14), S(44), S(28));
+        var field = ui.Field(Ui.Id("editor.size.box"), box, Math.Round(document.ActiveThickness).ToString(),
+            char.IsAsciiDigit, 3, align: TextAlign.Center);
+        if (field.Changed && int.TryParse(field.Text, out var typed) && typed >= min && typed <= max)
+            document.SetStrokeThickness(typed);
+        if (field.Step != 0)
+            document.SetStrokeThickness(Math.Clamp(Math.Round(document.ActiveThickness) + field.Step, min, max));
     }
 
-    private double _copied;
+    /// <summary>The label measured, not assumed: "WIDTH" in bold capitals is wider than "SIZE".</summary>
+    private double SizeLabelWidth(EditorDocument document) =>
+        Math.Ceiling(ui.MeasureText(SizeRange(document.SizingTool).Label.ToUpperInvariant(), S(11), Weight.Bold)) + 1;
 
-    private static string Glyph(EditorTool tool) => tool switch
+    /// <summary>What the size control edits and its range, per tool.</summary>
+    public static (string Label, int Min, int Max) SizeRange(EditorTool tool) => tool switch
+    {
+        EditorTool.Brush or EditorTool.Eraser => ("Size", 1, 300),
+        EditorTool.Text => ("Font", 8, 96),
+        _ => ("Width", 1, 20),
+    };
+
+    private void DrawFillGroup(Rect row, EditorDocument document)
+    {
+        var current = document.Selected is { IsFillable: true } shape ? shape.Fill : document.ShapeFill;
+        ReadOnlySpan<(ShapeFill Fill, Icon Icon, string Name)> options =
+        [
+            (ShapeFill.Outline, Icons.Rectangle, "Outline"),
+            (ShapeFill.Tinted, Icons.FillTinted, "Tinted"),
+            (ShapeFill.Solid, Icons.FillSolid, "Solid"),
+        ];
+        for (var i = 0; i < options.Length; i++)
+        {
+            var bounds = new Rect(row.X + i * S(32), row.Center.Y - S(14), S(30), S(28));
+            if (ui.IconButton(Ui.Id(Ui.Id("editor.fill"), i), bounds, options[i].Icon, options[i].Name,
+                soft: current == options[i].Fill, iconSize: 15))
+                document.SetFill(options[i].Fill);
+        }
+    }
+
+    private void DrawTextGroup(Rect row, EditorDocument document)
+    {
+        var text = document.Selected is { Tool: EditorTool.Text } selected ? selected : null;
+        var bold = text?.IsBold ?? document.TextBold;
+        var italic = text?.IsItalic ?? document.TextItalic;
+        var underline = text?.IsUnderline ?? document.TextUnderline;
+
+        var bounds = new Rect(row.X, row.Center.Y - S(14), S(30), S(28));
+        if (ui.IconButton(Ui.Id("editor.bold"), bounds, Icons.Bold, "Bold", "Ctrl B", soft: bold, iconSize: 15))
+            document.SetTextFormat(d => d.TextBold = !bold, a => a.IsBold = !bold);
+        if (ui.IconButton(Ui.Id("editor.italic"), bounds with { X = bounds.X + S(32) }, Icons.Italic, "Italic", "Ctrl I",
+            soft: italic, iconSize: 15))
+            document.SetTextFormat(d => d.TextItalic = !italic, a => a.IsItalic = !italic);
+        if (ui.IconButton(Ui.Id("editor.underline"), bounds with { X = bounds.X + S(64) }, Icons.Underline, "Underline", "Ctrl U",
+            soft: underline, iconSize: 15))
+            document.SetTextFormat(d => d.TextUnderline = !underline, a => a.IsUnderline = !underline);
+    }
+
+    private double CounterGroupWidth(EditorDocument document) =>
+        ui.MeasureText($"Next {document.NextCounter}", S(Metrics.FontSm), Weight.Semibold) + S(8)
+        + ui.ButtonWidth("Reset", small: true);
+
+    private void DrawCounterGroup(Rect row, EditorDocument document)
+    {
+        var next = $"{document.NextCounter}";
+        var font = S(Metrics.FontSm);
+        var lead = ui.MeasureText("Next ", font);
+        ui.Text("Next ", new Rect(row.X, row.Y, lead + 1, row.Height), ui.Theme.TextSecondary, font);
+        ui.Text(next, new Rect(row.X + lead, row.Y, S(30), row.Height), ui.Theme.TextPrimary, font, Weight.Semibold);
+
+        var width = ui.ButtonWidth("Reset", small: true);
+        if (ui.Button(Ui.Id("editor.counter.reset"), new Rect(row.Right - width, row.Center.Y - S(14), width, S(28)),
+            "Reset", small: true, tooltip: "Number from 1 again"))
+            document.ResetCounter();
+    }
+
+    private void DrawDeleteButton(Rect row, EditorDocument document)
+    {
+        if (ui.IconButton(Ui.Id("editor.delete"), new Rect(row.X, row.Center.Y - S(14), S(28), S(28)), Icons.Delete,
+            "Delete", "Del", iconSize: 15, destructive: true))
+            document.DeleteSelected();
+    }
+
+    // ============================  CROP, TOAST, PICKER  ============================
+
+    /// <summary>The crop session's controls, hanging under the frame they act on - or above the bottom
+    /// edge, when the frame runs to it.</summary>
+    private void DrawCropBar(Frame frame, Rect crop)
+    {
+        var document = frame.Document;
+        var label = $"{(int)crop.Width} × {(int)crop.Height}";
+        var labelWidth = ui.MeasureText(label, S(Metrics.FontSm), Weight.Semibold) + S(20);
+        var reset = ui.ButtonWidth("Reset", small: true);
+        var cancel = ui.ButtonWidth("Cancel", keycap: "Esc", small: true);
+        var apply = ui.ButtonWidth("Apply", Icons.Tick, "⏎", small: true);
+        var width = S(4) + labelWidth + S(13) + reset + S(6) + cancel + S(6) + apply + S(4);
+
+        var bottom = frame.ImageOrigin.Y + (crop.Y + crop.Height) * frame.ImageScale;
+        var centre = frame.ImageOrigin.X + (crop.X + crop.Width / 2) * frame.ImageScale;
+        var y = Math.Min(bottom + S(14), frame.Height - S(60));
+        var pill = new Rect(Math.Clamp(centre - width / 2, S(8), frame.Width - width - S(8)), y, width, S(36));
+        ui.Pill(pill);
+        _covered.Add(pill);
+
+        var x = pill.X + S(4);
+        var buttonY = pill.Y + S(4);
+        ui.Text(label, new Rect(x, pill.Y, labelWidth, pill.Height), ui.Theme.TextSecondary, S(Metrics.FontSm),
+            Weight.Semibold, TextAlign.Center);
+        x += labelWidth;
+        ui.Separator(new Point(x + S(6), pill.Center.Y));
+        x += S(13);
+
+        if (ui.Button(Ui.Id("crop.reset"), new Rect(x, buttonY, reset, S(28)), "Reset", small: true))
+            document.ResetCropFrame();
+        x += reset + S(6);
+        if (ui.Button(Ui.Id("crop.cancel"), new Rect(x, buttonY, cancel, S(28)), "Cancel", keycap: "Esc", small: true))
+            ToolPicked = EditorTool.Select;
+        x += cancel + S(6);
+        if (ui.Button(Ui.Id("crop.apply"), new Rect(x, buttonY, apply, S(28)), "Apply", ButtonStyle.Primary,
+            Icons.Tick, "⏎", small: true))
+        {
+            document.CommitCrop();
+            ToolPicked = EditorTool.Select;
+        }
+    }
+
+    /// <summary>A short confirmation above the style bar: rises and fades in, then out.</summary>
+    private void DrawToast(Frame frame)
+    {
+        var shown = ui.Animate(Ui.Id("editor.toast"), frame.Toast is null ? 0 : 1, Metrics.Motion);
+        if (frame.Toast is { } message) _lastToast = message;
+        if (shown <= 0.01 || _lastToast is null) return;
+        ui.Toast(_lastToast, frame.Width / 2, frame.Height - S(84), shown);
+    }
+
+    private string? _lastToast;
+
+    private void DrawPicker(Frame frame)
+    {
+        if (!_picker.IsOpen) return;
+
+        var settings = frame.Settings;
+        var document = frame.Document;
+        var result = _picker.Draw(ui, _chip, new Rect(0, 0, frame.Width, frame.Height),
+            settings.RecentColors, settings.SavedColors);
+
+        if (result.Color is { } color)
+        {
+            document.SetColor(color.ToHex(), isAdjusting: result.Live);
+            _pickerChanged = true;
+        }
+        if (result.PickFromScreen) Requested = Command.PickFromScreen;
+        if (result.Copy is { } copy) CopyRequested = copy;
+        if (result.Save is { } save) { settings.SaveColor(save); SettingsChanged = true; }
+        if (result.Forget is { } forget) { settings.ForgetSavedColor(forget); SettingsChanged = true; }
+        if (result.Closed) PickerClosed(settings);
+    }
+
+    /// <summary>True when the picker changed a persisted colour list this frame.</summary>
+    public bool SettingsChanged { get; set; }
+
+    private bool _pickerChanged;
+
+    /// <summary>A colour applied from the picker joins the recent list when the picker closes, not on
+    /// every step of a drag through the spectrum.</summary>
+    public void PickerClosed(AppSettings settings)
+    {
+        _picker.Close();
+        if (!_pickerChanged) return;
+        _pickerChanged = false;
+        settings.RememberColor(_picker.Current.ToHex());
+        SettingsChanged = true;
+    }
+
+    // ============================  TABLES  ============================
+
+    private static Icon Glyph(EditorTool tool) => tool switch
     {
         EditorTool.Select => Icons.Select,
         EditorTool.Rectangle => Icons.Rectangle,
@@ -359,28 +568,32 @@ public sealed class EditorChrome(Ui ui)
         EditorTool.Pixelate => Icons.Pixelate,
         EditorTool.Counter => Icons.Counter,
         EditorTool.Spotlight => Icons.Spotlight,
-        EditorTool.Crop => Icons.Crop,
-        _ => string.Empty,
+        _ => Icons.Crop,
     };
 
-    /// <summary>Tooltips, with each tool's shortcut.</summary>
-    private static string Label(EditorTool tool) => tool switch
+    private static string Name(EditorTool tool) => tool switch
     {
-        EditorTool.Select => "Select  (V)",
-        EditorTool.Rectangle => "Rectangle  (R)",
-        EditorTool.Ellipse => "Ellipse  (E)",
-        EditorTool.Line => "Line  (L)",
-        EditorTool.Arrow => "Arrow  (A)",
-        EditorTool.Pen => "Pen  (D)",
-        EditorTool.Brush => "Brush  (M)",
-        EditorTool.Eraser => "Erase pen and brush  (X)",
-        EditorTool.Text => "Text  (T)",
-        EditorTool.Highlight => "Highlight  (H)",
-        EditorTool.Blur => "Blur  (B)",
-        EditorTool.Pixelate => "Pixelate  (P)",
-        EditorTool.Counter => "Counter  (N)",
-        EditorTool.Spotlight => "Spotlight  (S)",
-        EditorTool.Crop => "Crop  (C)",
+        EditorTool.Eraser => "Eraser · pen and brush",
         _ => tool.ToString(),
+    };
+
+    /// <summary>B is Blur, not Brush; P is Pixelate, not Pen - the letters users arrive with.</summary>
+    public static string Shortcut(EditorTool tool) => tool switch
+    {
+        EditorTool.Select => "V",
+        EditorTool.Rectangle => "R",
+        EditorTool.Ellipse => "E",
+        EditorTool.Arrow => "A",
+        EditorTool.Line => "L",
+        EditorTool.Pen => "D",
+        EditorTool.Brush => "M",
+        EditorTool.Eraser => "X",
+        EditorTool.Text => "T",
+        EditorTool.Counter => "N",
+        EditorTool.Highlight => "H",
+        EditorTool.Blur => "B",
+        EditorTool.Pixelate => "P",
+        EditorTool.Spotlight => "S",
+        _ => "C",
     };
 }

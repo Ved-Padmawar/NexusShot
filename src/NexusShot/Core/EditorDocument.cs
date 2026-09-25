@@ -32,7 +32,7 @@ public sealed partial class EditorDocument
     // A provisional draw may be discarded. Keep stack references (not another deep copy of the
     // document) so cancellation restores redo and the oldest entry at the history limit too.
     private (DocumentSnapshot[] Undo, DocumentSnapshot[] Redo)? _creationHistory;
-    private bool _adjustingThickness;
+    private bool _adjusting;
     private readonly Dictionary<Annotation, EraserMask> _activeEraserMasks = [];
 
     public IReadOnlyList<Annotation> Annotations => _annotations;
@@ -76,18 +76,30 @@ public sealed partial class EditorDocument
     public double BrushThickness { get; private set; } = 48;
     public double EraserThickness { get; private set; } = 48;
 
-    /// <summary>What the size slider is currently editing. The counterpart to SetStrokeThickness:
-    /// the two must route by tool identically, or the slider shows one value and writes another.</summary>
-    public double ActiveThickness => ActiveTool switch
+    /// <summary>The tool whose size the size control edits: the selection's, when there is one - the
+    /// style bar edits what is selected - and otherwise the active tool's.</summary>
+    public EditorTool SizingTool => Selected?.Tool ?? ActiveTool;
+
+    /// <summary>What the size control shows. The counterpart to SetStrokeThickness: the two must route
+    /// identically, or the control shows one value and writes another.</summary>
+    public double ActiveThickness => Selected switch
     {
-        EditorTool.Brush => BrushThickness,
-        EditorTool.Eraser => EraserThickness,
-        EditorTool.Text => TextFontSize,
-        _ => StrokeThickness,
+        { Tool: EditorTool.Text } text => text.FontSize,
+        { } selected => selected.StrokeThickness,
+        _ => ActiveTool switch
+        {
+            EditorTool.Brush => BrushThickness,
+            EditorTool.Eraser => EraserThickness,
+            EditorTool.Text => TextFontSize,
+            _ => StrokeThickness,
+        },
     };
 
     /// <summary>Formatting applied to newly placed text annotations.</summary>
     public double TextFontSize { get; set; } = 20;
+
+    /// <summary>The fill new rectangles and ellipses are drawn with.</summary>
+    public ShapeFill ShapeFill { get; private set; }
     public bool TextBold { get; set; }
     public bool TextItalic { get; set; }
     public bool TextUnderline { get; set; }
@@ -99,7 +111,7 @@ public sealed partial class EditorDocument
         private set
         {
             if (ReferenceEquals(field, value)) return;
-            EndThicknessAdjustment();
+            EndAdjustment();
             field = value;
             if (!ReferenceEquals(EditingText, value)) EditingText = null;
         }
@@ -167,12 +179,26 @@ public sealed partial class EditorDocument
         ImageHeight = height;
     }
 
-    public void SetColor(string colorHex)
+    /// <summary>The colour for new annotations and the selection. <paramref name="isAdjusting"/> marks
+    /// the continuous steps of a drag through the picker, which share one undo entry.</summary>
+    public void SetColor(string colorHex, bool isAdjusting = false)
     {
+        if (!isAdjusting) EndAdjustment();
         ColorHex = colorHex;
         if (Selected is null || Selected.ColorHex == colorHex) return;
-        PushUndo();
+        PrepareAdjustUndo(isAdjusting);
         Selected.ColorHex = colorHex;
+        Notify();
+    }
+
+    /// <summary>The fill for new shapes and, when a rectangle or ellipse is selected, for that shape
+    /// as one undo step.</summary>
+    public void SetFill(ShapeFill fill)
+    {
+        ShapeFill = fill;
+        if (Selected is not { IsFillable: true } shape || shape.Fill == fill) return;
+        PushUndo();
+        shape.Fill = fill;
         Notify();
     }
 
@@ -185,23 +211,25 @@ public sealed partial class EditorDocument
     /// </summary>
     public void SetStrokeThickness(double thickness, bool isAdjusting = false)
     {
-        if (!isAdjusting) EndThicknessAdjustment();
-        switch (ActiveTool)
+        if (!isAdjusting) EndAdjustment();
+        switch (SizingTool)
         {
             case EditorTool.Brush:
                 BrushThickness = thickness;
-                return;
+                break;
             case EditorTool.Eraser:
                 EraserThickness = thickness;
                 return;
             case EditorTool.Text:
                 SetFontSize(thickness, isAdjusting);
                 return;
+            default:
+                StrokeThickness = thickness;
+                break;
         }
 
-        StrokeThickness = thickness;
         if (Selected is null || Selected.StrokeThickness == thickness) return;
-        PrepareThicknessUndo(isAdjusting);
+        PrepareAdjustUndo(isAdjusting);
         Selected.StrokeThickness = thickness;
         Notify();
     }
@@ -215,20 +243,21 @@ public sealed partial class EditorDocument
         var target = Selected is { Tool: EditorTool.Text } selected ? selected : null;
         if (target is null || target.FontSize == size) return;
 
-        PrepareThicknessUndo(isAdjusting);
+        PrepareAdjustUndo(isAdjusting);
         target.FontSize = size;
         NormalizeTextBounds(target);
         Notify();
     }
 
-    private void PrepareThicknessUndo(bool isAdjusting)
+    private void PrepareAdjustUndo(bool isAdjusting)
     {
-        if (!_adjustingThickness) PushUndo();
-        _adjustingThickness = isAdjusting;
+        if (!_adjusting) PushUndo();
+        _adjusting = isAdjusting;
     }
 
-    /// <summary>Mouse-up ends one slider edit; the next drag gets its own undo snapshot.</summary>
-    public void EndThicknessAdjustment() => _adjustingThickness = false;
+    /// <summary>Mouse-up ends one continuous edit - a slider or picker drag; the next gets its own undo
+    /// snapshot.</summary>
+    public void EndAdjustment() => _adjusting = false;
 
     /// <summary>Commits an inline editor's text and final box (clamped to the image) as one undo
     /// step - the single write-back for a text edit.</summary>
@@ -334,7 +363,7 @@ public sealed partial class EditorDocument
         _createdUndoOwner = null;
         _gesture = GestureKind.None;
         _creationHistory = null;
-        EndThicknessAdjustment();
+        EndAdjustment();
         Selected = null;
         CropBounds = null;
         PendingCrop = null;

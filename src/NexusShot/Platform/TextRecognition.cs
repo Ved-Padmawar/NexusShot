@@ -12,18 +12,25 @@ namespace NexusShot.Platform;
 /// </summary>
 internal static class TextRecognition
 {
+    /// <summary>The languages Windows can recognise on this PC, as (BCP-47 tag, display name).</summary>
+    public static IReadOnlyList<(string Tag, string Name)> Languages() =>
+        [.. OcrEngine.AvailableRecognizerLanguages.Select(language => (language.LanguageTag, language.DisplayName))];
+
     /// <summary>The number of lines copied; zero leaves the clipboard alone. Blocking: call it on
-    /// the media worker.</summary>
-    public static int CopyText(DecodedImage image)
+    /// the media worker. <paramref name="language"/> is a tag from <see cref="Languages"/>, or null
+    /// for the user's profile languages.</summary>
+    public static int CopyText(DecodedImage image, string? language)
     {
-        var lines = Recognize(image);
+        var lines = Recognize(image, language);
         if (lines.Length > 0) ClipboardText.Copy(string.Join(Environment.NewLine, lines));
         return lines.Length;
     }
 
-    private static string[] Recognize(DecodedImage image)
+    private static string[] Recognize(DecodedImage image, string? language)
     {
-        var engine = OcrEngine.TryCreateFromUserProfileLanguages()
+        // A chosen language since uninstalled falls back to the profile's rather than failing.
+        var engine = (language is null ? null : OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language(language)))
+            ?? OcrEngine.TryCreateFromUserProfileLanguages()
             ?? throw new InvalidOperationException(
                 "No text-recognition language is installed. Add one in Settings > Time & language > Language & region.");
 

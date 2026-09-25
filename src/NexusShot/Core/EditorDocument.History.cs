@@ -29,13 +29,12 @@ public sealed partial class EditorDocument
     private void PushUndo()
     {
         _creationHistory = null;
-        EndThicknessAdjustment();
+        EndAdjustment();
         _createdUndoOwner = null;
         _undo.Push(Snapshot());
         if (_undo.Count > MaxUndo)
         {
-            // Stack enumerates newest-first, so Take keeps the newest entries; the reverse then
-            // restores oldest-first for re-pushing, which is what puts the newest back on top.
+            // Take keeps the newest (stack order); Reverse re-pushes them oldest-first.
             var kept = _undo.Take(MaxUndo).Reverse().ToList();
             _undo.Clear();
             foreach (var snapshot in kept) _undo.Push(snapshot);
@@ -58,14 +57,13 @@ public sealed partial class EditorDocument
     private void Restore(DocumentSnapshot snapshot)
     {
         _creationHistory = null;
-        EndThicknessAdjustment();
+        EndAdjustment();
         var selectedId = Selected?.Id;
         ReplaceAnnotations(snapshot.Annotations);
         CropBounds = snapshot.CropBounds;
         PendingCrop = snapshot.PendingCrop;
 
-        // The restored annotations are fresh clones, so any open editor refers to an instance the
-        // document no longer holds. Reselecting by id installs the clone and closes the editor.
+        // Restored annotations are clones: reselect by id, and drop the editor holding the old instance.
         EditingText = null;
         Selected = selectedId is null ? null : _annotations.FirstOrDefault(a => a.Id == selectedId);
         _draft = null;

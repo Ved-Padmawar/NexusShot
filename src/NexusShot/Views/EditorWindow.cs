@@ -6,8 +6,9 @@ using NexusShot.Platform;
 namespace NexusShot.Views;
 
 /// <summary>
-/// The markup editor. Input mutates the document and invalidates; a frame is one allocation-free
-/// pass over the annotation list, and WM_PAINT is already coalesced to the display rate.
+/// The markup editor. The capture sits on a dotted stage that runs to the window's top edge, and all
+/// the chrome floats over it. Input mutates the document and invalidates; a frame is one pass over the
+/// annotation list, and WM_PAINT is already coalesced to the display rate.
 /// </summary>
 public sealed partial class EditorWindow : CaptionWindow
 {
@@ -17,6 +18,11 @@ public sealed partial class EditorWindow : CaptionWindow
     /// <summary>Save, Save As and Copy, and the destination they share.</summary>
     private readonly EditorFiles _files;
 
+    /// <summary>The app's settings - theme, accent, the colour lists and the OCR language - read live,
+    /// so the editor never holds a copy that could go stale.</summary>
+    private readonly AppSettings _settings;
+    private readonly Action _settingsChanged;
+
     private D2DResources? _resources;
     private AnnotationRenderer? _renderer;
     private ImageSurface? _image;
@@ -24,15 +30,14 @@ public sealed partial class EditorWindow : CaptionWindow
     private Ui? _ui;
     private EditorChrome? _chrome;
 
-    private bool _fitToViewport = true;
+    /// <summary>Zoom and pan: the user's intent. Where the image lands is derived from it each frame.</summary>
+    private readonly Viewport _viewport = new();
 
-    /// <summary>Client-space pointer, kept for the chrome (which works in client pixels, not image
-    /// pixels) and for hit-testing the toolbar before the canvas sees the event.</summary>
+    /// <summary>Client-space pointer, for the chrome and for hit-testing it before the canvas.</summary>
     private Point _clientPointer;
     private bool _pointerDown;
 
-    /// <summary>Where the image sits on screen, in client pixels; the mapping between screen and
-    /// image space. Recomputed on resize and zoom, never per input event.</summary>
+    /// <summary>The image's placement this frame: the mapping between client and image space.</summary>
     private double _scale = 1;
     private double _offsetX;
     private double _offsetY;
@@ -45,15 +50,18 @@ public sealed partial class EditorWindow : CaptionWindow
     /// <summary>The inline text box: its lifecycle, keys and write-back.</summary>
     private readonly TextBoxController _text;
 
+    /// <summary>True while the pointer is captured for a press that began on the chrome.</summary>
+    private bool _chromeCaptured;
+
     /// <summary>True while a drag inside the box is selecting text.</summary>
     private bool _caretDragging;
 
-    private AppTheme _theme;
     private string? _loadError;
 
-    public EditorWindow(string path, AppTheme theme = AppTheme.System) : base("NexusShot")
+    public EditorWindow(string path, AppSettings settings, Action settingsChanged) : base("NexusShot")
     {
-        _theme = theme;
+        _settings = settings;
+        _settingsChanged = settingsChanged;
         _text = new TextBoxController(_document);
         _files = new EditorFiles(_document);
         _files.OpenedAt(path);
@@ -62,20 +70,21 @@ public sealed partial class EditorWindow : CaptionWindow
         _files.Committing += CommitText;
     }
 
-    /// <summary>Follows the shell's theme. The Ui's theme is read per frame, so this only has to
-    /// retint the titlebar DWM owns and ask for a repaint.</summary>
-    public void SetTheme(AppTheme theme)
+    private Theme CurrentTheme => SystemTheme.Resolve(_settings.Theme, _settings.Accent);
+
+    /// <summary>Follows the shell's theme and accent. The Ui reads the theme per frame, so this only
+    /// has to retint the frame DWM owns and ask for a repaint.</summary>
+    public void Retheme()
     {
-        _theme = theme;
-        var resolved = SystemTheme.Resolve(theme);
-        SystemTheme.ApplyFrame(Handle, resolved);
-        if (_ui is not null) _ui.Theme = resolved;
+        SystemTheme.ApplyFrame(Handle, CurrentTheme);
         Invalidate();
     }
 
-    /// <summary>The caption strip above the toolbar drags, save for where the buttons are.</summary>
+    /// <summary>The top band drags, except where its controls are.</summary>
     protected override bool IsDragRegion(Point client) =>
-        client.X < ClientRect.Width - CaptionButtonsWidth;
+        client.X < ClientRect.Width - CaptionButtonsWidth && !(_chrome?.Covers(client) ?? false);
+
+    protected override double DragBandHeight => _chrome?.TopBand ?? CaptionHeight;
 
     /// <summary>Raised when the window goes away, so the host can drop its reference and refresh a
     /// thumbnail whose file may have just been re-saved.</summary>
@@ -94,7 +103,7 @@ public sealed partial class EditorWindow : CaptionWindow
         // The chrome carries the filename, so the caption shows no icon. The title stays for Alt+Tab.
         AppIcon.ApplyLargeOnly(Handle);
         UpdateTitle();
-        SystemTheme.ApplyFrame(Handle, SystemTheme.Resolve(_theme));
+        SystemTheme.ApplyFrame(Handle, CurrentTheme);
 
         _document.Changed += (_, _) => Invalidate();
 
@@ -108,7 +117,7 @@ public sealed partial class EditorWindow : CaptionWindow
     {
         // Anything still queued outlived the window it was going to draw into.
         _dispatch.Clear();
-        SetAnimating(false);
+        Repaint(null);
 
         ReleaseResources();
         Closed?.Invoke();
@@ -128,6 +137,7 @@ public sealed partial class EditorWindow : CaptionWindow
         _resources = null;
         _renderer = null;
         _ui = null;
+        _chrome?.Dispose();
         _chrome = null;
 
         // Keep explicit teardown idempotent, whether invoked by destruction or disposal.
@@ -143,8 +153,8 @@ public sealed partial class EditorWindow : CaptionWindow
 
         _resources = new D2DResources(target);
         _renderer = new AnnotationRenderer(_resources);
-        _ui = new Ui(_resources) { Theme = SystemTheme.Resolve(_theme) };
-        _chrome = new EditorChrome(_ui);
+        _ui = new Ui(_resources) { Theme = CurrentTheme };
+        _chrome = new EditorChrome(_ui) { ShiftDown = () => KeyDown(VIRTUAL_KEY.VK_SHIFT) };
 
         // Effects need a device context; without one the renderer falls back to its placeholder.
         using var context = target.AsDeviceContext();
@@ -164,41 +174,27 @@ public sealed partial class EditorWindow : CaptionWindow
 
     // ============================  VIEW TRANSFORM  ============================
 
+    /// <summary>The stage's inner area the image is placed in, clear of the floating chrome.</summary>
+    private Rect Well() => _chrome?.Well(ClientRect.Width, ClientRect.Height) ?? new Rect(0, 0, 1, 1);
+
+    /// <summary>The size of what is shown - the crop, once one is applied, rather than the whole image.</summary>
+    private Size ImageSize => new(_document.VisibleBounds.Width, _document.VisibleBounds.Height);
+
     /// <summary>
-    /// Fit uses the space in both directions; 100% means one image pixel to one *physical* pixel,
-    /// not one DIP - a DIP-based 1:1 would resample the image and soften it.
-    ///
-    /// Recomputed per frame from the rect being drawn into, so the transform cannot lag the window.
+    /// Places the image. 100% means one image pixel to one *physical* pixel, not one DIP - a DIP-based
+    /// 1:1 would resample the image and soften it. Recomputed per frame from the rect being drawn
+    /// into, so the transform cannot lag the window.
     /// </summary>
     private void Layout()
     {
         if (_image is null) return;
-        var well = CanvasWell();
-        var margin = 24 * DpiScale;
+        var visible = _document.VisibleBounds;
+        var placed = _viewport.Place(Well(), ImageSize);
+        _scale = placed.Width / visible.Width;
 
-        var available = new Size(
-            Math.Max(1, well.Width - margin * 2),
-            Math.Max(1, well.Height - margin * 2));
-
-        // Fit never enlarges past 1:1: upscaling would soften the image and inflate every stroke
-        // width and adorner drawn in image space.
-        _scale = _fitToViewport
-            ? Math.Min(1, Math.Min(available.Width / _image.Width, available.Height / _image.Height))
-            : 1;
-
-        _offsetX = Math.Round(well.X + (well.Width - _image.Width * _scale) / 2);
-        _offsetY = Math.Round(well.Y + (well.Height - _image.Height * _scale) / 2);
-    }
-
-    /// <summary>The sunken area the image sits in: everything between the chrome and the footer.</summary>
-    private Rect CanvasWell()
-    {
-        var client = ClientRect;
-        return new Rect(
-            0,
-            CaptionHeight + 46 * DpiScale,
-            Math.Max(1, client.Width),
-            Math.Max(1, client.Height - CaptionHeight - 86 * DpiScale));
+        // The offset is where image pixel (0, 0) lands, so the crop's corner lands on the placement.
+        _offsetX = placed.X - visible.X * _scale;
+        _offsetY = placed.Y - visible.Y * _scale;
     }
 
     /// <summary>Inverse display scale: adorners are drawn in image space but must keep a constant
@@ -211,9 +207,10 @@ public sealed partial class EditorWindow : CaptionWindow
     private Point ToImage(int clientX, int clientY)
     {
         if (_image is null) return Point.Zero;
+        var visible = _document.VisibleBounds;
         return new Point(
-            Math.Clamp((clientX - _offsetX) / _scale, 0, _image.Width),
-            Math.Clamp((clientY - _offsetY) / _scale, 0, _image.Height));
+            Math.Clamp((clientX - _offsetX) / _scale, visible.X, visible.Right),
+            Math.Clamp((clientY - _offsetY) / _scale, visible.Y, visible.Bottom));
     }
 
     protected override bool OnResized(WindowResizedType type, SIZE size)
@@ -230,26 +227,28 @@ public sealed partial class EditorWindow : CaptionWindow
     {
         using var target = renderTarget.AsRenderTarget();
 
-        // Pin the target to 96 DPI so a unit is a physical pixel: ClientRect, WM_MOUSEMOVE and the
-        // image are all already physical, and letting D2D scale on top of that double-scales
-        // everything. The chrome then scales itself; the canvas deliberately does not.
+        // 96 DPI makes a unit a physical pixel; the chrome scales itself, the canvas does not.
         target.Object.SetDpi(96, 96);
 
         EnsureResources(target);
         if (_ui is null || _chrome is null || _renderer is null) return;
         _chrome.Scale = DpiScale;
-        _chrome.CaptionHeight = CaptionHeight;
 
         // Read per frame, so a theme change can never leave the canvas painted in the old colours.
-        _ui.Theme = SystemTheme.Resolve(_theme);
+        _ui.Theme = CurrentTheme;
+        _ui.Scale = DpiScale;
 
         var client = ClientRect;
-        renderTarget.Clear(D2DResources.ToD3D(_ui.Theme.SurfaceSunken));
+        var theme = _ui.Theme;
+        renderTarget.Clear(D2DResources.ToD3D(theme.SurfaceStage));
+
+        _ui.BeginFrame(target, _clientPointer, _pointerDown);
+        _ui.FillDots(new Rect(0, 0, client.Width, client.Height), theme.StageDot, (float)(18 * DpiScale));
+
         if (_image is null)
         {
-            _ui.BeginFrame(target, _clientPointer, _pointerDown);
-            _ui.Text(_loadError ?? "Could not open this image", CanvasWell(), _ui.Theme.TextPrimary,
-                (float)(14 * DpiScale), align: TextAlign.Center);
+            _ui.Text(_loadError ?? "Could not open this image", new Rect(0, 0, client.Width, client.Height),
+                theme.TextPrimary, 14 * DpiScale, align: TextAlign.Center);
             DrawCaptionButtons(_ui, client.Width);
             _ui.EndFrame();
             if (_ui.ClickedThisFrame) Invalidate();
@@ -257,24 +256,29 @@ public sealed partial class EditorWindow : CaptionWindow
         }
 
         Layout();
+        var visible = _document.VisibleBounds;
+        var imageRect = new Rect(_offsetX + visible.X * _scale, _offsetY + visible.Y * _scale,
+            visible.Width * _scale, visible.Height * _scale);
+        var corner = 6 * DpiScale;
 
-        // ---- canvas, in image space ----
-        // The world transform carries the zoom and centring, so annotation geometry is written in
-        // image pixels here exactly as the exporter writes it, with no second coordinate system.
+        _ui.Shadow(imageRect, (float)corner, 36 * DpiScale, 18 * DpiScale, theme.Shadow);
+        _ui.Shadow(imageRect, (float)corner, 8 * DpiScale, 3 * DpiScale, theme.Shadow);
+
+        // ---- canvas, in image space: the transform carries zoom and placement, as the exporter's does ----
         renderTarget.Object.SetTransform(
             D2D_MATRIX_3X2_F.Scale((float)_scale, (float)_scale)
             * D2D_MATRIX_3X2_F.Translation((float)_offsetX, (float)_offsetY));
 
+        _ui.PushRoundedLayer(visible, (float)(corner / _scale));
         renderTarget.DrawBitmap(
             _image.Bitmap, 1f,
-            // Linear filtering on the GPU: the image is scaled from full resolution every frame,
-            // never from a pre-scaled copy. This is what keeps the preview sharp at any zoom.
+            // Scaled from full resolution every frame, which keeps it sharp at any zoom.
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
             new D2D_RECT_F(0, 0, _image.Width, _image.Height));
 
-        // While a text box is open it *is* the annotation: drawing the annotation too would show it
-        // doubled behind the box.
+        // An open text box draws its own annotation.
         _renderer.DrawAnnotations(target, _document, _effects, skip: _text.Annotation);
+        _ui.PopRoundedLayer();
 
         // Editing is a sub-state of selection, so an open box keeps the grips that resize it.
         _renderer.DrawAdorners(target, _document, AdornerScale);
@@ -287,56 +291,98 @@ public sealed partial class EditorWindow : CaptionWindow
                 AdornerScale, Palette.Selection.WithAlpha(90));
         }
 
-        // The brush footprint is the *cursor*, not a drawn ring: Windows composites the cursor, so it
-        // tracks the pointer exactly, where anything the app paints arrives a frame late and trails.
-
         renderTarget.Object.SetTransform(D2D_MATRIX_3X2_F.Identity());
 
         // ---- chrome, in client space ----
-        var now = DateTime.UtcNow;
-        var toast = now < _toastUntil ? _toast : null;
-        var copied = _copied.Progress(Environment.TickCount64);
-
-        _ui.BeginFrame(target, _clientPointer, _pointerDown);
-        _chrome.Draw(_document, client.Width, client.Height,
-            _files.FileName, _fitToViewport, toast, copied);
+        var toast = DateTime.UtcNow < _toastUntil ? _toast : null;
+        _chrome.Draw(new EditorChrome.Frame(
+            _document, _settings, client.Width, client.Height, CaptionButtonsWidth,
+            Path.GetFileNameWithoutExtension(_files.FileName), _scale, imageRect, _scale,
+            new Point(_offsetX, _offsetY), toast, _fileBusy));
         DrawCaptionButtons(_ui, client.Width);
         _ui.EndFrame();
 
         if (!_fileBusy && !_confirmingClose) ApplyChrome();
-
         if (_ui.ClickedThisFrame) Invalidate();
 
-        // A toast clears itself and a caret blinks, neither driven by input. Re-invalidating from
-        // inside the frame would repaint at display rate to animate one glyph and one fade.
-        SetAnimating(toast is not null || _copied.IsRunning || _text.IsOpen);
+        // Display rate while animating, a slow tick for a caret or toast, otherwise nothing.
+        Repaint(_ui.Animating ? FrameInterval
+            : toast is not null || _text.IsOpen ? 120
+            : _ui.Blinking ? (uint)Ui.CaretBlink
+            : null);
     }
 
-    /// <summary>Applies what the chrome asked for. The chrome reports intent; the window owns the
-    /// document, so there is only ever one writer.</summary>
+    /// <summary>Applies what the chrome asked for. Everything that runs a modal loop or a file
+    /// operation is posted, to run once this frame has finished.</summary>
     private void ApplyChrome()
     {
         if (_chrome is null) return;
 
         if (_chrome.ToolPicked is { } tool) SelectTool(tool);
-        if (_chrome.UndoPressed) Undo();
-        if (_chrome.RedoPressed) Redo();
-        if (_chrome.DeletePressed) _document.DeleteSelected();
-        // All three run outside the frame; see Post.
-        if (_chrome.SavePressed) Post(() => RunFileAction(Save));
-        if (_chrome.SaveAsPressed) Post(() => RunFileAction(SaveAs));
-        if (_chrome.CopyPressed) Post(() => RunFileAction(CopyToClipboard));
-        if (_chrome.CopyTextPressed) Post(() => RunFileAction(CopyText));
 
-        if (_chrome.FitPicked is { } fit && fit != _fitToViewport)
+        switch (_chrome.Requested)
         {
-            _fitToViewport = fit;
-            Invalidate();
+            case EditorChrome.Command.Undo: Undo(); break;
+            case EditorChrome.Command.Redo: Redo(); break;
+            case EditorChrome.Command.Save: Post(() => RunFileAction(Save)); break;
+            case EditorChrome.Command.SaveAs: Post(() => RunFileAction(SaveAs)); break;
+            case EditorChrome.Command.CopyAndClose: Post(() => RunFileAction(CopyAndClose)); break;
+            case EditorChrome.Command.CopyText: Post(() => RunFileAction(CopyText)); break;
+            case EditorChrome.Command.Share: Post(() => RunFileAction(Share)); break;
+            case EditorChrome.Command.ZoomIn: ZoomBy(Viewport.Step, null); break;
+            case EditorChrome.Command.ZoomOut: ZoomBy(1 / Viewport.Step, null); break;
+            case EditorChrome.Command.ZoomActual: ZoomActual(); break;
+            case EditorChrome.Command.ZoomFit: ZoomFit(); break;
+            case EditorChrome.Command.PickFromScreen: Post(PickFromScreen); break;
         }
 
-        // The slider and the swatches change the brush's size and colour, and the cursor *is* the
-        // brush footprint.
+        if (_chrome.CopyRequested is { } text) CopyToClipboardText(text);
+
+        if (_chrome.SettingsChanged)
+        {
+            _chrome.SettingsChanged = false;
+            _settingsChanged();
+        }
+
+        // The size and colour controls change the brush footprint, and the cursor *is* the footprint.
         RefreshCursor();
+    }
+
+    private void ZoomBy(double factor, Point? anchor)
+    {
+        if (_image is null) return;
+        _viewport.ZoomBy(factor, Well(), ImageSize, anchor ?? Well().Center);
+        Invalidate();
+    }
+
+    private void ZoomActual()
+    {
+        if (_image is null) return;
+        _viewport.Actual(Well(), ImageSize, Well().Center);
+        Invalidate();
+    }
+
+    private void ZoomFit()
+    {
+        _viewport.Fit();
+        Invalidate();
+    }
+
+    /// <summary>Freezes the screen for the eyedropper and takes the colour clicked. The picker stays
+    /// open behind it, so the colour lands where the user was working.</summary>
+    private void PickFromScreen()
+    {
+        if (ColorDropper.Pick(CurrentTheme) is not { } color || _chrome is null) return;
+        var picked = color with { A = Palette.Parse(_document.Selected?.ColorHex ?? _document.ColorHex).A };
+        _chrome.AdoptPickedColor(picked);
+        _document.SetColor(picked.ToHex());
+        Invalidate();
+    }
+
+    private void CopyToClipboardText(string text)
+    {
+        try { ClipboardText.Copy(text); ShowToast("Copied " + text); }
+        catch (InvalidOperationException exception) { Log.Error("editor.copy_hex", exception); }
     }
 
     /// <summary>Alt+Tab and the taskbar name the window by the file it is editing.</summary>

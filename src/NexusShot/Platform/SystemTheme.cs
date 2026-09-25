@@ -50,13 +50,21 @@ public static partial class SystemTheme
         }
     }
 
-    /// <summary>Resolves the setting to the theme actually in force.</summary>
-    public static Theme Resolve(AppTheme setting) => setting switch
+    /// <summary>Resolves the settings to the theme actually in force. Cached per mode and accent:
+    /// every window resolves at the top of every frame, and a theme is a record of forty colours.</summary>
+    public static Theme Resolve(AppTheme setting, string accent)
     {
-        AppTheme.Light => Theme.Light,
-        AppTheme.Dark => Theme.Dark,
-        _ => IsDark() ? Theme.Dark : Theme.Light,
-    };
+        var dark = setting switch
+        {
+            AppTheme.Light => false,
+            AppTheme.Dark => true,
+            _ => IsDark(),
+        };
+        var preset = Accent.Named(accent);
+        return Resolved.GetOrAdd((dark, preset.Name), _ => Theme.Resolve(dark, preset));
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(bool, string), Theme> Resolved = new();
 
     /// <summary>True when the message means the user changed the system theme.</summary>
     public static bool IsColorSetChange(uint message, IntPtr lParam)

@@ -26,6 +26,12 @@ public static partial class WindowInterop
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetForegroundWindow();
+
+    [LibraryImport("user32.dll")]
+    public static partial uint GetDoubleClickTime();
+
     [LibraryImport("user32.dll", SetLastError = true)]
     public static partial nuint SetTimer(IntPtr window, nuint id, uint elapse, IntPtr callback);
 

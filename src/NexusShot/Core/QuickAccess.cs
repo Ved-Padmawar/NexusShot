@@ -30,6 +30,9 @@ public sealed class QuickAccess(AppSettings settings)
     /// <summary>Newest first.</summary>
     public IReadOnlyList<ScreenshotHistoryItem> RecentlyClosed => _closed;
 
+    /// <summary>The settings the cards follow: corner, accent, countdown. The windows read them live.</summary>
+    public AppSettings Settings => settings;
+
     public QuickAccessCard? Find(string path) =>
         _open.FirstOrDefault(card => SamePath(card.Item.FilePath, path));
 
@@ -46,7 +49,7 @@ public sealed class QuickAccess(AppSettings settings)
             return existing;
         }
 
-        var card = new QuickAccessCard(item);
+        var card = new QuickAccessCard(item) { IsPinned = settings.PinNewCards };
         ResetCountdown(card);
         _open.Insert(0, card);
         return card;

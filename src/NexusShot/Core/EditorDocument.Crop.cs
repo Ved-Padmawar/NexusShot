@@ -7,6 +7,14 @@ namespace NexusShot.Core;
 /// </summary>
 public sealed partial class EditorDocument
 {
+    /// <summary>
+    /// The part of the image the editor shows: the committed crop, as the export will be - or the
+    /// whole image during a crop session, so the frame can be dragged back out past the old crop.
+    /// </summary>
+    public Rect VisibleBounds => PendingCrop is null && CropBounds is { } crop
+        ? crop
+        : new Rect(0, 0, ImageWidth, ImageHeight);
+
     public void BeginCropSession()
     {
         if (ImageWidth <= 0 || ImageHeight <= 0) return;
@@ -29,6 +37,14 @@ public sealed partial class EditorDocument
             PushUndo();
             CropBounds = crop;
         }
+        Notify();
+    }
+
+    /// <summary>Puts the live frame back around the whole image, without leaving the session.</summary>
+    public void ResetCropFrame()
+    {
+        if (PendingCrop is null) return;
+        PendingCrop = new Rect(0, 0, ImageWidth, ImageHeight);
         Notify();
     }
 

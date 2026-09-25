@@ -43,15 +43,40 @@ public sealed record ExportRequest(EditorDocument Document, string Source, strin
     public void CopyToClipboard() => WithFlattened(ClipboardImage.Copy);
 
     /// <summary>The number of lines of text copied; zero when there was none.</summary>
-    public int CopyText()
+    public int CopyText(string? language)
     {
         var lines = 0;
         WithFlattened(path =>
         {
             using var pixels = ImageSurface.Decode(path);
-            lines = TextRecognition.CopyText(pixels);
+            lines = TextRecognition.CopyText(pixels, language);
         });
         return lines;
+    }
+
+    /// <summary>
+    /// Writes the flattened image for the share sheet and returns its path. Named after the capture,
+    /// because the receiving app shows the name. It cannot be deleted when this returns - the share
+    /// sheet reads it later, on its own schedule - so each share clears the previous one instead, and
+    /// at most one lingers in the temp folder.
+    /// </summary>
+    public string SaveShareCopy()
+    {
+        var folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "NexusShot share");
+        if (Directory.Exists(folder))
+        {
+            foreach (var stale in Directory.EnumerateFiles(folder))
+            {
+                try { File.Delete(stale); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                { Log.Error("share.temp_cleanup", exception); }
+            }
+        }
+        Directory.CreateDirectory(folder);
+
+        var path = System.IO.Path.Combine(folder, System.IO.Path.GetFileNameWithoutExtension(Source) + ".png");
+        Exporter.Save(Document, Source, path);
+        return path;
     }
 
     private void WithFlattened(Action<string> use)

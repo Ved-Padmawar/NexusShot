@@ -14,8 +14,8 @@ public static class RestoreStripLayout
     public const double TileRadius = 10;
     public const double Gap = 12;
     public const double Padding = 16;
-    public const double HistoryWidth = 76;
-    public const double ButtonHeight = 26;
+    public const double HistoryWidth = 104;
+    public const double ButtonHeight = 32;
     public const double PillWidth = 84;
     public const double PillHeight = 22;
     public const double EmptyMessageWidth = 150;

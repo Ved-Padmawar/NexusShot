@@ -5,8 +5,9 @@ using NexusShot.Render;
 namespace NexusShot.Views;
 
 /// <summary>
-/// The shell: a sidebar that browses, a pane that previews and acts. Annotating opens the editor as
-/// its own window rather than docking it here, so the sidebar's width is never taken from the image.
+/// The library: every capture as a tile, grouped by day, with the capture actions across the top and
+/// settings in a sheet over it. Annotating opens the editor as its own window, so the library never
+/// gives up width to it.
 /// </summary>
 public sealed partial class MainWindow : CaptionWindow
 {
@@ -20,10 +21,10 @@ public sealed partial class MainWindow : CaptionWindow
     /// <summary>One wheel notch. Touchpads report fractions of it, scrolled as they arrive -
     /// quantizing them to notches makes a smooth drag land as jumps.</summary>
     private const double WheelDelta = 120;
-    private const uint WmClose = 0x0010;
     private const uint WmTimer = 0x0113;
-
-    private const nuint CopyFeedbackTimerId = 1;
+    private const uint WmPowerBroadcast = 0x0218;
+    private const ulong PbtApmResumeAutomatic = 0x12;
+    private const uint WmClose = 0x0010;
 
     private readonly Storage _storage;
     private readonly AppSettings _settings;
@@ -32,30 +33,37 @@ public sealed partial class MainWindow : CaptionWindow
     private D2DResources? _resources;
     private Ui? _ui;
 
-    /// <summary>Thumbnail-sized decodes. Bounded, or the cache grows with the history forever; the
-    /// cap is well above a screenful, so scrolling never evicts a row it is about to draw again.</summary>
-    private readonly LruCache<string, ImageSurface> _thumbnails = new(200);
+    /// <summary>Tile-sized decodes, with the width each was decoded for. Bounded, or the cache grows
+    /// with the history forever; the grid raises the cap to three screens of tiles, so scrolling never
+    /// evicts a tile it is about to draw again.</summary>
+    private readonly LruCache<string, (ImageSurface Surface, int Width)> _thumbnails = new(60);
 
-    /// <summary>The selected capture, decoded to physical display pixels rather than source size.</summary>
-    private ImageSurface? _preview;
-    private string? _previewPath;
-    private (int Width, int Height) _previewSize;
+    private readonly LibrarySelection _selection = new();
 
-    private ScreenshotHistoryItem? _selected;
+    /// <summary>Ctrl as it was at the press, from the message itself: read at draw time, a quick
+    /// Ctrl+click had usually released Ctrl already.</summary>
+    private bool _pressedWithControl;
     private Point _pointer;
     private bool _pointerDown;
-    private double _scroll;
+
+    /// <summary>Set by a wheel scroll, cleared when the pointer really moves. Tiles slide under a
+    /// still pointer while the grid scrolls, and each one played its hover as it passed - a flicker
+    /// of lifts and rings, and a jump where the grid came to rest.</summary>
+    private bool _hoverPaused;
+
+    /// <summary>The grid's scroll, and the extents it is clamped against - measured as the grid is
+    /// drawn, so the wheel scrolls the grid that exists rather than an estimate of it.</summary>
+    private readonly ScrollState _scroll = new();
+    private double _gridHeight;
+    private double _gridViewport = 1;
+
+    /// <summary>The search box's text. View state: it filters what is drawn, never the history.</summary>
+    private string _query = "";
 
     private bool _settingsOpen;
-    private double _settingsScroll;
-    private double _settingsHeight;
-
-    /// <summary>The scrollable body's height, measured as it is drawn, so the wheel handler does not
-    /// have to guess where the header ends.</summary>
-    private double _settingsViewport = 1;
 
     /// <summary>The hotkey row that is armed, if any. The next key press becomes its binding.</summary>
-    private int? _recordingHotkey;
+    private HotkeyId? _recordingHotkey;
     private string? _hotkeyWarning;
 
     /// <summary>Raised when the bindings change, so the app can re-register them.</summary>
@@ -82,6 +90,8 @@ public sealed partial class MainWindow : CaptionWindow
     private UiThreadDispatch? _dispatch;
 
     public event Action<CaptureMode>? CaptureRequested;
+    public event Action? CaptureTextRequested;
+    public event Action? TimedCaptureRequested;
     public event Action<ScreenshotHistoryItem>? EditRequested;
     public event Action<IReadOnlyList<string>>? OpenRequested;
 
@@ -98,35 +108,108 @@ public sealed partial class MainWindow : CaptionWindow
         _storage = storage;
         _settings = settings;
         _history = history;
-
-        // Nothing selected on open: even a scaled PNG decode belongs after the first frame.
     }
 
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
 
-        // Alt+Tab and the taskbar get the icon; the caption itself shows neither icon nor title,
-        // because the sidebar carries the brand and the caption is now our own pixels.
+        // Alt+Tab and the taskbar get the icon; the header carries the brand.
         AppIcon.ApplyLargeOnly(Handle);
         FileDrop.Accept(Handle);
+        _clock = new FrameClock(Handle);
+        _touchpad = TouchpadPan.Create(Handle, Pan, moving =>
+        {
+            _panning = moving;
+            if (moving) StartClock();
+        });
         ApplyTheme();
     }
+
+    /// <summary>Null without DirectManipulation; the wheel path then carries the touchpad.</summary>
+    private TouchpadPan? _touchpad;
+    private bool _panning;
+
+    private FrameClock? _clock;
+    private long _clockStamp;
+
+    /// <summary>The open settings sheet takes it instead of the grid.</summary>
+    private void Pan(double delta)
+    {
+        if (_settingsOpen)
+        {
+            ScrollSettings(delta);
+            return;
+        }
+        ApplyScroll(() => _scroll.Pan(delta));
+    }
+
+    /// <summary>Glides the grid; the settings sheet scrolls in steps.</summary>
+    private void Wheel(double step)
+    {
+        if (_settingsOpen)
+        {
+            ScrollSettings(step);
+            return;
+        }
+        _scroll.Wheel(step);
+        _hoverPaused = true;
+        StartClock();
+    }
+
+    /// <summary>Repaints only when it moved: repainting on deltas past a pinned end made the pane shake.</summary>
+    private void ApplyScroll(Action change)
+    {
+        var before = _scroll.Position;
+        change();
+        _hoverPaused = true;
+        if (_scroll.Position != before) Invalidate();
+    }
+
+    private void StartClock()
+    {
+        if (_clock is not { Running: false } clock) return;
+        _clockStamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        clock.Start();
+    }
+
+    /// <summary>One displayed frame: the touchpad reports its movement, a wheel glide advances, and
+    /// the clock stops once neither has anything left to do.</summary>
+    private void OnFrameTick()
+    {
+        _clock!.Acknowledge();
+        _touchpad?.Update();
+
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(_clockStamp, now).TotalMilliseconds;
+        _clockStamp = now;
+        var gliding = false;
+        ApplyScroll(() => gliding = _scroll.Step(elapsed));
+
+        if (!gliding && !_panning) _clock.Stop();
+    }
+
+    private Theme CurrentTheme => SystemTheme.Resolve(_settings.Theme, _settings.Accent);
 
     /// <summary>The window paints its own caption, so only the frame's dark-mode flag still matters -
     /// it drives the shadow and the border DWM draws around us.</summary>
     private void ApplyTheme()
     {
-        SystemTheme.ApplyFrame(Handle, SystemTheme.Resolve(_settings.Theme));
+        SystemTheme.ApplyFrame(Handle, CurrentTheme);
         Invalidate();
         ThemeChanged?.Invoke();
     }
 
-    /// <summary>The whole top strip drags, except where the caption buttons are.</summary>
+    /// <summary>The header drags, except where its controls are.</summary>
     protected override bool IsDragRegion(Point client) =>
-        client.X < ClientRect.Width - CaptionButtonsWidth;
+        client.X < ClientRect.Width - CaptionButtonsWidth && !_headerControls.Exists(rect => rect.Contains(client));
 
-    /// <summary>Raised when the theme moves, so open editors retheme with the shell.</summary>
+    protected override double DragBandHeight => S(56);
+
+    /// <summary>The header's controls this frame, so the drag band leaves them clickable.</summary>
+    private readonly List<Rect> _headerControls = [];
+
+    /// <summary>Raised when the theme or accent moves, so open editors retheme with the library.</summary>
     public event Action? ThemeChanged;
 
     /// <summary>The single write-back for settings: persist, retheme, and tell the app.</summary>
@@ -137,6 +220,9 @@ public sealed partial class MainWindow : CaptionWindow
         SettingsChanged?.Invoke();
     }
 
+    /// <summary>For a change made elsewhere - an editor saving a colour to the shared lists.</summary>
+    public void PersistSettings() => _storage.SaveSettings(_settings);
+
     private double _scale = 1;
 
     /// <summary>Design units to physical pixels. Every metric goes through here.</summary>
@@ -146,28 +232,24 @@ public sealed partial class MainWindow : CaptionWindow
     {
         _history.RemoveAll(existing => string.Equals(existing.FilePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
         _history.Insert(0, item);
-        _selected = item;
         _settingsOpen = false;
-        _scroll = 0;
+        _scroll.Reset();
         _storage.SaveHistory(_history);
         Invalidate();
     }
 
-    /// <summary>Forgets a capture's cached bitmaps, so the next frame re-decodes them. Used after an
-    /// editor saves over a capture: the file has changed, and the cached pixels are the old ones.</summary>
+    /// <summary>Forgets a capture's cached tile, so the next frame re-decodes it. Used after an editor
+    /// saves over a capture: the file has changed, and the cached pixels are the old ones.</summary>
     public void DropCache(string path)
     {
         _decodes.Invalidate(path);
-        _previewDecodes.Invalidate(path);
-        if (_thumbnails.Remove(path, out var thumbnail)) thumbnail?.Dispose();
-        if (_decoded.TryRemove(path, out var stale)) stale.Dispose();
-
-        if (_pendingPreview?.Path == path) DropPendingPreview();
-
-        if (_previewPath != path) return;
-        _preview?.Dispose();
-        _preview = null;
-        _previewPath = null;
+        if (_thumbnails.Remove(path, out var thumbnail)) thumbnail.Surface.Dispose();
+        if (_previews.Remove(path, out var preview)) preview.Dispose();
+        if (_decoded.TryRemove(path, out var stale))
+        {
+            stale.Pixels.Dispose();
+            stale.Preview.Dispose();
+        }
     }
 
     // ============================  RENDER  ============================
@@ -178,71 +260,92 @@ public sealed partial class MainWindow : CaptionWindow
     protected override void CreateRenderTarget() { }
 #pragma warning restore CS8774
 
+    /// <summary>The window's composition layers. See <see cref="CompositionLayers"/>.</summary>
+    private CompositionLayers? _layers;
+
+    private readonly BrandMark _brand = new();
+
+    /// <summary>A frame, drawn into the layers instead of the base class's target: the grid first,
+    /// then the chrome over it, then one commit so both appear together.</summary>
     protected override bool RenderCore()
     {
         if (!WindowInterop.IsWindowVisible(Handle)) return true;
-        if (RenderTarget is null) base.CreateRenderTarget();
-        return base.RenderCore();
-    }
 
-    /// <summary>Decides which worker decodes may still be used. See <see cref="DecodeCache"/>.</summary>
-    private readonly DecodeCache _decodes = new();
-    // The same path can have a thumbnail and a detail decode in flight simultaneously.
-    // Their completion/failure state must not release or poison one another's requests.
-    private readonly DecodeCache _previewDecodes = new();
-
-    private void ReleaseVisuals()
-    {
-        _decodes.InvalidateAll();
-        _previewDecodes.InvalidateAll();
-        DropPendingPreview();
-        foreach (var pixels in _decoded.Values) pixels.Dispose();
-        _decoded.Clear();
-        foreach (var thumbnail in _thumbnails.Values) thumbnail.Dispose();
-        _thumbnails.Clear();
-        _preview?.Dispose();
-        _preview = null;
-        _previewPath = null;
-        _resources?.Dispose();
-        _resources = null;
-        _ui = null;
-        RenderTarget?.Dispose();
-        RenderTarget = null;
-    }
-
-    protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)
-    {
-        using var target = renderTarget.AsRenderTarget();
-        target.Object.SetDpi(96, 96);
-
-        _resources ??= new D2DResources(target);
+        var layers = _layers ??= new CompositionLayers(Handle);
+        using var resources = layers.Resources.AsRenderTarget2();
+        _resources ??= new D2DResources(resources);
         _ui ??= new Ui(_resources);
-        _ui.Theme = SystemTheme.Resolve(_settings.Theme);
-
+        _ui.Theme = CurrentTheme;
         _scale = DpiScale;
         _ui.Scale = _scale;
 
         var client = ClientRect;
         var width = (double)client.Width;
         var height = (double)client.Height;
+        layers.Resize(client.Width, client.Height, _ui.Theme.SurfaceWindow);
 
-        renderTarget.Clear(D2DResources.ToD3D(_ui.Theme.SurfaceBase));
-        _ui.BeginFrame(target, _pointer, _pointerDown);
+        _ui.BeginFrame(resources, _hoverPaused ? new Point(-1, -1) : _pointer, _pointerDown,
+            new D2D_SIZE_F((float)width, (float)height));
+        _headerControls.Clear();
 
-        var sidebar = new Rect(0, 0, S(248), height);
-        var pane = new Rect(sidebar.Right, 0, width - sidebar.Width, height);
+        // A modal sheet takes the pointer: the library underneath draws, but must not react.
+        _ui.Inert = _settingsOpen || ConfirmOpen;
+        if (_history.Count > 0) DrawGrid(_ui, resources, layers, GridBounds(width, height));
+        else
+        {
+            layers.ClearScroll();
+            _bands.Clear();
+        }
 
-        DrawSidebar(_ui, target, sidebar);
+        using (var context = layers.BeginChrome())
+        using (var chrome = context.AsRenderTarget2())
+        {
+            _ui.Retarget(chrome);
+            DrawLibraryChrome(_ui, width, height);
+            _ui.Inert = false;
 
-        if (_settingsOpen) DrawSettings(_ui, pane);
-        else DrawDetail(_ui, target, pane);
+            DrawSettings(_ui, width, height);
+            DrawConfirm(_ui, width, height);
+            DrawToast(_ui, width, height);
 
-        // Last, so the buttons float over the app's own pixels rather than under them.
-        DrawCaptionButtons(_ui, width);
-
-        _ui.EndFrame();
+            // Last, so the buttons float over the app's own pixels rather than under them.
+            DrawCaptionButtons(_ui, width);
+            _ui.EndFrame();
+            layers.EndChrome();
+        }
+        layers.Commit();
 
         if (_ui.ClickedThisFrame) Invalidate();
+        Repaint(_ui.Animating ? FrameInterval
+            : DateTime.UtcNow < _toastUntil ? 120
+            : _ui.Blinking ? (uint)Ui.CaretBlink
+            : null);
+        return true;
+    }
+
+    /// <summary>Decides which worker decodes may still be used. See <see cref="DecodeCache"/>.</summary>
+    private readonly DecodeCache _decodes = new();
+
+    private void ReleaseVisuals()
+    {
+        _decodes.InvalidateAll();
+        foreach (var decoded in _decoded.Values)
+        {
+            decoded.Pixels.Dispose();
+            decoded.Preview.Dispose();
+        }
+        _decoded.Clear();
+        foreach (var thumbnail in _thumbnails.Values) thumbnail.Surface.Dispose();
+        _thumbnails.Clear();
+        foreach (var preview in _previews.Values) preview.Dispose();
+        _previews.Clear();
+        _resources?.Dispose();
+        _resources = null;
+        _ui = null;
+        _bands.Clear();
+        _brand.Dispose();
+        _layers?.Dispose();
+        _layers = null;
     }
 
     // ============================  INPUT  ============================
@@ -269,19 +372,20 @@ public sealed partial class MainWindow : CaptionWindow
             case WmLButtonDown:
                 _pointer = ClientPoint(lParam);
                 _pointerDown = true;
-
-                // Clicking away from a focused box commits it, the way moving focus off a real text
-                // box does. A click inside it is the box's own.
-                if (_editingNumber is not null && !_numberBounds.Contains(_pointer))
-                    CommitNumberField();
-
+                _pressedWithControl = ((ulong)wParam.Value & 0x0008) != 0; // MK_CONTROL
+                _hoverPaused = false;
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmMouseMove:
-                _pointer = ClientPoint(lParam);
+            {
+                // Windows repeats the last position when the content under a still pointer changes.
+                var moved = ClientPoint(lParam);
+                if (moved != _pointer) _hoverPaused = false;
+                _pointer = moved;
                 Invalidate();
                 return new LRESULT { Value = 0 };
+            }
 
             case WmLButtonUp:
                 _pointer = ClientPoint(lParam);
@@ -290,104 +394,33 @@ public sealed partial class MainWindow : CaptionWindow
                 return new LRESULT { Value = 0 };
 
             case WmMouseWheel:
-            {
-                // A notched mouse sends 120 at a time; a precision touchpad sends a stream of much
-                // smaller deltas. Acting on each one immediately turns a two-finger drag into a
-                // burst of sub-pixel scrolls, so the remainder is carried and only whole units spent.
-                var delta = (short)((wParam.Value.ToUInt64() >> 16) & 0xFFFF);
-                var step = delta / WheelDelta * S(50);
-
-                // Whichever pane the pointer is over gets the wheel.
-                double before, after;
-                if (_settingsOpen && _pointer.X > S(248))
-                {
-                    CloseDropdowns();
-                    before = _settingsScroll;
-                    var maximum = Math.Max(0, _settingsHeight - _settingsViewport);
-                    _settingsScroll = after = Math.Clamp(_settingsScroll - step, 0, maximum);
-                }
-                else
-                {
-                    before = _scroll;
-                    var maximum = Math.Max(0, _historyHeight - _historyViewport);
-                    _scroll = after = Math.Clamp(_scroll - step, 0, maximum);
-                }
-
-                // A touchpad keeps sending deltas after the clamp has pinned the view at an end;
-                // repainting on those is what made the pane shake against its own bottom.
-                if (after != before) Invalidate();
+                Wheel((short)((wParam.Value.ToUInt64() >> 16) & 0xFFFF) / WheelDelta * S(60));
                 return new LRESULT { Value = 0 };
-            }
+
+            case FrameClock.Message:
+                OnFrameTick();
+                return new LRESULT { Value = 0 };
+
+            case WmTimer when OnUpdateTimer((nuint)wParam.Value):
+                return new LRESULT { Value = 0 };
+
+            case WmPowerBroadcast when (ulong)wParam.Value == PbtApmResumeAutomatic:
+                CheckAfterWake();
+                break;
+
+            case TouchpadPan.DM_POINTERHITTEST:
+                _touchpad?.HitTest((nuint)wParam.Value);
+                return new LRESULT { Value = 0 };
 
             case WmKeyDown:
-            {
-                var key = (VIRTUAL_KEY)(ulong)wParam.Value;
-
-                if (_recordingHotkey is not null)
-                {
-                    RecordHotkey(key);
-                    return new LRESULT { Value = 0 };
-                }
-
-                // A focused number box owns the keyboard. Its digits arrive as WM_CHAR; only the
-                // editing keys are handled here.
-                if (_editingNumber is not null)
-                {
-                    switch (key)
-                    {
-                        case VIRTUAL_KEY.VK_BACK:
-                            if (_numberDraft.Length > 0) _numberDraft = _numberDraft[..^1];
-                            break;
-
-                        case VIRTUAL_KEY.VK_RETURN:
-                            CommitNumberField();
-                            break;
-
-                        case VIRTUAL_KEY.VK_ESCAPE:
-                            // Abandons the edit rather than committing it, and keeps the pane open.
-                            _numberCommit = null;
-                            _editingNumber = null;
-                            break;
-
-                        default:
-                            return new LRESULT { Value = 0 };
-                    }
-
-                    Invalidate();
-                    return new LRESULT { Value = 0 };
-                }
-
-                if (key == VIRTUAL_KEY.VK_ESCAPE)
-                {
-                    // Escape peels one layer: the open list, then settings, then the capture on
-                    // show, then the window.
-                    if (DropdownOpen) CloseDropdowns();
-                    else if (_settingsOpen) _settingsOpen = false;
-                    else if (_selected is not null) Deselect();
-                    else { Hide(); return new LRESULT { Value = 0 }; }
-
-                    Invalidate();
-                    return new LRESULT { Value = 0 };
-                }
+                if (OnKeyDown((VIRTUAL_KEY)(ulong)wParam.Value)) return new LRESULT { Value = 0 };
                 break;
-            }
 
             case WmChar:
-            {
-                if (_editingNumber is null) break;
-
-                // Digits only, and never more than the three a 0-120 value can need.
+                if (_ui is not { HasKeyboardFocus: true } ui) break;
                 var character = (char)(ulong)wParam.Value;
-                if (char.IsAsciiDigit(character) && _numberDraft.Length < 3)
-                {
-                    _numberDraft += character;
-                    Invalidate();
-                }
-                return new LRESULT { Value = 0 };
-            }
-
-            case WmTimer when (nuint)wParam.Value == CopyFeedbackTimerId:
-                StepCopyFeedback();
+                if (!char.IsControl(character)) ui.Char(character);
+                Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmClose:
@@ -400,7 +433,6 @@ public sealed partial class MainWindow : CaptionWindow
 
             case 0x0018 when wParam.Value == 0: // WM_SHOWWINDOW: every path to hidden releases pixels.
                 ReleaseVisuals();
-                StopCopyFeedback();
                 if (_recordingHotkey is not null)
                 {
                     _recordingHotkey = null;
@@ -411,14 +443,80 @@ public sealed partial class MainWindow : CaptionWindow
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
 
+    private bool OnKeyDown(VIRTUAL_KEY key)
+    {
+        if (_recordingHotkey is not null)
+        {
+            RecordHotkey(key);
+            return true;
+        }
+
+        // A focused field owns the keyboard; its characters arrive as WM_CHAR.
+        if (_ui is { HasKeyboardFocus: true } ui)
+        {
+            var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
+            if (control && key == VIRTUAL_KEY.VK_V && ClipboardText.Paste() is { } pasted)
+                foreach (var character in pasted.Trim()) ui.Char(character);
+            else ui.Key(key, (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0);
+            Invalidate();
+            return true;
+        }
+
+        if (key == VIRTUAL_KEY.VK_OEM_COMMA && (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0)
+        {
+            if (_settingsOpen) CloseSettings(); else OpenSettings();
+            return true;
+        }
+
+        if (key != VIRTUAL_KEY.VK_ESCAPE) return false;
+
+        // Escape peels one layer: the delete prompt, an open list, settings, multi-select, the window.
+        if (ConfirmOpen) _pendingDelete = null;
+        else if (DropdownOpen) CloseDropdowns();
+        else if (_settingsOpen) CloseSettings();
+        else if (_selection.Active) _selection.End();
+        else { Hide(); return true; }
+
+        Invalidate();
+        return true;
+    }
+
     private static Point ClientPoint(LPARAM lParam)
     {
         var value = lParam.Value.ToInt64();
         return new Point((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
     }
 
+    /// <summary>A short confirmation at the foot of the window: an action that changes nothing visible
+    /// still says it happened.</summary>
+    private void ShowToast(string message)
+    {
+        _toast = message;
+        _copiedPath = null;
+        _toastUntil = DateTime.UtcNow.AddSeconds(1.6);
+        Invalidate();
+    }
+
+    private string? _toast;
+    private DateTime _toastUntil;
+
+    /// <summary>The capture the last copy toast is about, whose copy button shows a tick meanwhile.</summary>
+    private string? _copiedPath;
+
+    private void DrawToast(Ui ui, double width, double height)
+    {
+        var visible = DateTime.UtcNow < _toastUntil;
+        var shown = ui.Animate(Ui.Id("library.toast"), visible ? 1 : 0, Metrics.Motion);
+        if (shown <= 0.01 || _toast is null) return;
+        ui.Toast(_toast, width / 2, height - S(24), shown);
+    }
+
     protected override void Dispose(bool disposing)
     {
+        _touchpad?.Dispose();
+        _touchpad = null;
+        _clock?.Dispose();
+        _clock = null;
         _dispatch?.Clear();
         ReleaseVisuals();
         base.Dispose(disposing);

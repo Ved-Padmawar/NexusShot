@@ -11,6 +11,10 @@ public static class PaintStrokeGeometry
     public static double Radius(double thickness) => Diameter(thickness) / 2;
 }
 
+/// <summary>How a rectangle or ellipse is painted inside its outline. Tinted is the outline's colour
+/// at a quarter strength, so the capture beneath stays readable.</summary>
+public enum ShapeFill { Outline, Tinted, Solid }
+
 public sealed class EraserMask
 {
     public double Radius { get; init; }
@@ -71,6 +75,16 @@ public sealed class Annotation
     /// <summary>Step number rendered by <see cref="EditorTool.Counter"/>.</summary>
     public int CounterValue { get; set; }
 
+    /// <summary>Which numbering run a counter belongs to. Resetting the counter starts a new run, and
+    /// the next number is counted only within it - so undoing past a reset still numbers correctly.</summary>
+    public int CounterRun { get; set; }
+
+    /// <summary>The interior of a rectangle or ellipse. Ignored by every other tool.</summary>
+    public ShapeFill Fill { get; set; }
+
+    /// <summary>True for the tools that have an interior to fill.</summary>
+    public bool IsFillable => Tool is EditorTool.Rectangle or EditorTool.Ellipse;
+
     /// <summary>The annotation's colour. Parsed here rather than at paint time: the renderer draws
     /// every frame, and the string only changes when the user picks a colour.</summary>
     public string ColorHex
@@ -115,9 +129,7 @@ public sealed class Annotation
         {
             if ((Tool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser || IsBrushEffect) && Points.Count > 0)
             {
-                // Only the freehand case is O(points), and the eraser asks for it per stroke per
-                // sample. Stamped with the version the GPU masks use, so an appended point, a
-                // thickness change and a translate all drop it.
+                // Cached per GeometryVersion: the eraser asks for freehand bounds on every sample.
                 if (_boundsStamp == GeometryVersion) return _bounds;
 
                 double minX = Points[0].X, maxX = minX, minY = Points[0].Y, maxY = minY;
@@ -144,8 +156,7 @@ public sealed class Annotation
 
             if (Tool == EditorTool.Counter)
             {
-                // The counter is a circle centred on Start; Start==End, so the two-point box
-                // would be empty and the badge unselectable except at its exact centre.
+                // Start == End for a counter, so the two-point box would be empty.
                 var diameter = CounterDiameter;
                 return new Rect(Start.X - diameter / 2, Start.Y - diameter / 2, diameter, diameter);
             }
@@ -180,8 +191,7 @@ public sealed class Annotation
         {
             if (Points.Count == 0) return false;
 
-            // Distance to the painted path, not to its samples: sparse samples leave gaps, and a
-            // per-sample box grabs at its corners where no paint was laid.
+            // Distance to the painted path, not to its samples: sparse samples leave gaps.
             var reach = slack + (IsBrushEffect ? BrushRadius : StrokeThickness / 2);
             if (Points.Count == 1) return point.DistanceTo(Points[0]) <= reach;
 
@@ -215,6 +225,8 @@ public sealed class Annotation
         }).ToList(),
         Text = Text,
         CounterValue = CounterValue,
+        CounterRun = CounterRun,
+        Fill = Fill,
         ColorHex = ColorHex,
         StrokeThickness = StrokeThickness,
         FontSize = FontSize,

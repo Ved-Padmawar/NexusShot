@@ -13,8 +13,8 @@
     <AssemblyName>NexusShot</AssemblyName>
 
     <!-- The fallback for a local build. A release overrides it with the tag, via build.ps1's
-         -p:Version. The sidebar badge reads it back off the assembly. -->
-    <Version>0.2.1</Version>
+         -p:Version. The settings header reads it back off the assembly. -->
+    <Version>0.3.0</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -50,6 +50,8 @@
     <Using Include="DirectN.Extensions" />
     <Using Include="DirectN.Extensions.Com" />
     <Using Include="DirectN.Extensions.Utilities" />
+    <!-- DirectN.Extensions.Utilities has an Icon of its own; the app means the stroke icon. -->
+    <Using Include="NexusShot.Render.Icon" Alias="Icon" />
   </ItemGroup>
 
 </Project>

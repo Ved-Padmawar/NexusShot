@@ -8,14 +8,13 @@ public sealed partial class EditorDocument
     /// image pixels — the view scales it so handles stay grabbable when zoomed out.</summary>
     public void BeginGesture(Point point, double handleTolerance = 8)
     {
-        EndThicknessAdjustment();
+        EndAdjustment();
         _dragOrigin = point;
         _gestureUndoPushed = false;
         _eraserChanged = false;
         _activeEraserMasks.Clear();
 
-        // An active crop session owns the pointer: handles resize, the interior moves, and
-        // clicks outside the frame do nothing until the session is committed or cancelled.
+        // A crop session owns the pointer until it is committed or cancelled.
         if (PendingCrop is { } pendingCrop)
         {
             if (GetCropHandleAt(point, handleTolerance) is { } cropHandle)
@@ -38,8 +37,7 @@ public sealed partial class EditorDocument
             return;
         }
 
-        // An existing object under the pointer is grabbed rather than drawn over: annotations are
-        // persistent objects, so create is what happens on empty canvas, not on top of one.
+        // An annotation under the pointer is grabbed, never drawn over.
         if (GrabExisting(point, handleTolerance)) return;
 
         Selected = null;
@@ -53,7 +51,9 @@ public sealed partial class EditorDocument
             End = point,
             ColorHex = ColorHex,
             StrokeThickness = ActiveThickness,
-            CounterValue = ActiveTool == EditorTool.Counter ? NextCounterValue() : 0,
+            CounterValue = ActiveTool == EditorTool.Counter ? NextCounter : 0,
+            CounterRun = _counterRun,
+            Fill = ShapeFill,
             FontSize = TextFontSize,
             IsBold = TextBold,
             IsItalic = TextItalic,
@@ -67,8 +67,7 @@ public sealed partial class EditorDocument
         }
         _gesture = GestureKind.Draw;
 
-        // The eraser bites on the press, not only on the drag: it mutates masks rather than being an
-        // annotation, so without this a tap that never moves erases nothing.
+        // Erase on the press too, or a tap that never moves erases nothing.
         if (ActiveTool == EditorTool.Eraser) _eraserChanged |= ApplyEraserSegment(_draft);
 
         Notify();
@@ -232,9 +231,7 @@ public sealed partial class EditorDocument
             // A text annotation gets a workable editing box even when merely clicked into place.
             if (_draft.Tool == EditorTool.Text) NormalizeTextBounds(_draft);
 
-            // Shapes stay selected so their handles are grabbable straight after placement.
-            // Brush strokes do not: a finished stroke should leave only its effect visible,
-            // never a bounding box, unless the user explicitly selects it later.
+            // Shapes stay selected for their handles; a finished stroke leaves no box.
             Selected = _draft.IsStrokeTool ? null : _draft;
         }
 
@@ -277,8 +274,7 @@ public sealed partial class EditorDocument
             return;
         }
 
-        // The origin bounds anchor the sides the handle does not move; crossing an anchored side
-        // simply normalises through Start/End ordering.
+        // Crossing an anchored side normalises through Start/End ordering.
         var resized = ResizedBounds(point);
         annotation.Start = new Point(resized.Left, resized.Top);
         annotation.End = new Point(resized.Right, resized.Bottom);
@@ -326,9 +322,7 @@ public sealed partial class EditorDocument
             changed = true;
         }
 
-        // A later re-entry starts a new mask rather than drawing an erasing bridge across an
-        // area where this stroke was not under the cursor. Collected first: the dictionary cannot be
-        // written while it is being walked. Usually empty, so the list is only built when one drops.
+        // Strokes the eraser has left end their mask; collected first, as the dictionary cannot change mid-walk.
         List<Annotation>? left = null;
         foreach (var stroke in _activeEraserMasks.Keys)
             if (!hitNow.Contains(stroke)) (left ??= []).Add(stroke);
@@ -366,8 +360,7 @@ public sealed partial class EditorDocument
         var previous = stroke.Points[^1];
         var dx = point.X - previous.X;
         var dy = point.Y - previous.Y;
-        // Hardware can report several samples inside the same subpixel. They add model size and
-        // render work without changing the visible path.
+        // Samples inside the same subpixel cost size and render work for nothing.
         if (dx * dx + dy * dy < 0.25) return;
 
         stroke.Points.Add(point);
@@ -399,11 +392,27 @@ public sealed partial class EditorDocument
         annotation.End = new Point(x + width, y + height);
     }
 
-    private int NextCounterValue()
+    /// <summary>The number the next counter will carry: one past the highest in the current run.
+    /// Derived from the annotations rather than kept as a running count, so undo and delete give a
+    /// number back instead of skipping it.</summary>
+    public int NextCounter
     {
-        var max = 0;
-        foreach (var a in _annotations)
-            if (a.Tool == EditorTool.Counter && a.CounterValue > max) max = a.CounterValue;
-        return max + 1;
+        get
+        {
+            var max = 0;
+            foreach (var a in _annotations)
+                if (a.Tool == EditorTool.Counter && a.CounterRun == _counterRun && a.CounterValue > max)
+                    max = a.CounterValue;
+            return max + 1;
+        }
+    }
+
+    private int _counterRun;
+
+    /// <summary>Starts numbering again from 1. Counters already placed keep their numbers.</summary>
+    public void ResetCounter()
+    {
+        _counterRun++;
+        Notify();
     }
 }

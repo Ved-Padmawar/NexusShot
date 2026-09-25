@@ -147,14 +147,15 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         target.Object.SetDpi(96, 96);
 
         _resources ??= new D2DResources(target);
-        _ui ??= new Ui(_resources) { Theme = Theme.Dark };
+        _ui ??= new Ui(_resources);
+        _ui.Theme = SystemTheme.Resolve(AppTheme.Dark, _stack.Settings.Accent);
         var ui = _ui;
         var theme = ui.Theme;
 
         var client = ClientRect;
         renderTarget.Clear(new D3DCOLORVALUE(0, 0, 0, 0));
         ui.BeginFrame(target, PointerInClient(), _pointerDown);
-        ui.FillRect(new Rect(0, 0, client.Width, client.Height), _acrylic ? AcrylicTint : theme.SurfaceBase);
+        ui.FillRect(new Rect(0, 0, client.Width, client.Height), _acrylic ? AcrylicTint : theme.SurfaceWindow);
 
         var closed = _stack.RecentlyClosed;
         for (var i = 0; i < _layout.Tiles.Count && i < closed.Count; i++)
@@ -162,7 +163,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
 
         if (closed.Count == 0)
             ui.Text("Nothing closed recently", Scaled(_layout.EmptyMessage),
-                theme.TextSecondary, (float)S(Metrics.FontCaption), align: TextAlign.Center);
+                theme.TextSecondary, S(Metrics.FontSm), align: TextAlign.Center);
 
         DrawHistoryButton(ui, Scaled(_layout.History));
 
@@ -182,7 +183,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         var bounds = Scaled(tile);
         var radius = (float)S(RestoreStripLayout.TileRadius);
 
-        ui.FillRounded(bounds, radius, ui.Theme.SurfaceOverlay);
+        ui.FillRounded(bounds, radius, ui.Theme.SurfaceRaised);
         if (Thumbnail(target, item.FilePath) is { } thumbnail)
             ui.DrawBitmapRounded(thumbnail.Bitmap, bounds, radius,
                 bounds.Cover(new Size(thumbnail.Width, thumbnail.Height)));
@@ -202,9 +203,9 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         var clicked = ui.Interact(id, pill);
         ui.FillRounded(pill, (float)(pill.Height / 2), ui.Theme.Accent);
         if (ui.IsActive(id)) ui.FillRounded(pill, (float)(pill.Height / 2), PillPressed);
-        ui.Icon(Icons.Undo, new Rect(pill.X + S(10), pill.Y, S(14), pill.Height), Rgba.White, S(12));
+        ui.Icon(Icons.Undo, new Rect(pill.X + S(10), pill.Y, S(14), pill.Height), ui.Theme.TextOnAccent, S(13));
         ui.Text("Restore", new Rect(pill.X + S(26), pill.Y, pill.Width - S(34), pill.Height),
-            Rgba.White, (float)S(Metrics.FontCaption), bold: true, align: TextAlign.Center);
+            ui.Theme.TextOnAccent, S(Metrics.FontXs), Weight.Bold, TextAlign.Center);
 
         // Posted: a restore reflows this window, which must not happen inside the frame drawing it.
         if (clicked) _dispatch.Post(() => Restore(item));
@@ -212,7 +213,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
 
     private void DrawHistoryButton(Ui ui, Rect bounds)
     {
-        if (ui.Button(Ui.Id("restore.history"), bounds, "History", fontSize: S(Metrics.FontCaption)))
+        if (ui.Button(Ui.Id("restore.history"), bounds, "History", ButtonStyle.Secondary, Icons.History, small: true))
             _dispatch.Post(() =>
             {
                 HistoryRequested?.Invoke();

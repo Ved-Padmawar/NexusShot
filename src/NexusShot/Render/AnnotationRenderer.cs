@@ -76,6 +76,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
                 {
                     var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, annotation.StrokeThickness);
                     if (bounds.IsEmpty) break;
+                    if (FillColor(annotation) is { } fill) target.FillRectangle(ToRect(bounds), resources.Brush(fill));
                     target.DrawRectangle(ToRect(bounds), resources.Brush(color), (float)annotation.StrokeThickness);
                     break;
                 }
@@ -84,6 +85,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
                 {
                     var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, annotation.StrokeThickness);
                     if (bounds.IsEmpty) break;
+                    if (FillColor(annotation) is { } fill) target.FillEllipse(ToEllipse(bounds), resources.Brush(fill));
                     target.DrawEllipse(ToEllipse(bounds), resources.Brush(color), (float)annotation.StrokeThickness);
                     break;
                 }
@@ -103,7 +105,8 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 
             case EditorTool.Highlight:
                 if (annotation.Bounds.IsEmpty) break;
-                target.FillRectangle(ToRect(annotation.Bounds), resources.Brush(color.WithAlpha(90)));
+                // A colour's own alpha lightens the highlighter further rather than being overridden.
+                target.FillRectangle(ToRect(annotation.Bounds), resources.Brush(color.WithAlpha((byte)(color.A * 90 / 255))));
                 break;
 
             case EditorTool.Spotlight:
@@ -119,8 +122,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
                 break;
 
             case EditorTool.Eraser:
-                // The eraser is never persisted as an annotation; its effect lives in the strokes
-                // it masked. A live eraser drag is drawn as its cursor, not as a stroke.
+                // The eraser lives in the strokes it masked; a live eraser drag is drawn as its cursor.
                 break;
 
             case EditorTool.Blur:
@@ -141,6 +143,15 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
                 break;
         }
     }
+
+    /// <summary>The interior colour of a filled shape, or null for an outline. Tinted is the outline's
+    /// colour at a quarter strength, so the capture beneath stays readable.</summary>
+    private static Rgba? FillColor(Annotation annotation) => annotation.Fill switch
+    {
+        ShapeFill.Tinted => annotation.Color.WithAlpha((byte)(annotation.Color.A / 4)),
+        ShapeFill.Solid => annotation.Color,
+        _ => null,
+    };
 
     private void DrawPaintStroke(IComObject<ID2D1RenderTarget> target, Annotation annotation, Rgba color)
     {
@@ -307,8 +318,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     {
         if (annotation.Points.Count == 0) return;
 
-        // No effect source (pixels not decoded yet, or the target cannot host effects): a frosted
-        // stroke placeholder until the pixels arrive.
+        // No effect source yet: a frosted placeholder until the pixels arrive.
         using var context = target.AsDeviceContext();
         if (effects is null || context is null)
         {
@@ -330,7 +340,8 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 
         var label = annotation.CounterValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var format = resources.TextFormat(
-            Metrics.FontFamily, (float)(diameter * 0.45), bold: true, italic: false,
+            resources.Family(Metrics.FontFamily, Metrics.FontFallback), (float)(diameter * 0.45),
+            DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_BOLD, italic: false,
             alignment: DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_CENTER,
             paragraphAlignment: DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
@@ -369,8 +380,9 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     public IComObject<IDWriteTextLayout> TextLayout(Annotation annotation, string text, Rect bounds)
     {
         var format = resources.TextFormat(
-            Metrics.FontFamily, (float)Math.Max(8, annotation.FontSize),
-            annotation.IsBold, annotation.IsItalic,
+            resources.Family(Metrics.FontFamily, Metrics.FontFallback), (float)Math.Max(8, annotation.FontSize),
+            annotation.IsBold ? DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_NORMAL,
+            annotation.IsItalic,
             alignment: DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING,
             paragraphAlignment: DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
             wordWrapping: DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_WRAP);
@@ -500,8 +512,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         {
             if (annotation.Tool != EditorTool.Text || annotation.Text.Length > 0) continue;
 
-            // The selection adorner already frames the selected box; a second frame on the same
-            // edges just doubles the stroke.
+            // The selection adorner already frames the selected box.
             if (ReferenceEquals(annotation, document.Selected)) continue;
 
             var thickness = 1.5 * adornerScale;
@@ -538,35 +549,23 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             DrawBoxGrips(target, adorner.GripBounds, adornerScale);
     }
 
+    /// <summary>The live crop session's frame, grips and dimmed surround. A committed crop needs no
+    /// adorner: the editor shows only the cropped area, as the export will.</summary>
     private void DrawCropAdorner(
         IComObject<ID2D1RenderTarget> target, EditorDocument document, double adornerScale)
     {
-        // A live session draws grips; a committed crop keeps a passive dimmed frame.
-        if (document.PendingCrop is { } pending)
-        {
-            foreach (var band in AdornerGeometry.DimAround(pending, document.ImageWidth, document.ImageHeight))
-                target.FillRectangle(ToRect(band), resources.Brush(Rgba.Black.WithAlpha(150)));
+        if (document.PendingCrop is not { } pending) return;
 
-            var adorner = AdornerGeometry.Crop(pending, adornerScale);
-            if (!adorner.Frame.IsEmpty)
-            {
-                target.DrawRectangle(ToRect(adorner.Frame), resources.Brush(Palette.Selection),
-                    (float)adorner.FrameThickness);
-            }
-            DrawBoxGrips(target, adorner.GripBounds, adornerScale);
-            return;
-        }
-
-        if (document.CropBounds is not { } crop) return;
-
-        foreach (var band in AdornerGeometry.DimAround(crop, document.ImageWidth, document.ImageHeight))
+        foreach (var band in AdornerGeometry.DimAround(pending, document.ImageWidth, document.ImageHeight))
             target.FillRectangle(ToRect(band), resources.Brush(Rgba.Black.WithAlpha(150)));
 
-        const float thickness = 2;
-        var frameBounds = AdornerGeometry.InsetForStroke(crop, thickness);
-        if (frameBounds.IsEmpty) return;
-        target.DrawRectangle(ToRect(frameBounds), resources.Brush(Palette.Selection),
-            thickness);
+        var adorner = AdornerGeometry.Crop(pending, adornerScale);
+        if (!adorner.Frame.IsEmpty)
+        {
+            target.DrawRectangle(ToRect(adorner.Frame), resources.Brush(Palette.Selection),
+                (float)adorner.FrameThickness);
+        }
+        DrawBoxGrips(target, adorner.GripBounds, adornerScale);
     }
 
     /// <summary>L-shaped corner grips and short edge bars, drawn inside the bounds: a white stroke

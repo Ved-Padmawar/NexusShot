@@ -20,6 +20,24 @@ public static class CardLayout
 
     public static Rect Bounds => new(0, 0, Width, Height);
 
+    /// <summary>
+    /// Where a card of <paramref name="card"/> size sits when <paramref name="offset"/> of the stack is
+    /// already below it (above it, for a top corner): the stack grows away from its corner, so the
+    /// newest card is always the one nearest it.
+    /// </summary>
+    public static Point Slot(Rect workArea, Size card, double margin, double offset, CardCorner corner)
+    {
+        var left = corner is CardCorner.BottomLeft or CardCorner.TopLeft;
+        var top = corner is CardCorner.TopLeft or CardCorner.TopRight;
+        return new Point(
+            left ? workArea.X + margin : workArea.Right - margin - card.Width,
+            top ? workArea.Y + margin + offset : workArea.Bottom - margin - card.Height - offset);
+    }
+
+    /// <summary>The way a dismissed card drifts: toward the screen edge it came from.</summary>
+    public static int DismissDirection(CardCorner corner) =>
+        corner is CardCorner.BottomLeft or CardCorner.TopLeft ? -1 : 1;
+
     /// <summary>The capture scaled to cover the card, cropped at whichever edges overhang.</summary>
     public static Rect Image(Size capture) => Bounds.Cover(capture);
 

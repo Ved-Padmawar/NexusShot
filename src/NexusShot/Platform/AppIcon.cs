@@ -57,9 +57,7 @@ public static partial class AppIcon
         if (window == IntPtr.Zero) return;
         if (Large != IntPtr.Zero) SendMessageW(window, WM_SETICON, ICON_BIG, Large);
 
-        // D2DRenderWindow may already have populated ICON_SMALL before OnCreated runs. Merely not
-        // assigning our own small icon therefore does not remove the caption logo; clear the slot
-        // explicitly while leaving ICON_BIG available to Alt+Tab and the taskbar.
+        // D2DRenderWindow may have set ICON_SMALL already; clear it so the caption shows no logo.
         SendMessageW(window, WM_SETICON, ICON_SMALL, IntPtr.Zero);
 
         var style = WindowInterop.GetWindowLongPtrW(window, GWL_EXSTYLE);
@@ -85,6 +83,23 @@ public static partial class AppIcon
         // LR_SHARED: the system owns the handle, so it outlives us and must not be destroyed.
         return LoadImageW(module, IconResourceId, IMAGE_ICON, size, size, LR_SHARED);
     }
+
+    /// <summary>The icon at exactly <paramref name="size"/> pixels, for drawing. Not shared - Windows
+    /// shares only standard sizes - so the caller passes it to <see cref="Destroy"/>.</summary>
+    public static IntPtr LoadOwned(int size)
+    {
+        var module = GetModuleHandleW(null);
+        return module == IntPtr.Zero ? IntPtr.Zero : LoadImageW(module, IconResourceId, IMAGE_ICON, size, size, 0);
+    }
+
+    public static void Destroy(IntPtr icon)
+    {
+        if (icon != IntPtr.Zero) DestroyIcon(icon);
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyIcon(IntPtr icon);
 
     [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
     private static partial IntPtr SendMessageW(IntPtr window, uint message, int wParam, IntPtr lParam);

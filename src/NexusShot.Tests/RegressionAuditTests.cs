@@ -205,10 +205,10 @@ public class RegressionAuditTests
         Draw(d, tool, new(100, 100), new(500, 300), thickness: original);
         d.SetStrokeThickness(25, isAdjusting: true);
         d.SetStrokeThickness(30, isAdjusting: true);
-        d.EndThicknessAdjustment();
+        d.EndAdjustment();
         d.SetStrokeThickness(35, isAdjusting: true);
         d.SetStrokeThickness(40, isAdjusting: true);
-        d.EndThicknessAdjustment();
+        d.EndAdjustment();
         d.Undo();
         Assert.Equal(30, Value());
         d.Undo();

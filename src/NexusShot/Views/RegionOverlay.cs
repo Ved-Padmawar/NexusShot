@@ -20,7 +20,8 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     {
         RenderTarget?.Dispose();
         RenderTarget = null;
-        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions);
+        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions,
+            software: true);
     }
     protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
     private const uint WS_POPUP = 0x80000000;
@@ -48,13 +49,17 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     /// <summary>The chosen region in desktop coordinates, or null if cancelled.</summary>
     public RectInt? Selection { get; private set; }
 
-    public RegionOverlay(RectInt desktop, DecodedImage snapshotPixels)
+    /// <summary>The app's theme, for the size badge's accent.</summary>
+    private readonly Theme _theme;
+
+    public RegionOverlay(RectInt desktop, DecodedImage snapshotPixels, Theme theme)
         : base("NexusShot region",
             (WINDOW_STYLE)WS_POPUP,
             (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
     {
         _desktop = desktop;
         _snapshotPixels = snapshotPixels;
+        _theme = theme;
     }
 
     /// <summary>
@@ -67,9 +72,10 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     /// </summary>
     private static bool _isPicking;
 
-    public static DecodedImage? Pick() => Pick(ScreenCapture.Capture);
+    public static DecodedImage? Pick(bool includeCursor, Theme theme) =>
+        Pick(bounds => ScreenCapture.Capture(bounds, includeCursor), theme);
 
-    internal static DecodedImage? Pick(Func<RectInt, DecodedImage> capture)
+    internal static DecodedImage? Pick(Func<RectInt, DecodedImage> capture, Theme? theme = null)
     {
         if (_isPicking) return null;
         _isPicking = true;
@@ -78,26 +84,9 @@ public sealed partial class RegionOverlay : D2DRenderWindow
             var desktop = ScreenCapture.VirtualDesktop;
             using var snapshot = capture(desktop);
             RectInt? selection;
-            using (var overlay = new RegionOverlay(desktop, snapshot))
+            using (var overlay = new RegionOverlay(desktop, snapshot, theme ?? Theme.Dark))
             {
-                WindowInterop.SetWindowPos(overlay.Handle, IntPtr.Zero,
-                    desktop.X, desktop.Y, desktop.Width, desktop.Height, 0);
-                overlay.Show();
-                overlay.SetForeground();
-
-                // Filtered at the API, not at dispatch: a non-matching message stays queued for the
-                // main pump rather than being dropped.
-                var result = 0;
-                while (overlay.IsWindow
-                    && (result = GetMessageW(out var message, overlay.Handle, 0, 0)) > 0)
-                {
-                    TranslateMessage(ref message);
-                    DispatchMessageW(ref message);
-                }
-
-                // WM_QUIT arrives regardless of the filter, so a tray Exit lands here: re-post it
-                // for the main loop. (-1 is an error and must not be treated as a quit.)
-                if (result == 0) PostQuitMessage(0);
+                ModalLoop.Run(overlay, desktop);
                 selection = overlay.Selection;
             }
 
@@ -121,7 +110,7 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         if (_resources is null)
         {
             _resources = new D2DResources(target);
-            _ui = new Ui(_resources) { Theme = Theme.Dark };
+            _ui = new Ui(_resources) { Theme = _theme };
             using var context = target.AsDeviceContext();
             if (context is not null) _snapshot = ImageSurface.Upload(_snapshotPixels, context);
         }
@@ -156,13 +145,12 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     }
 
     /// <summary>The live pixel dimensions, pinned just outside the selection so it never covers the
-    /// content being selected. This mirrors main's compact accent badge rather than introducing a
-    /// second black surface over the screen being captured.</summary>
+    /// content being selected.</summary>
     private void DrawSizeBadge(Ui ui, Rect selection)
     {
         var label = $"{(int)selection.Width} × {(int)selection.Height}";
         const float font = 12;
-        var width = Math.Ceiling(ui.MeasureText(label, font, bold: true, monospace: true)) + 16;
+        var width = Math.Ceiling(ui.MeasureText(label, font, Weight.Bold, Face.Mono)) + 16;
         const double height = 26;
 
         // Below the selection normally; above it when there is no room below.
@@ -171,9 +159,8 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
         var x = Math.Clamp(selection.X, 0, Math.Max(0, _desktop.Width - width));
         var box = new Rect(x, y, width, height);
-        ui.FillRect(box, Theme.Dark.Accent.WithAlpha(242));
-        ui.Text(label, box, Rgba.White, font, bold: true,
-            align: TextAlign.Center, monospace: true);
+        ui.FillRounded(box, Metrics.RadiusSm, ui.Theme.Accent);
+        ui.Text(label, box, ui.Theme.TextOnAccent, font, Weight.Bold, TextAlign.Center, face: Face.Mono);
     }
 
     private Rect CurrentSelection() => Rect.FromEdges(_origin.X, _origin.Y, _cursor.X, _cursor.Y);
@@ -271,30 +258,5 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         // Idempotent: OnDestroyed already ran if the window closed normally.
         ReleaseResources();
         base.Dispose(disposing);
-    }
-
-    [LibraryImport("user32.dll", EntryPoint = "GetMessageW", SetLastError = true)]
-    private static partial int GetMessageW(out MSG message, IntPtr window, uint min, uint max);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool TranslateMessage(ref MSG message);
-
-    [LibraryImport("user32.dll", EntryPoint = "DispatchMessageW")]
-    private static partial IntPtr DispatchMessageW(ref MSG message);
-
-    [LibraryImport("user32.dll")]
-    private static partial void PostQuitMessage(int code);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MSG
-    {
-        public IntPtr hwnd;
-        public uint message;
-        public IntPtr wParam;
-        public IntPtr lParam;
-        public uint time;
-        public int x;
-        public int y;
     }
 }

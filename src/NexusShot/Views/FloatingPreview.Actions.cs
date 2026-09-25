@@ -12,33 +12,22 @@ namespace NexusShot.Views;
 /// </summary>
 public sealed partial class FloatingPreview
 {
-    private static readonly Rgba ActionBackground = new(0x20, 0x20, 0x24, 0xE6);
-    private static readonly Rgba ActionBorder = new(0xFF, 0xFF, 0xFF, 0x26);
-
-    /// <summary>Hover and press wash white over the rest fill and leave the border alone, which is
-    /// what the stock button template these were gave them.</summary>
-    private static readonly Rgba ActionOverlayHover = new(0xFF, 0xFF, 0xFF, 0x0F);
-    private static readonly Rgba ActionOverlayPressed = new(0xFF, 0xFF, 0xFF, 0x0A);
-
-    private static readonly Rgba CloseBackground = new(0x32, 0x32, 0x36, 0xF2);
-    private static readonly Rgba CloseHover = new(0xC4, 0x2B, 0x1C, 0xFF);
-    private static readonly Rgba CloseBorder = new(0xFF, 0xFF, 0xFF, 0x59);
-
     /// <summary>The hover state: a scrim, and each button where <see cref="CardLayout"/> puts it.</summary>
     private void DrawActions(Ui ui, Rect card)
     {
-        ui.FillRect(card, ui.Theme.HoverScrim);
-        var glyph = S(9);
+        ui.FillRect(card, Theme.ImageScrim);
+        var glyph = S(11);
         var now = Environment.TickCount64;
 
         // Pin: the accent when engaged, so its state is legible without a label.
-        if (ActionButton(ui, Ui.Id("preview.pin"), ButtonRect(CardAction.Pin), Icons.Pin, glyph, _card.IsPinned))
+        if (ui.OverlayButton(Ui.Id("preview.pin"), ButtonRect(CardAction.Pin), Icons.Pin, glyph,
+            on: _card.IsPinned, round: true))
             _stack.TogglePin(_card);
 
-        if (ActionButton(ui, Ui.Id("preview.edit"), ButtonRect(CardAction.Edit), Icons.Edit, glyph, false))
+        if (ui.OverlayButton(Ui.Id("preview.edit"), ButtonRect(CardAction.Edit), Icons.Edit, glyph, round: true))
             Post(RaiseEditRequested);
 
-        if (ActionButton(ui, Ui.Id("preview.save"), ButtonRect(CardAction.SaveAs), Icons.Save, glyph, false))
+        if (ui.OverlayButton(Ui.Id("preview.save"), ButtonRect(CardAction.SaveAs), Icons.Save, glyph, round: true))
             Post(SaveAs);
 
         // Copy leaves the card up: you may still want to drag it, edit it, or copy it again.
@@ -57,30 +46,22 @@ public sealed partial class FloatingPreview
         var clicked = ui.Interact(id, bounds);
         var radius = (float)(bounds.Height / 2);
 
-        ui.FillRounded(bounds, radius, ui.IsHot(id) || ui.IsActive(id) ? ui.Theme.Accent : ActionBackground);
-        ui.StrokeRounded(bounds, radius, ActionBorder);
-        ui.Text(confirmation > 0.5 ? "Copied" : label, bounds, Rgba.White, (float)S(10),
-            align: TextAlign.Center);
+        var hot = ui.IsHot(id) || ui.IsActive(id);
+        ui.FillRounded(bounds, radius, ui.IsActive(id) ? ui.Theme.AccentPressed : hot ? ui.Theme.Accent : Ui.OverlayRest);
+        ui.StrokeRounded(bounds, radius, Ui.OverlayBorder);
+        ui.Text(confirmation > 0.5 ? "Copied" : label, bounds, hot ? ui.Theme.TextOnAccent : Rgba.White, S(10),
+            Weight.Semibold, TextAlign.Center);
         return clicked;
     }
 
     private Rect ButtonRect(CardAction action) => Scaled(CardLayout.Button(action));
 
-    /// <summary>Dismisses the card without acting on the capture.</summary>
+    /// <summary>Dismisses the card without acting on the capture. Acted on last: Dismiss tears the
+    /// window down, and the frame still has to finish.</summary>
     private void DrawClose(Ui ui, Rect bounds)
     {
-        var id = Ui.Id("preview.close");
-        var clicked = ui.Interact(id, bounds);
-        var hot = ui.IsHot(id) || ui.IsActive(id);
-
-        var center = bounds.Center;
-        var radius = (float)(bounds.Width / 2);
-        ui.FillCircle(center, radius, hot ? CloseHover : CloseBackground);
-        ui.StrokeCircle(center, radius, CloseBorder);
-        ui.Icon(Icons.Close, bounds, Rgba.White, S(7));
-
-        // Acted on last: Dismiss tears the window down, and the frame still has to finish.
-        if (clicked) Dismiss();
+        if (ui.OverlayButton(Ui.Id("preview.close"), bounds, Icons.Close, S(11), destructive: true, round: true))
+            Dismiss();
     }
 
     /// <summary>Posted rather than handled inline from the button click: dismissing here must not
@@ -90,27 +71,6 @@ public sealed partial class FloatingPreview
         if (_dismissing) return;
         EditRequested?.Invoke(_card.Item);
         Dismiss();
-    }
-
-    /// <summary>A circular overlay action button, washed a little lighter on hover and press.</summary>
-    private bool ActionButton(Ui ui, int id, Rect bounds, string glyph, double glyphSize, bool selected)
-    {
-        var clicked = ui.Interact(id, bounds);
-
-        var center = bounds.Center;
-        var radius = (float)(bounds.Width / 2);
-
-        ui.FillCircle(center, radius, selected ? ui.Theme.Accent : ActionBackground);
-
-        // Over whatever the button already is, so an engaged pin brightens from the accent rather
-        // than snapping back to grey.
-        if (ui.IsActive(id)) ui.FillCircle(center, radius, ActionOverlayPressed);
-        else if (ui.IsHot(id)) ui.FillCircle(center, radius, ActionOverlayHover);
-
-        ui.StrokeCircle(center, radius, ActionBorder);
-        ui.Icon(glyph, bounds, Rgba.White, glyphSize);
-
-        return clicked;
     }
 
     private bool _copying;
@@ -159,7 +119,7 @@ public sealed partial class FloatingPreview
             lines = await MediaWorker.Run(() =>
             {
                 using var pixels = ImageSurface.Decode(path);
-                return TextRecognition.CopyText(pixels);
+                return TextRecognition.CopyText(pixels, _stack.Settings.OcrLanguage);
             });
         }
         catch (Exception exception) { failure = exception; }
@@ -200,8 +160,8 @@ public sealed partial class FloatingPreview
     private void DrawPin(Ui ui)
     {
         var badge = ButtonRect(CardAction.Pin);
-        ui.FillRounded(badge, (float)S(4), ui.Theme.HoverScrim);
-        ui.Icon(Icons.Pin, badge, ui.Theme.Accent, S(9));
+        ui.FillRounded(badge, (float)S(4), Theme.ImageScrim);
+        ui.Icon(Icons.Pin, badge, ui.Theme.Accent, S(11));
     }
 
     /// <summary>Writes a copy wherever the user picks, then dismisses: the capture has landed

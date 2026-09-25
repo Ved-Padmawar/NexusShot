@@ -38,16 +38,17 @@ public sealed class ImageSurface : IDisposable
     }
 
     /// <summary>The CPU half of <see cref="LoadScaled"/>: decodes and scales, touching no device, so
-    /// it is safe to call from any thread. The caller owns the result.</summary>
-    public static DecodedImage DecodeScaled(string path, int maxWidth, int maxHeight)
+    /// it is safe to call from any thread. The caller owns the result. With <paramref name="cover"/>
+    /// the image fills the box instead of fitting inside it, for a view that crops to the box.</summary>
+    public static DecodedImage DecodeScaled(string path, int maxWidth, int maxHeight, bool cover = false)
     {
         using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
         using var frame = decoder.GetFrame(0);
         frame.Object.GetSize(out var sourceWidth, out var sourceHeight).ThrowOnError();
 
-        var scale = Math.Min(1, Math.Min(
-            maxWidth / (double)sourceWidth,
-            maxHeight / (double)sourceHeight));
+        var toWidth = maxWidth / (double)sourceWidth;
+        var toHeight = maxHeight / (double)sourceHeight;
+        var scale = Math.Min(1, cover ? Math.Max(toWidth, toHeight) : Math.Min(toWidth, toHeight));
 
         var width = Math.Max(1, (int)Math.Round(sourceWidth * scale));
         var height = Math.Max(1, (int)Math.Round(sourceHeight * scale));
@@ -91,6 +92,19 @@ public sealed class ImageSurface : IDisposable
             });
 
         return new ImageSurface { Bitmap = bitmap, Width = image.Width, Height = image.Height };
+    }
+
+    /// <summary>An icon's pixels, premultiplied and uploaded. The caller keeps the icon.</summary>
+    public static ImageSurface FromIcon(IntPtr icon, IComObject<ID2D1DeviceContext> context)
+    {
+        using var bitmap = WicImagingFactory.CreateBitmapFromHICON(new HICON { Value = icon });
+        using var converter = WicImagingFactory.CreateFormatConverter();
+        converter.Object.Initialize(bitmap.Object, Constants.GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherType.WICBitmapDitherTypeNone, null!, 0,
+            WICBitmapPaletteType.WICBitmapPaletteTypeCustom).ThrowOnError();
+        converter.Object.GetSize(out var width, out var height).ThrowOnError();
+        using var pixels = CopyPixels(converter.Object, (int)width, (int)height);
+        return Upload(pixels, context);
     }
 
     /// <summary>The image's dimensions, without decoding it. WIC reads the header only.</summary>

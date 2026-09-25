@@ -5,90 +5,95 @@ using NexusShot.Render;
 namespace NexusShot.Views;
 
 /// <summary>
-/// Thumbnails, the detail preview, and the history operations that act on a capture's file.
+/// Tile thumbnails, and the history operations that act on a capture's file.
 ///
 /// Everything that turns a path into pixels, and everything that owns those pixels afterwards. The
-/// decode caches gate what a worker is allowed to hand back; the render passes only read the result.
+/// decode cache gates what a worker is allowed to hand back; the render pass only reads the result.
 /// </summary>
 public sealed partial class MainWindow
 {
-    private void DrawThumbnail(
-        IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect slot)
-    {
-        var bitmap = GetThumbnail(target, item);
-        if (bitmap is null) return;
-
-        // Aspect-fill, clipped to the chip. A letterboxed thumbnail in a 52x34 cell is mostly empty
-        // background; filling it makes the row scannable, which is the whole job of a thumbnail.
-        var fit = slot.Cover(new Size(bitmap.Width, bitmap.Height));
-
-        target.Object.PushAxisAlignedClip(
-            AnnotationRenderer.ToRect(slot), D2D1_ANTIALIAS_MODE.D2D1_ANTIALIAS_MODE_ALIASED);
-        target.DrawBitmap(
-            bitmap.Bitmap, 1f,
-            D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-            AnnotationRenderer.ToRect(fit));
-        target.Object.PopAxisAlignedClip();
-    }
-
     /// <summary>
-    /// The bitmap for a row's thumbnail, or null while it is still being decoded.
+    /// The bitmap for a tile: its thumbnail, else its preview while the thumbnail decodes, else null
+    /// for a capture never decoded at all.
     ///
     /// The decode runs off the UI thread: inflating a PNG costs tens of milliseconds even when the
-    /// result is a 52x34 chip. The upload has to happen here, on the thread that owns the device, and
-    /// the row fills in on the next frame.
+    /// result is tile-sized. The upload has to happen here, on the thread that owns the device, and
+    /// the tile fills in on the next frame. A tile that has grown past its decode keeps drawing the
+    /// smaller one until the sharper one arrives, rather than going blank.
     /// </summary>
-    private ImageSurface? GetThumbnail(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item)
+    private ImageSurface? GetThumbnail(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, int width)
     {
-        if (_thumbnails.TryGetValue(item.FilePath, out var cached)) return cached;
-
-        // Decoded and waiting: upload it now that we are on the thread that owns the device.
-        if (_decoded.TryRemove(item.FilePath, out var pixels))
+        var path = item.FilePath;
+        if (_decoded.TryRemove(path, out var ready))
         {
             using var uploadContext = target.AsDeviceContext();
-            if (uploadContext is null) { pixels.Dispose(); return null; }
-
-            // The pixels exist only to reach the GPU; the surface is what the cache keeps.
-            using (pixels)
+            using (ready.Pixels)
+            using (ready.Preview)
             {
-                var surface = ImageSurface.Upload(pixels, uploadContext);
-
-                // The evicted surface owns a GPU bitmap: dropping the reference would leak it.
-                if (_thumbnails.Add(item.FilePath, surface, out var evicted)) evicted?.Dispose();
-                return surface;
+                if (uploadContext is not null)
+                {
+                    // The evicted surface owns a GPU bitmap: dropping the reference would leak it.
+                    if (_thumbnails.Add(path, (ImageSurface.Upload(ready.Pixels, uploadContext), ready.Width), out var evicted))
+                        evicted.Surface.Dispose();
+                    if (_previews.Remove(path, out var old)) old.Dispose();
+                    _previews[path] = ImageSurface.Upload(ready.Preview, uploadContext);
+                }
             }
         }
 
-        StartDecode(item.FilePath);
-        return null;
+        if (_thumbnails.TryGetValue(path, out var cached))
+        {
+            if (cached.Width < width) StartDecode(path, width);
+            return cached.Surface;
+        }
+
+        StartDecode(path, width);
+        return _previews.GetValueOrDefault(path);
     }
 
-    /// <summary>Decoded thumbnail pixels waiting to be uploaded, keyed by file.</summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DecodedImage> _decoded = new();
+    /// <summary>
+    /// A 48-pixel copy of every decoded thumbnail, never evicted (about 6 KB each), so a tile the cache
+    /// dropped shows blurred rather than empty while it decodes again.
+    /// </summary>
+    private readonly Dictionary<string, ImageSurface> _previews = new(StringComparer.OrdinalIgnoreCase);
+
+    private const int PreviewWidth = 48;
+
+    /// <summary>Decoded thumbnail pixels waiting to be uploaded, keyed by file, with the width they
+    /// were decoded for and their preview.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DecodedImage Pixels, int Width, DecodedImage Preview)> _decoded = new();
 
     /// <summary>Drops pixels for files no longer in the history. An entry is only consumed when its
-    /// row is drawn, so one deleted first would be held forever.</summary>
+    /// tile is drawn, so one deleted first would be held forever.</summary>
     public void SweepDecoded()
     {
         if (_decoded.IsEmpty) return;
 
         var live = _history.Select(item => item.FilePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var path in _decoded.Keys)
-            if (!live.Contains(path) && _decoded.TryRemove(path, out var pixels)) pixels.Dispose();
+            if (!live.Contains(path) && _decoded.TryRemove(path, out var stale))
+            {
+                stale.Pixels.Dispose();
+                stale.Preview.Dispose();
+            }
     }
 
-    private void StartDecode(string path)
+    /// <summary>Decodes to fill a tile <paramref name="width"/> wide at 16:10, the shape the grid crops
+    /// to, so no pixel is decoded that a tile will not show.</summary>
+    private void StartDecode(string path, int width)
     {
         if (!_decodes.TryStart(path)) return;
         var generation = _decodes.Generation;
 
         Task.Run(() =>
         {
-            DecodedImage? pixels = null;
+            DecodedImage? pixels = null, preview = null;
             try
             {
-                // 2x the chip, so it stays crisp on a scaled display.
-                pixels = ImageSurface.DecodeScaled(path, maxWidth: 160, maxHeight: 160);
+                pixels = ImageSurface.DecodeScaled(path, width, width * 10 / 16, cover: true);
+                var shrunk = Downsample.Box(pixels.Span, pixels.Width, pixels.Height,
+                    Downsample.FactorFor(pixels.Width, PreviewWidth), out var previewWidth, out var previewHeight);
+                preview = DecodedImage.CopyFrom(shrunk, previewWidth, previewHeight);
             }
             catch (Exception exception) when (exception is IOException or InvalidOperationException
                 or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException)
@@ -99,119 +104,28 @@ public sealed partial class MainWindow
 
             Post(() =>
             {
-                // Rejected pixels are freed here: this callback is their only owner, so returning
-                // without disposing would strand a decode's worth of memory per stale repaint.
-                if (_decodes.Finish(path, generation, pixels is not null) != DecodeOutcome.Accept)
+                // Rejected pixels are freed here: this callback is their only owner.
+                if (_decodes.Finish(path, generation, preview is not null) != DecodeOutcome.Accept)
                 {
                     pixels?.Dispose();
+                    preview?.Dispose();
                 }
-                else if (_decoded.TryGetValue(path, out var superseded) && !ReferenceEquals(superseded, pixels))
-                {
-                    _decoded[path] = pixels!;
-                    superseded.Dispose();
-                }
-                else _decoded[path] = pixels!;
-
-                Invalidate();
-            });
-        });
-    }
-
-    /// <summary>
-    /// One detail decode at a time. Completed pixels are admitted on the UI thread only if their
-    /// cache generation and selection still match.
-    /// </summary>
-    private bool _previewLoading;
-
-    /// <summary>Pixels decoded off-thread, waiting for a render to upload them.</summary>
-    private (string Path, DecodedImage Image, (int Width, int Height) Size)? _pendingPreview;
-
-    /// <summary>
-    /// The display-sized bitmap for the detail preview, decoded on a worker.
-    ///
-    /// The upload needs a live device, so it happens here - inside a render call - rather than from
-    /// the worker's completion: a render target handed to one frame can be resized or disposed
-    /// before an asynchronous callback would run.
-    /// </summary>
-    private ImageSurface? GetPreviewBitmap(IComObject<ID2D1RenderTarget> target, ScreenshotHistoryItem item, Rect well)
-    {
-        var path = item.FilePath;
-        // Round up to avoid restarting a decode for every pixel of a window resize. These are
-        // physical pixels, so this remains sharp on a high-DPI monitor without storing a 4K image
-        // behind an 800-pixel preview. Editors and exports still use the original file.
-        var size = (Width: Math.Max(256, (int)Math.Ceiling(well.Width / 256) * 256),
-            Height: Math.Max(256, (int)Math.Ceiling(well.Height / 256) * 256));
-
-        if (_pendingPreview is { } pending && pending.Path == path)
-        {
-            _pendingPreview = null;
-            using (pending.Image)
-            {
-                using var context = target.AsDeviceContext();
-                if (context is not null)
-                {
-                    _preview?.Dispose();
-                    _preview = ImageSurface.Upload(pending.Image, context);
-                    _previewPath = path;
-                    _previewSize = pending.Size;
-                }
-            }
-        }
-
-        if (_previewPath == path && _preview is not null
-            && _previewSize.Width >= size.Width && _previewSize.Height >= size.Height) return _preview;
-        if (_previewLoading || !File.Exists(path) || !_previewDecodes.TryStart(path)) return null;
-
-        _previewLoading = true;
-        var generation = _previewDecodes.Generation;
-        _ = Task.Run(() =>
-        {
-            DecodedImage? decoded = null;
-            try
-            {
-                decoded = ImageSurface.DecodeScaled(path, size.Width, size.Height);
-            }
-            catch (Exception exception) when (exception is IOException or InvalidOperationException
-                or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException)
-            {
-                // A capture that will not decode shows the empty preview rather than failing the frame.
-                Log.Error("preview.decode", exception, path);
-            }
-
-            Post(() =>
-            {
-                _previewLoading = false;
-
-                // The selection is part of this decode's world: pixels for a capture the user has
-                // already moved off are as stale as pixels from an older generation.
-                var outcome = _previewDecodes.Finish(path, generation, decoded is not null,
-                    stillWanted: _selected?.FilePath == path);
-
-                if (outcome != DecodeOutcome.Accept) decoded?.Dispose();
                 else
                 {
-                    // A pending decode that was never drawn still owns its pixels.
-                    DropPendingPreview();
-                    _pendingPreview = (path, decoded!, size);
+                    if (_decoded.TryRemove(path, out var superseded))
+                    {
+                        superseded.Pixels.Dispose();
+                        superseded.Preview.Dispose();
+                    }
+                    _decoded[path] = (pixels!, width, preview!);
                 }
+
                 Invalidate();
             });
         });
-        return null;
     }
 
-    /// <summary>Frees a decode that arrived but was never uploaded. The pending slot owns its
-    /// pixels, so every path that clears it goes through here.</summary>
-    private void DropPendingPreview()
-    {
-        _pendingPreview?.Image.Dispose();
-        _pendingPreview = null;
-    }
-
-    /// <summary>Closes the capture back to the empty state, releasing its full-resolution bitmap.</summary>
-    private readonly ConfirmFeedback _copied = new();
-
-    /// <summary>Copies the capture, and ticks the button only if the copy actually completed.</summary>
+    /// <summary>Copies the capture, and says so only if the copy actually completed.</summary>
     private bool _copying;
 
     private void CopyToClipboard(ScreenshotHistoryItem item) => _ = CopyToClipboardAsync(item);
@@ -228,12 +142,11 @@ public sealed partial class MainWindow
             _copying = false;
             if (failure is null)
             {
-                _copied.Start(Environment.TickCount64);
-                WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, 16, IntPtr.Zero);
+                ShowToast("Copied to clipboard");
+                _copiedPath = item.FilePath;
             }
             else
             {
-                StopCopyFeedback();
                 Log.Error("main.copy", failure, item.FilePath);
                 UserFeedback.Error(Handle, "Could not copy this image. Check that the file exists and retry.");
             }
@@ -241,41 +154,32 @@ public sealed partial class MainWindow
         });
     }
 
-    private void StepCopyFeedback()
-    {
-        if (_copied.NextFrameDelay(Environment.TickCount64) is { } delay)
-            WindowInterop.SetTimer(Handle, CopyFeedbackTimerId, delay, IntPtr.Zero);
-        else
-            WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
-
-        Invalidate();
-    }
-
-    private void StopCopyFeedback()
-    {
-        _copied.Stop();
-        WindowInterop.KillTimer(Handle, CopyFeedbackTimerId);
-    }
-
-    private void Deselect()
-    {
-        _selected = null;
-        DropPendingPreview();
-
-        _preview?.Dispose();
-        _preview = null;
-        _previewPath = null;
-
-        Invalidate();
-    }
-
     public void ForgetMissingCapture(string path)
     {
-        if (string.Equals(_selected?.FilePath, path, StringComparison.OrdinalIgnoreCase)) Deselect();
+        _selection.Forget(path);
         DropCache(path);
     }
 
-    private void Delete(ScreenshotHistoryItem item)
+    /// <summary>Deletes captures the prompt confirmed, saves the history once, and reports failures
+    /// together rather than one dialog per file.</summary>
+    private void DeleteCaptures(IReadOnlyList<ScreenshotHistoryItem> items)
+    {
+        var failed = items.Count(item => !DeleteFile(item));
+        _selection.End();
+        _storage.SaveHistory(_history);
+
+        var deleted = items.Count - failed;
+        if (deleted > 0) ShowToast(deleted == 1 ? "Deleted 1 capture" : $"Deleted {deleted} captures");
+        if (failed > 0)
+            UserFeedback.Error(Handle, failed == 1
+                ? "Could not delete 1 image. It may be in use or outside the current screenshot folder."
+                : $"Could not delete {failed} images. They may be in use or outside the current screenshot folder.");
+        Invalidate();
+    }
+
+    /// <summary>Removes the file and its row. False, with the failure logged, when the file could not
+    /// go; the history is left for the caller to save once.</summary>
+    private bool DeleteFile(ScreenshotHistoryItem item)
     {
         try
         {
@@ -288,14 +192,12 @@ public sealed partial class MainWindow
             or ArgumentException or InvalidOperationException)
         {
             Log.Error("history.delete", exception, item.FilePath);
-            UserFeedback.Error(Handle, "Could not delete this image. It may be in use or outside the current screenshot folder.");
-            return;
+            return false;
         }
         _history.Remove(item);
-        if (ReferenceEquals(_selected, item)) Deselect();
+        _selection.Forget(item.FilePath);
         DropCache(item.FilePath);
-        _storage.SaveHistory(_history);
-        Invalidate();
+        return true;
     }
 
     /// <summary>Whether the path sits inside root. The trailing separator matters: without it
@@ -325,34 +227,35 @@ public sealed partial class MainWindow
         }
     }
 
-    private static void Reveal(string path)
+    /// <summary>Explorer, with the file selected.</summary>
+    private static void Reveal(string path) => Explore($"/select,\"{path}\"", path);
+
+    /// <summary>Explorer, in the save folder - created first, so a fresh install opens somewhere.</summary>
+    private static void OpenFolder(string folder)
+    {
+        try { Directory.CreateDirectory(folder); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log.Error("history.folder", exception, folder);
+        }
+        Explore($"\"{folder}\"", folder);
+    }
+
+    private static void Explore(string arguments, string subject)
     {
         try
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "explorer.exe",
-                Arguments = $"/select,\"{path}\"",
+                Arguments = arguments,
                 UseShellExecute = true,
             });
         }
         catch (Exception exception) when (exception is IOException
             or System.ComponentModel.Win32Exception)
         {
-            Log.Error("history.reveal", exception, path);
+            Log.Error("history.reveal", exception, subject);
         }
-    }
-
-    private static string Truncate(string text, int limit) =>
-        text.Length <= limit ? text : text[..(limit - 1)] + "…";
-
-    private static string Ago(DateTimeOffset when)
-    {
-        var elapsed = DateTimeOffset.Now - when;
-        if (elapsed.TotalMinutes < 1) return "just now";
-        if (elapsed.TotalHours < 1) return $"{(int)elapsed.TotalMinutes}m ago";
-        if (elapsed.TotalDays < 1) return $"{(int)elapsed.TotalHours}h ago";
-        if (elapsed.TotalDays < 7) return $"{(int)elapsed.TotalDays}d ago";
-        return when.LocalDateTime.ToString("d MMM");
     }
 }

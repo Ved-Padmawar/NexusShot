@@ -4,381 +4,520 @@ using NexusShot.Render;
 
 namespace NexusShot.Views;
 
-/// <summary>The shell's two panes as drawn each frame: the sidebar (brand, capture actions,
-/// history, footer) and the detail pane (preview, action bar, empty state).</summary>
+/// <summary>The library as drawn each frame: the header with the capture actions, the tools row, and
+/// the grid of captures grouped by day - or the empty state before there are any.</summary>
 public sealed partial class MainWindow
 {
-    // ============================  SIDEBAR  ============================
+    /// <summary>The grid's window in the client area: everything below the tools row.</summary>
+    private Rect GridBounds(double width, double height) => new(0, S(56) + S(44), width, height - S(56) - S(44));
 
-    private void DrawSidebar(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds)
+    /// <summary>The chrome layer's library part: the header, the tools row, and what floats over the
+    /// grid - its scrollbar, or the message standing in for it.</summary>
+    private void DrawLibraryChrome(Ui ui, double width, double height)
+    {
+        DrawHeader(ui, width);
+        DrawToolsRow(ui, width);
+
+        var grid = GridBounds(width, height);
+        if (_history.Count == 0) DrawEmptyState(ui, grid);
+        else if (_gridEmpty)
+            ui.Text("No captures match", grid, ui.Theme.TextTertiary, S(Metrics.FontMd), align: TextAlign.Center);
+        else ui.Scrollbar(grid, _gridHeight, _scroll.Position);
+    }
+
+    // ============================  HEADER  ============================
+
+    /// <summary>The brand, and the capture actions in one segmented group. The header is the drag
+    /// band; the buttons are cut out of it.</summary>
+    private void DrawHeader(Ui ui, double width)
     {
         var theme = ui.Theme;
-        ui.FillRect(bounds, theme.SurfaceSunken);
+        var band = new Rect(0, 0, width, S(56));
 
-        // The brand sits at the top of the rail: the window controls are over on the right, so
-        // nothing here has to clear them.
-        var y = bounds.Y + S(16);
+        var tile = new Rect(S(16), band.Center.Y - S(12), Math.Round(S(24)), Math.Round(S(24)));
+        _brand.Draw(ui, tile);
 
-        DrawBrandMark(ui, new Rect(bounds.X + S(18), y, S(22), S(22)));
-        ui.Text("NexusShot", new Rect(bounds.X + S(50), y, S(110), S(22)),
-            theme.TextPrimary, (float)S(Metrics.FontSubtitle), bold: true);
+        var brandFont = S(14);
+        var brand = ui.MeasureText("NexusShot", brandFont, Weight.Bold, Face.Display);
+        ui.Text("NexusShot", new Rect(tile.Right + S(10), band.Y, brand + 1, band.Height), theme.TextPrimary,
+            brandFont, Weight.Bold, face: Face.Display);
+        ui.Text("Library", new Rect(tile.Right + S(10) + brand + S(5), band.Y, S(60), band.Height),
+            theme.TextTertiary, brandFont, Weight.Medium, face: Face.Display);
 
-        // The pill hangs off the rail's trailing edge, mirroring the mark's inset on the left, and is
-        // sized to its text so a two-digit version does not overflow it.
-        var pillFont = S(10);
-        var pillWidth = Math.Max(S(40), ui.MeasureText(AppVersion, pillFont) + S(16));
-        var pill = new Rect(bounds.Right - S(18) - pillWidth, y + S(2), pillWidth, S(18));
+        (string Label, Icon Icon, Action Run)[] actions =
+        [
+            ("Region", Icons.CaptureRegion, () => CaptureRequested?.Invoke(CaptureMode.Region)),
+            ("Window", Icons.CaptureWindow, () => CaptureRequested?.Invoke(CaptureMode.ActiveWindow)),
+            ("Screen", Icons.CaptureScreen, () => CaptureRequested?.Invoke(CaptureMode.FullScreen)),
+            ("Text", Icons.Ocr, () => CaptureTextRequested?.Invoke()),
+            ($"{_settings.TimedCaptureSeconds}s", Icons.Timer, () => TimedCaptureRequested?.Invoke()),
+        ];
+        HotkeyId?[] shortcuts = [HotkeyId.CaptureRegion, HotkeyId.CaptureActiveWindow, HotkeyId.CaptureFullScreen,
+            HotkeyId.CaptureText, HotkeyId.TimedCapture];
 
-        ui.FillRounded(pill, (float)S(9), theme.SurfaceOverlay);
-        ui.Text(AppVersion, pill, theme.TextTertiary, (float)pillFont, align: TextAlign.Center);
+        var widths = actions.Select(action => ui.ButtonWidth(action.Label, action.Icon, small: true)).ToArray();
+        var groupWidth = widths.Sum() + S(2) * (actions.Length - 1) + S(6);
+        var free = new Rect(tile.Right + S(10) + brand + S(70), 0, width - CaptionButtonsWidth - S(12), band.Height);
+        var group = new Rect(Math.Max(free.X, (width - groupWidth) / 2), band.Center.Y - S(18), groupWidth, S(36));
+        _headerControls.Add(group);
 
-        y += S(38);
+        ui.FillRounded(group, (float)S(Metrics.RadiusMd), theme.SurfacePane);
+        ui.StrokeRounded(group, (float)S(Metrics.RadiusMd), theme.StrokeSubtle);
 
-        y = DrawCaptureAction(ui, bounds, y, Ui.Id("capture.region"), Icons.CaptureRegion, "Region",
-            Hint(_settings.CaptureRegionHotkey), CaptureMode.Region);
-        y = DrawCaptureAction(ui, bounds, y, Ui.Id("capture.fullscreen"), Icons.CaptureScreen, "Full screen",
-            Hint(_settings.CaptureFullScreenHotkey), CaptureMode.FullScreen);
-        y = DrawCaptureAction(ui, bounds, y, Ui.Id("capture.window"), Icons.CaptureWindow, "Active window",
-            Hint(_settings.CaptureActiveWindowHotkey), CaptureMode.ActiveWindow);
-
-        y += S(14);
-
-        ui.FillRect(new Rect(bounds.X, y, bounds.Width, 1), theme.StrokeSubtle);
-        ui.Text("RECENT", new Rect(bounds.X + S(20), y + S(10), bounds.Width, S(18)),
-            theme.TextTertiary, (float)S(Metrics.FontCaption), bold: true);
-
-        y += S(34);
-
-        var footer = S(48);
-        var list = new Rect(bounds.X, y, bounds.Width, bounds.Bottom - y - footer);
-        DrawHistory(ui, target, list);
-
-        DrawSidebarFooter(ui, new Rect(bounds.X, bounds.Bottom - footer, bounds.Width, footer));
-    }
-
-    /// <summary>The version stamped onto the assembly at build time (<c>-p:Version</c>). Read rather
-    /// than hardcoded, so a tagged release cannot ship a badge that disagrees with it.</summary>
-    private static readonly string AppVersion = FormatVersion();
-
-    private static string FormatVersion()
-    {
-        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-        return version is null ? string.Empty : $"{version.Major}.{version.Minor}.{version.Build}";
-    }
-
-    /// <summary>The mark's points in client pixels, and the bounds they were laid out for.</summary>
-    private sealed record BrandMarkPoints(
-        Rect Bounds, float Radius, float Thickness,
-        Point[] Diagonal, Point[] UpperMark, Point[] LowerMark);
-
-    private BrandMarkPoints? _brandMark;
-
-    /// <summary>The app mark, drawn rather than loaded: a slate tile split by a 135° diagonal, and
-    /// two crop marks, on the 960-unit grid of the icon source.
-    ///
-    /// The point arrays are laid out once per size: the mark is redrawn every frame, and only a
-    /// resize or a DPI change moves any of it.</summary>
-    private void DrawBrandMark(Ui ui, Rect bounds)
-    {
-        if (_brandMark is not { } mark || mark.Bounds != bounds)
+        var x = group.X + S(3);
+        for (var i = 0; i < actions.Length; i++)
         {
-            const double unit = 960;
-            var k = bounds.Width / unit;
+            var bounds = new Rect(x, group.Y + S(3), widths[i], S(30));
+            var action = actions[i];
+            var tip = shortcuts[i] is { } id && _settings.Hotkey(id) is { Key: not 0 } binding
+                ? Describe(binding).Replace(" + ", " ") : null;
 
-            double X(double u) => bounds.X + u * k;
-            double Y(double u) => bounds.Y + u * k;
+            // Posted: this runs inside Render, and a capture runs the picker's own message loop.
+            if (ui.Button(Ui.Id(Ui.Id("library.capture"), i), bounds, action.Label,
+                i == 0 ? ButtonStyle.Primary : ButtonStyle.Ghost, action.Icon, small: true,
+                tooltip: tip is null ? null : $"{Title(i)}  ·  {tip}"))
+                Post(action.Run);
+            x += widths[i] + S(2);
+        }
+    }
 
-            mark = new BrandMarkPoints(
-                bounds,
-                Radius: (float)(220 * k),
-                // Crop marks: corners on the diagonal, so each arm crosses both halves.
-                Thickness: (float)(84 * k),
-                Diagonal: [new Point(X(0), Y(0)), new Point(X(unit), Y(0)), new Point(X(0), Y(unit))],
-                UpperMark: [new Point(X(268), Y(488)), new Point(X(268), Y(268)), new Point(X(488), Y(268))],
-                LowerMark: [new Point(X(472), Y(692)), new Point(X(692), Y(692)), new Point(X(692), Y(472))]);
+    private static string Title(int action) => action switch
+    {
+        0 => "Capture region",
+        1 => "Capture active window",
+        2 => "Capture full screen",
+        3 => "Capture text",
+        _ => "Timed capture",
+    };
 
-            _brandMark = mark;
+    /// <summary>The count, the search box, and the folder and settings buttons.</summary>
+    private void DrawToolsRow(Ui ui, double width)
+    {
+        var theme = ui.Theme;
+        var row = new Rect(0, S(56), width, S(44));
+        ui.FillRect(new Rect(0, row.Bottom - 1, width, 1), theme.StrokeSubtle);
+
+        DrawSelectionBar(ui, row);
+
+        var right = width - S(16);
+        if (ui.IconButton(Ui.Id("library.settings"), new Rect(right - S(32), row.Center.Y - S(16), S(32), S(32)),
+            Icons.Settings, "Settings", "Ctrl ,"))
+            OpenSettings();
+        right -= S(32) + S(8);
+
+        if (ui.IconButton(Ui.Id("library.folder"), new Rect(right - S(32), row.Center.Y - S(16), S(32), S(32)),
+            Icons.Folder, "Open captures folder"))
+            Post(() => OpenFolder(_settings.ScreenshotFolder));
+        right -= S(32) + S(8);
+
+        var search = new Rect(right - S(220), row.Center.Y - S(15), S(220), S(30));
+        var result = ui.Field(Ui.Id("library.search"), search, _query, character => !char.IsControl(character), 80,
+            leading: Icons.Search, placeholder: "Search", face: Face.Text);
+        if (result.Changed && result.Text != _query)
+        {
+            _query = result.Text;
+            _scroll.Reset();
+        }
+    }
+
+    /// <summary>The row's left end: the count and a Select button, or, while picking, how many are
+    /// picked with Select all, Delete and Cancel beside it.</summary>
+    private void DrawSelectionBar(Ui ui, Rect row)
+    {
+        var theme = ui.Theme;
+        var x = S(16);
+        var font = S(Metrics.FontSm);
+
+        Rect Place(double width)
+        {
+            var bounds = new Rect(x, row.Center.Y - S(15), width, S(30));
+            x += width + S(8);
+            return bounds;
         }
 
-        // The slate tile, then the half above the 135° diagonal in cyan - intersected with the tile,
-        // so it inherits the rounded corners rather than overhanging them.
-        ui.FillRounded(bounds, mark.Radius, Tile);
-        ui.FillRoundedRegion(bounds, mark.Radius, mark.Diagonal, Cyan);
-
-        ui.Polyline(mark.UpperMark, Marks, mark.Thickness);
-        ui.Polyline(mark.LowerMark, Marks, mark.Thickness);
-    }
-
-    private static readonly Rgba Tile = new(0x3A, 0x46, 0x52, 0xFF);
-
-    private static readonly Rgba Cyan = new(0x46, 0xBA, 0xE3, 0xFF);
-
-    private static readonly Rgba Marks = new(0x18, 0x22, 0x2B, 0xFF);
-
-    private double DrawCaptureAction(
-        Ui ui, Rect sidebar, double y, int id,
-        string glyph, string label, string shortcut, CaptureMode mode)
-    {
-        var theme = ui.Theme;
-        var row = new Rect(sidebar.X + S(10), y, sidebar.Width - S(20), S(38));
-
-        // Posted: this runs inside Render, and capture hides the window and spins the overlay's own
-        // message loop.
-        if (ui.Interact(id, row)) Post(() => CaptureRequested?.Invoke(mode));
-
-        var fill = ui.IsActive(id) ? theme.FillPressed : ui.IsHot(id) ? theme.FillHover : default;
-        if (fill.A > 0) ui.FillRounded(row, (float)S(Metrics.RadiusControl), fill);
-
-        // The icon carries the accent: it is the only colour in an otherwise neutral row.
-        ui.Icon(glyph, new Rect(row.X + S(8), row.Y, S(20), row.Height), theme.Accent, S(15));
-
-        ui.Text(label, new Rect(row.X + S(38), row.Y, row.Width - S(48), row.Height),
-            theme.TextPrimary, (float)S(Metrics.FontBody));
-
-        if (shortcut.Length != 0)
-            ui.Text(shortcut, new Rect(row.X, row.Y, row.Width - S(10), row.Height),
-                theme.TextTertiary, (float)S(Metrics.FontCaption), align: TextAlign.Right);
-
-        return y + S(39);
-    }
-
-    private void DrawHistory(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds)
-    {
-        var theme = ui.Theme;
-
-        if (_history.Count == 0)
+        if (!_selection.Active)
         {
-            ui.Text("Nothing captured yet", bounds, theme.TextTertiary,
-                (float)S(Metrics.FontCaption), align: TextAlign.Center);
+            var count = _history.Count == 1 ? "1 capture" : $"{_history.Count} captures";
+            var countWidth = ui.MeasureText(count, font);
+            ui.Text(count, new Rect(x, row.Y, countWidth + 1, row.Height), theme.TextTertiary, font);
+            x += countWidth + S(14);
+
+            if (_history.Count > 0
+                && ui.Button(Ui.Id("library.select"), Place(ui.ButtonWidth("Select", Icons.Tick, small: true)), "Select",
+                    ButtonStyle.Outline, Icons.Tick, small: true, tooltip: "Pick captures to delete together  ·  Ctrl click"))
+                _selection.Begin();
             return;
         }
 
-        var rowHeight = S(48);
-        var gap = S(2);
-        var y = bounds.Y - _scroll;
+        var label = _selection.Count == 1 ? "1 selected" : $"{_selection.Count} selected";
+        var labelWidth = ui.MeasureText(label, font, Weight.Semibold);
+        ui.Text(label, new Rect(x, row.Y, labelWidth + 1, row.Height), theme.TextPrimary, font, Weight.Semibold);
+        x += labelWidth + S(14);
 
-        // Clipped, not just culled: a row straddling an edge draws in full, and would paint over the
-        // RECENT rule above and the footer's border below. The clip takes the pointer with it.
-        ui.PushClip(bounds);
+        // Everything the grid shows, so a search narrows what Select all takes.
+        var shown = LibraryGroups.Build(_history, _query, DateTime.Now).SelectMany(group => group.Items)
+            .Select(item => item.FilePath).ToList();
+        if (ui.Button(Ui.Id("library.select.all"), Place(ui.ButtonWidth("Select all", Icons.SelectAll, small: true)),
+            "Select all", ButtonStyle.Outline, Icons.SelectAll, small: true, enabled: !shown.All(_selection.Contains)))
+            _selection.SelectAll(shown);
 
-        for (var i = 0; i < _history.Count; i++)
-        {
-            var item = _history[i];
-            var row = new Rect(bounds.X + S(10), y, bounds.Width - S(20), rowHeight);
-            y += rowHeight + gap;
+        if (ui.Button(Ui.Id("library.select.delete"), Place(ui.ButtonWidth("Delete", Icons.Delete, small: true)), "Delete",
+            ButtonStyle.Destructive, Icons.Delete, small: true, enabled: _selection.Count > 0))
+            AskDelete(_history.Where(item => _selection.Contains(item.FilePath)).ToList());
 
-            if (row.Bottom < bounds.Y || row.Y > bounds.Bottom) continue;
-
-            var id = Ui.Id(HistoryRow, i);
-            var selected = ReferenceEquals(item, _selected);
-            if (ui.Interact(id, row))
-            {
-                _selected = item;
-                _settingsOpen = false;
-            }
-
-            // Selection is an elevated neutral pill, not a tint: it sits behind the thumbnail, so a
-            // coloured fill would cast onto the capture.
-            if (selected)
-            {
-                ui.FillRounded(row, (float)S(Metrics.RadiusControl), theme.RowSelectFill);
-                ui.StrokeRounded(row, (float)S(Metrics.RadiusControl), theme.RowSelectStroke);
-            }
-            else if (ui.IsActive(id))
-                ui.FillRounded(row, (float)S(Metrics.RadiusControl), theme.RowPressedFill);
-            else if (ui.IsHot(id))
-                ui.FillRounded(row, (float)S(Metrics.RadiusControl), theme.RowHoverFill);
-
-            // Thumbnail: 52x34, filling its slot, on an overlay backing so a transparent PNG reads.
-            var slot = new Rect(row.X + S(8), row.Y + S(7), S(52), S(34));
-            ui.FillRounded(slot, (float)S(4), theme.SurfaceOverlay);
-            DrawThumbnail(target, item, slot);
-
-            var textX = slot.Right + S(10);
-            var textWidth = row.Right - textX - S(8);
-
-            ui.Text(Truncate(item.FileName, 22),
-                new Rect(textX, row.Y + S(7), textWidth, S(18)),
-                theme.TextPrimary, (float)S(Metrics.FontBody), middle: false);
-
-            ui.Text($"{item.Width}×{item.Height}  ·  {Ago(item.CapturedAt)}",
-                new Rect(textX, row.Y + S(26), textWidth, S(16)),
-                theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
-        }
-
-        _historyViewport = Math.Max(1, bounds.Height);
-        _historyHeight = _history.Count * (rowHeight + gap);
-
-        ui.Scrollbar(bounds, _historyHeight, _scroll);
-        ui.PopClip();
+        if (ui.Button(Ui.Id("library.select.cancel"), Place(ui.ButtonWidth("Cancel", keycap: "Esc", small: true)), "Cancel",
+            ButtonStyle.Outline, keycap: "Esc", small: true))
+            _selection.End();
     }
 
-    /// <summary>The list's content and visible heights, measured as it is drawn, so the wheel
-    /// handler scrolls against the list that exists rather than an estimate of it.</summary>
-    private double _historyHeight;
+    // ============================  GRID  ============================
 
-    private double _historyViewport = 1;
+    private static readonly int TileOwner = Ui.Id("library.tile");
 
-    private void DrawSidebarFooter(Ui ui, Rect bounds)
+    /// <summary>A tile's look this frame: everything that decides its pixels, so a band redraws only
+    /// when one of these changes.</summary>
+    private readonly record struct TileLook(bool Hot, double Lift, double Shown, bool Picked, bool Copied,
+        ImageSurface? Bitmap, string Ago);
+
+    private sealed record GridTile(ScreenshotHistoryItem Item, int Index, Rect Bounds)
     {
-        var theme = ui.Theme;
-        ui.FillRect(new Rect(bounds.X, bounds.Y, bounds.Width, 1), theme.StrokeSubtle);
-
-        var size = S(32);
-        var y = bounds.Y + (bounds.Height - size) / 2;
-
-        // The toggle flips light and dark. "System" is a deliberate choice, made in Settings - a
-        // button that cycles through three states leaves you guessing which one you are in.
-        if (ui.Tile(Ui.Id("main.newcapture"), new Rect(bounds.X + S(12), y, size, size), false,
-            Icons.Theme, S(15), "Switch theme"))
-        {
-            _settings.Theme = SystemTheme.Resolve(_settings.Theme).IsDark
-                ? AppTheme.Light
-                : AppTheme.Dark;
-            SaveSettings();
-        }
-
-        if (ui.Tile(Ui.Id("main.settings"), new Rect(bounds.Right - S(12) - size, y, size, size), _settingsOpen,
-            Icons.Settings, S(15), "Settings", neutral: true))
-        {
-            _settingsOpen = !_settingsOpen;
-        }
+        public bool Clicked;
+        public TileLook Look;
     }
 
-    // ============================  DETAIL PANE  ============================
+    /// <summary>A row of tiles and the space around it - the unit the grid layer is drawn in.</summary>
+    private sealed record GridBand(double Top, double Bottom, string? Title, double TitleY, List<GridTile> Tiles);
 
-    private void DrawDetail(Ui ui, IComObject<ID2D1RenderTarget> target, Rect bounds)
+    /// <summary>Each drawn band's look, by its top.</summary>
+    private readonly Dictionary<int, int> _bands = [];
+
+    /// <summary>What every band depends on; a change redraws them all.</summary>
+    private int _gridSignature;
+
+    private bool _gridEmpty;
+
+    /// <summary>
+    /// The grid, into the scrolling layer. A band is drawn when it comes within a screen of the view and
+    /// again only when its look changes; one showing tile actions is drawn every frame, since those
+    /// buttons answer the pointer as they draw. Visible tiles claim decode slots before those ahead.
+    /// </summary>
+    private void DrawGrid(Ui ui, IComObject<ID2D1RenderTarget> resources, CompositionLayers layers, Rect bounds)
     {
         var theme = ui.Theme;
+        var inset = S(16);
+        var layout = new LibraryLayout(bounds.Width - inset * 2, _scale);
+        var groups = LibraryGroups.Build(_history, _query, DateTime.Now);
+        _gridEmpty = groups.Count == 0;
 
-        if (_selected is not { } item)
+        // Measured before placement, so the clamp and the scrollbar agree with this frame's rows.
+        _gridViewport = Math.Max(1, bounds.Height);
+        _gridHeight = S(4) + groups.Sum(group => layout.GroupHeight(group.Items.Count) + S(8)) + S(24);
+        _scroll.SetRange(_gridHeight - _gridViewport);
+        _thumbnails.Capacity = Math.Max(_thumbnails.Capacity, layout.CacheCapacity(_gridViewport));
+
+        var scroll = Math.Round(_scroll.Position);
+        var contentHeight = Math.Max(_gridHeight, bounds.Height);
+        layers.PlaceScroll(bounds, (int)bounds.Width, (int)Math.Ceiling(contentHeight), scroll);
+        var origin = new Point(bounds.X, bounds.Y - scroll);
+
+        var signature = HashCode.Combine(bounds.Width, _scale, theme, _query);
+        if (signature != _gridSignature)
         {
-            DrawEmptyState(ui, bounds);
+            _bands.Clear();
+            _gridSignature = signature;
+        }
+
+        var bands = Bands(groups, layout, inset, contentHeight, scroll - bounds.Height, scroll + bounds.Height * 2);
+        var now = DateTime.Now;
+
+        Rect OnScreen(Rect content) => new(content.X + origin.X, content.Y + origin.Y, content.Width, content.Height);
+        var tiles = bands.SelectMany(band => band.Tiles).ToList();
+        var visible = tiles.Where(tile => Overlaps(OnScreen(tile.Bounds), bounds)).ToHashSet();
+        foreach (var tile in tiles.OrderBy(tile => visible.Contains(tile) ? 0 : Math.Abs(OnScreen(tile.Bounds).Center.Y - bounds.Center.Y)))
+            tile.Look = Look(ui, resources, tile, OnScreen(tile.Bounds), bounds, visible.Contains(tile), layout.DecodeWidth, now);
+
+        foreach (var band in bands)
+        {
+            var key = BandKey(band);
+            var top = (int)Math.Floor(band.Top);
+            if (_bands.TryGetValue(top, out var drawn) && drawn == key && !band.Tiles.Any(tile => tile.Look.Shown > 0.01))
+                continue;
+
+            var area = new RECT { left = 0, top = top, right = (int)bounds.Width, bottom = (int)Math.Ceiling(band.Bottom) };
+            var onScreen = new Rect(bounds.X, area.top + origin.Y, bounds.Width, area.bottom - area.top);
+            using (var context = layers.BeginScroll(area, origin))
+            using (var target = context.AsRenderTarget2())
+            {
+                ui.Retarget(target);
+                // The band alone, not the viewport: a band drawn ahead must paint every one of its pixels.
+                ui.PushClip(onScreen);
+                ui.FillRect(onScreen, theme.SurfaceWindow);
+                if (band.Title is { } title)
+                    ui.Text(title.ToUpperInvariant(), new Rect(origin.X + inset + S(2), origin.Y + band.TitleY,
+                        bounds.Width - inset * 2, S(16)), theme.TextTertiary, S(11), Weight.Semibold);
+                foreach (var tile in band.Tiles)
+                    if (PaintTile(ui, tile.Item, OnScreen(tile.Bounds), layout.ImageHeight, Ui.Id(TileOwner, tile.Index), tile.Look))
+                        tile.Clicked = false;
+                ui.PopClip();
+                layers.EndScroll();
+            }
+            _bands[top] = key;
+        }
+        ui.Retarget(resources);
+
+        if (bands.Count > 0)
+            layers.TrimScroll(new RECT { left = 0, top = (int)Math.Floor(bands[0].Top), right = (int)bounds.Width,
+                bottom = (int)Math.Ceiling(bands[^1].Bottom) });
+        var kept = bands.Select(band => (int)Math.Floor(band.Top)).ToHashSet();
+        foreach (var stale in _bands.Keys.Where(top => !kept.Contains(top)).ToList()) _bands.Remove(stale);
+
+        foreach (var tile in tiles)
+            if (tile.Clicked) OnTileClicked(tile.Item);
+    }
+
+    /// <summary>Each band ends where the next begins, so they cover the content without a seam.</summary>
+    private List<GridBand> Bands(List<LibraryGroups.Group> groups, LibraryLayout layout, double inset,
+        double contentHeight, double from, double to)
+    {
+        var bands = new List<GridBand>();
+        var top = 0.0;
+        var groupTop = S(4);
+        var index = 0;
+        for (var g = 0; g < groups.Count; g++)
+        {
+            var group = groups[g];
+            var groupHeight = layout.GroupHeight(group.Items.Count);
+            var rows = (group.Items.Count + layout.Columns - 1) / layout.Columns;
+            for (var row = 0; row < rows; row++)
+            {
+                var rowTop = groupTop + layout.HeaderHeight + row * (layout.TileHeight + layout.RowGap);
+                var bottom = row < rows - 1 ? rowTop + layout.TileHeight + layout.RowGap / 2
+                    : g < groups.Count - 1 ? groupTop + groupHeight + S(8)
+                    : contentHeight;
+
+                if (bottom >= from && top <= to)
+                {
+                    var tiles = new List<GridTile>();
+                    for (var i = row * layout.Columns; i < Math.Min(group.Items.Count, (row + 1) * layout.Columns); i++)
+                        tiles.Add(new GridTile(group.Items[i], index + i, layout.Tile(inset, groupTop, i)));
+                    bands.Add(new GridBand(top, bottom, row == 0 ? group.Title : null, groupTop + S(18), tiles));
+                }
+                top = bottom;
+            }
+            index += group.Items.Count;
+            groupTop += groupHeight + S(8);
+        }
+        return bands;
+    }
+
+    private static bool Overlaps(Rect a, Rect b) => a.Left < b.Right && b.Left < a.Right && a.Top < b.Bottom && b.Top < a.Bottom;
+
+    /// <summary>The per-frame part of a tile, done whether or not its band is drawn. It answers the
+    /// pointer only where it shows: the tools row covers the part scrolled under it.</summary>
+    private TileLook Look(Ui ui, IComObject<ID2D1RenderTarget> resources, GridTile tile, Rect onScreen, Rect bounds,
+        bool visible, int decodeWidth, DateTime now)
+    {
+        var id = Ui.Id(TileOwner, tile.Index);
+        var hot = false;
+        if (visible)
+        {
+            var hit = Rect.FromEdges(onScreen.Left, Math.Max(onScreen.Top, bounds.Top), onScreen.Right,
+                Math.Min(onScreen.Bottom, bounds.Bottom));
+            tile.Clicked = ui.Interact(id, hit);
+            hot = ui.IsHot(id) || ui.IsActive(id);
+        }
+
+        return new TileLook(
+            hot,
+            ui.Animate(id, hot ? 1 : 0, Metrics.MotionFast),
+            // While picking, a click picks: the per-tile actions would compete with it.
+            ui.Animate(Ui.Id(id, 1), hot && !_selection.Active ? 1 : 0, Metrics.MotionFast),
+            _selection.Contains(tile.Item.FilePath),
+            string.Equals(_copiedPath, tile.Item.FilePath, StringComparison.OrdinalIgnoreCase) && DateTime.UtcNow < _toastUntil,
+            GetThumbnail(resources, tile.Item, decodeWidth),
+            LibraryGroups.Ago(tile.Item.CapturedAt.LocalDateTime, now));
+    }
+
+    /// <summary>A hash of everything a band's pixels depend on. Animation values are quantised, so a
+    /// settled tile stops changing it.</summary>
+    private int BandKey(GridBand band)
+    {
+        var hash = new HashCode();
+        hash.Add(band.Top);
+        hash.Add(band.Bottom);
+        hash.Add(band.Title);
+        hash.Add(_selection.Active);
+        foreach (var tile in band.Tiles)
+        {
+            var look = tile.Look;
+            hash.Add(tile.Item.FilePath);
+            hash.Add(tile.Bounds);
+            hash.Add(look.Hot);
+            hash.Add(Math.Round(look.Lift * 40));
+            hash.Add(Math.Round(look.Shown * 40));
+            hash.Add(look.Picked);
+            hash.Add(look.Copied);
+            hash.Add(look.Bitmap is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(look.Bitmap));
+            hash.Add(look.Ago);
+        }
+        return hash.ToHashCode();
+    }
+
+    /// <summary>A capture: the image cropped to 16:10 from the top, its name and age beneath, and its
+    /// actions over the image's corner while hovered. True when one of those actions took the click.</summary>
+    private bool PaintTile(Ui ui, ScreenshotHistoryItem item, Rect tile, double imageHeight, int id, TileLook look)
+    {
+        var theme = ui.Theme;
+        var image = new Rect(tile.X, tile.Y, tile.Width, imageHeight);
+        var radius = (float)S(Metrics.RadiusMd);
+
+        if (look.Lift > 0.01)
+            ui.Shadow(image, radius, S(12) * look.Lift, S(5) * look.Lift, theme.Shadow.WithAlpha((byte)(theme.Shadow.A * look.Lift)));
+
+        ui.FillRounded(image, radius, theme.SurfacePane);
+        if (look.Bitmap is { } bitmap)
+        {
+            // Aspect-fill from the top, where a capture's title bar and headings are.
+            var scale = Math.Max(image.Width / bitmap.Width, image.Height / bitmap.Height);
+            var drawn = new Rect(image.X + (image.Width - bitmap.Width * scale) / 2, image.Y,
+                bitmap.Width * scale, bitmap.Height * scale);
+            ui.DrawBitmapRounded(bitmap.Bitmap, image, radius, drawn);
+        }
+
+        // The ring stands clear of the image: flush, the image's antialiased corner showed past it.
+        if (look.Picked) ui.StrokeRounded(image.Deflate(-S(4)), radius + (float)S(4), theme.Accent, (float)S(2));
+        else ui.StrokeRounded(image, radius, look.Hot ? theme.StrokeStrong : theme.StrokeDefault);
+
+        if (_selection.Active) DrawPickBadge(ui, image, look.Picked);
+
+        var overlayClicked = false;
+        if (look.Shown > 0.01)
+        {
+            (Icon Icon, string Tip, Action Run, bool Danger)[] actions =
+            [
+                (Icons.Delete, "Delete", () => AskDelete([item]), true),
+                (Icons.Folder, "Show in folder", () => Reveal(item.FilePath), false),
+                (look.Copied ? Icons.Tick : Icons.Copy, look.Copied ? "Copied" : "Copy", () => Post(() => CopyToClipboard(item)), false),
+                (Icons.Share, "Share", () => Post(() => Share(item)), false),
+                (Icons.Edit, "Open in editor", () => Post(() => EditRequested?.Invoke(item)), false),
+            ];
+            var size = S(28);
+            var x = image.Right - S(8) - actions.Length * size - (actions.Length - 1) * S(4);
+            var y = image.Bottom - S(8) - size + S(4) * (1 - look.Shown);
+            for (var i = 0; i < actions.Length; i++)
+            {
+                var button = new Rect(x + i * (size + S(4)), y, size, size);
+                if (ui.OverlayButton(Ui.Id(id, 10 + i), button, actions[i].Icon, S(15), actions[i].Tip,
+                    on: look.Copied && actions[i].Icon == Icons.Tick, destructive: actions[i].Danger))
+                {
+                    actions[i].Run();
+                    overlayClicked = true;
+                }
+            }
+        }
+
+        var caption = new Rect(tile.X + S(2), image.Bottom + S(8), tile.Width - S(4), S(18));
+        var agoWidth = ui.MeasureText(look.Ago, S(Metrics.FontSm));
+        ui.Text(look.Ago, new Rect(caption.Right - agoWidth, caption.Y, agoWidth + 1, caption.Height), theme.TextTertiary,
+            S(Metrics.FontSm));
+        ui.TextFit(Path.GetFileNameWithoutExtension(item.FileName),
+            new Rect(caption.X, caption.Y, caption.Width - agoWidth - S(8), caption.Height), theme.TextPrimary,
+            S(Metrics.FontSm), Weight.Semibold);
+        return overlayClicked;
+    }
+
+    /// <summary>A click on a tile, not on one of its actions: picks it while picking, and opens the
+    /// editor on the second click inside the double-click time.</summary>
+    private void OnTileClicked(ScreenshotHistoryItem item)
+    {
+        if (_selection.Active || _pressedWithControl)
+        {
+            _selection.Toggle(item.FilePath);
             return;
         }
 
-        var bar = S(64);
-
-        // The preview well: sunken and rounded, so the capture reads as inset from the chrome.
-        // The top margin clears the caption buttons floating over this pane's top-right.
-        var well = new Rect(
-            bounds.X + S(24),
-            bounds.Y + S(48),
-            bounds.Width - S(48),
-            bounds.Height - S(48) - bar - S(12));
-
-        ui.FillRounded(well, (float)S(Metrics.RadiusContainer), theme.SurfaceSunken);
-        ui.StrokeRounded(well, (float)S(Metrics.RadiusContainer), theme.StrokeSubtle);
-
-        var bitmap = GetPreviewBitmap(target, item, well);
-        if (bitmap is null)
+        var tick = Environment.TickCount64;
+        if (ReferenceEquals(_lastClicked, item) && tick - _lastClickTick <= WindowInterop.GetDoubleClickTime())
         {
-            ui.Text(_previewLoading ? "Loading capture…" : "Could not open this capture", well, theme.TextTertiary,
-                (float)S(Metrics.FontBody), align: TextAlign.Center);
+            _lastClicked = null;
+            Post(() => EditRequested?.Invoke(item));
+            return;
+        }
+        _lastClicked = item;
+        _lastClickTick = tick;
+    }
+
+    private ScreenshotHistoryItem? _lastClicked;
+    private long _lastClickTick;
+
+    /// <summary>The check in a tile's corner while picking: an empty ring, or the accent with a tick.</summary>
+    private void DrawPickBadge(Ui ui, Rect image, bool picked)
+    {
+        var badge = new Rect(image.X + S(10), image.Y + S(10), S(22), S(22));
+        var radius = (float)(badge.Width / 2);
+        if (picked)
+        {
+            ui.FillRounded(badge, radius, ui.Theme.Accent);
+            ui.Icon(Icons.Tick, badge, ui.Theme.TextOnAccent, S(15));
         }
         else
         {
-            // Inset from the well, then fill it: the image floats inside the frame rather than
-            // touching it, but a small capture still uses the space it was given.
-            var fit = well.Deflate(S(20)).Fit(new Size(bitmap.Width, bitmap.Height), enlarge: true);
-            target.DrawBitmap(
-                bitmap.Bitmap, 1f,
-                D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                AnnotationRenderer.ToRect(fit));
+            ui.FillRounded(badge, radius, Ui.OverlayRest);
+            ui.StrokeRounded(badge, radius, Rgba.White, (float)S(1.5));
         }
-
-        DrawDetailBar(ui, item, new Rect(bounds.X, well.Bottom, bounds.Width, bar));
     }
 
-    private void DrawDetailBar(Ui ui, ScreenshotHistoryItem item, Rect bounds)
-    {
-        var theme = ui.Theme;
-
-        ui.Text(Truncate(item.FileName, 42),
-            new Rect(bounds.X + S(24), bounds.Y + S(12), bounds.Width * 0.5, S(20)),
-            theme.TextPrimary, (float)S(Metrics.FontSubtitle), bold: true, middle: false);
-
-        ui.Text($"{item.Width} × {item.Height}   ·   {item.CapturedAt.LocalDateTime:d MMM yyyy, HH:mm}",
-            new Rect(bounds.X + S(24), bounds.Y + S(34), bounds.Width * 0.5, S(16)),
-            theme.TextTertiary, (float)S(Metrics.FontCaption), middle: false);
-
-        // Actions, right-aligned. Buttons hug their content rather than being fixed-width blocks.
-        var y = bounds.Y + (bounds.Height - S(32)) / 2;
-        var right = bounds.Right - S(24);
-
-        var font = S(Metrics.FontBody);
-        var glyph = S(14);
-
-        // Edit carries the accent: it is what this pane is for.
-        var edit = ui.ButtonWidth("Edit", font, glyph);
-        right -= edit;
-        if (ui.Button(Ui.Id("main.edit"), new Rect(right, y, edit, S(32)), "Edit",
-            primary: true, glyph: Icons.Edit, glyphSize: glyph, fontSize: font))
-            Post(() => EditRequested?.Invoke(item));
-
-        var copy = ui.ButtonWidth("Copy", font, glyph);
-        right -= copy + S(8);
-        if (ui.Button(Ui.Id("main.copy"), new Rect(right, y, copy, S(32)), "Copy",
-            glyph: Icons.Copy, glyphSize: glyph, fontSize: font,
-            confirmation: _copied.Progress(Environment.TickCount64)))
-            CopyToClipboard(item);
-
-        // The icon-only actions sit in a taller box with a larger glyph: at 14px they read as
-        // afterthoughts next to the labelled buttons they share a row with.
-        var icon = S(36);
-        var iconGlyph = S(17);
-        var iconY = bounds.Y + (bounds.Height - icon) / 2;
-
-        right -= icon + S(6);
-        if (ui.Tile(Ui.Id("main.remove"), new Rect(right, iconY, icon, icon), false, Icons.Delete, iconGlyph, "Remove",
-            destructive: true))
-            Post(() => Delete(item));
-
-        right -= icon + S(4);
-        if (ui.Tile(Ui.Id("main.share"), new Rect(right, iconY, icon, icon), false, Icons.Share, iconGlyph, "Share"))
-            Post(() => Share(item));
-
-        right -= icon + S(4);
-        if (ui.Tile(Ui.Id("main.reveal"), new Rect(right, iconY, icon, icon), false, Icons.Reveal, iconGlyph,
-            "Show in Explorer"))
-            Reveal(item.FilePath);
-
-        // Close sits apart from the pair that act on the file: it only dismisses the view.
-        right -= icon + S(14);
-        if (ui.Tile(Ui.Id("main.dismiss"), new Rect(right, iconY, icon, icon), false, Icons.Close, iconGlyph,
-            "Close  (Esc)"))
-            Deselect();
-    }
-
-    /// <summary>The pane with nothing shown. What it says depends on whether the history is empty:
-    /// "no captures yet" in front of a list of them would be wrong.</summary>
+    /// <summary>Before the first capture: what the library is for, and the four ways to fill it. The
+    /// hotkeys shown are the live bindings, which can be changed or cleared.</summary>
     private void DrawEmptyState(Ui ui, Rect bounds)
     {
         var theme = ui.Theme;
-        var centre = bounds.Center;
-        var empty = _history.Count == 0;
+        var width = S(460);
+        var top = bounds.Center.Y - S(170);
+        var x = bounds.Center.X - width / 2;
 
-        ui.Icon(Icons.EmptyState,
-            new Rect(bounds.X, centre.Y - S(66), bounds.Width, S(48)),
-            theme.TextTertiary, S(38));
+        var glyph = new Rect(bounds.Center.X - S(42), top, S(84), S(84));
+        ui.FloatShadow(glyph, (float)S(22));
+        ui.FillRounded(glyph, (float)S(22), theme.SurfaceRaised);
+        ui.StrokeRounded(glyph, (float)S(22), theme.StrokeDefault);
+        ui.Icon(Icons.CaptureRegion, glyph, theme.AccentText, S(30));
 
-        ui.Text(empty ? "No captures yet" : "Nothing selected",
-            new Rect(bounds.X, centre.Y - S(6), bounds.Width, S(24)),
-            theme.TextSecondary, (float)S(Metrics.FontSubtitle), align: TextAlign.Center);
+        top = glyph.Bottom + S(22);
+        ui.Text("Nothing captured yet", new Rect(x, top, width, S(36)), theme.TextPrimary, S(Metrics.Font2Xl),
+            Weight.Semibold, TextAlign.Center, face: Face.Display);
+        top += S(44);
+        ui.Text("Grab part of the screen and it lands here, ready to mark up, copy or share. Drop an image anywhere on this window to open it.",
+            new Rect(x, top, width, S(44)), theme.TextSecondary, S(Metrics.FontMd), align: TextAlign.Center, middle: false,
+            wrap: true);
+        top += S(64);
 
-        // The region hotkey is rebindable and can be cleared, so the hint reads the live binding
-        // rather than naming a default the user may no longer have.
-        var region = _settings.CaptureRegionHotkey;
-        var gesture = region.Key == 0 ? null : Describe(region);
-        ui.Text(
-            empty
-                ? gesture is null
-                    ? "Capture a region to get started"
-                    : $"Press {gesture} to capture a region"
-                : gesture is null
-                    ? "Pick a capture from the list"
-                    : $"Pick a capture from the list, or press {gesture} for a new one",
-            new Rect(bounds.X, centre.Y + S(20), bounds.Width, S(20)),
-            theme.TextTertiary, (float)S(Metrics.FontBody), align: TextAlign.Center);
+        (string Label, Icon Icon, HotkeyId Hotkey, Action Run)[] actions =
+        [
+            ("Region", Icons.CaptureRegion, HotkeyId.CaptureRegion, () => CaptureRequested?.Invoke(CaptureMode.Region)),
+            ("Window", Icons.CaptureWindow, HotkeyId.CaptureActiveWindow, () => CaptureRequested?.Invoke(CaptureMode.ActiveWindow)),
+            ("Full screen", Icons.CaptureScreen, HotkeyId.CaptureFullScreen, () => CaptureRequested?.Invoke(CaptureMode.FullScreen)),
+            ("Text", Icons.Ocr, HotkeyId.CaptureText, () => CaptureTextRequested?.Invoke()),
+        ];
+
+        var cell = (width - S(8)) / 2;
+        for (var i = 0; i < actions.Length; i++)
+        {
+            var bounds_ = new Rect(x + (i % 2) * (cell + S(8)), top + (i / 2) * S(56), cell, S(48));
+            var id = Ui.Id(Ui.Id("library.empty"), i);
+            if (ui.Interact(id, bounds_)) Post(actions[i].Run);
+
+            var radius = (float)S(Metrics.RadiusMd);
+            ui.FillRounded(bounds_, radius, ui.IsHot(id) ? theme.SurfaceHover : theme.SurfaceRaised);
+            ui.StrokeRounded(bounds_, radius, ui.IsHot(id) ? theme.StrokeStrong : theme.StrokeDefault);
+            ui.Icon(actions[i].Icon, new Rect(bounds_.X + S(14), bounds_.Y, S(16), bounds_.Height), theme.TextPrimary, S(16));
+            ui.Text(actions[i].Label, new Rect(bounds_.X + S(40), bounds_.Y, cell - S(120), bounds_.Height), theme.TextPrimary,
+                S(Metrics.FontMd), Weight.Semibold);
+
+            if (_settings.Hotkey(actions[i].Hotkey) is { Key: not 0 } binding)
+            {
+                var cap = Describe(binding).Replace(" + ", " ");
+                ui.Keycap(cap, new Point(bounds_.Right - S(14) - ui.KeycapWidth(cap), bounds_.Center.Y));
+            }
+        }
     }
 }

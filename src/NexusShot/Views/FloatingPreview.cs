@@ -90,6 +90,10 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         Invalidate();
     }
 
+    /// <summary>Cards are dark in both themes - they sit over whatever is on screen - but carry the
+    /// user's accent.</summary>
+    private Theme Theme => SystemTheme.Resolve(AppTheme.Dark, _stack.Settings.Accent);
+
     private static Size CardSize(double scale) =>
         new(Math.Round(CardLayout.Width * scale), Math.Round(CardLayout.Height * scale));
 
@@ -104,17 +108,15 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         _scale = scale;
         var size = CardSize(scale);
 
-        var x = workArea.X + (int)Math.Round(EdgeMargin * scale);
-        var y = workArea.Bottom
-            - (int)Math.Round(EdgeMargin * scale)
-            - (int)size.Height
-            - (int)Math.Round(stackOffset);
+        var slot = CardLayout.Slot(workArea.ToRect(), size, Math.Round(EdgeMargin * scale), Math.Round(stackOffset),
+            _stack.Settings.CardCorner);
+        var x = (int)Math.Round(slot.X);
+        var y = (int)Math.Round(slot.Y);
 
         WindowInterop.SetWindowPos(Handle, HWND_TOPMOST, x, y, (int)size.Width, (int)size.Height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
-        // The first show can drop attributes set while the window was hidden, so the rounding is
-        // re-asserted rather than set once at creation.
+        // Re-asserted: the first show can drop attributes set while hidden.
         ApplyDwmChrome();
     }
 
@@ -141,7 +143,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         var corner = DWMWCP_ROUND;
         DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
 
-        var accent = Theme.Dark.Accent;
+        var accent = Theme.Accent;
         var border = _hovered ? accent.R | accent.G << 8 | accent.B << 16 : DWMWA_COLOR_NONE;
         DwmSetWindowAttribute(Handle, DWMWA_BORDER_COLOR, ref border, sizeof(int));
     }
@@ -152,7 +154,8 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         target.Object.SetDpi(96, 96);
 
         _resources ??= new D2DResources(target);
-        _ui ??= new Ui(_resources) { Theme = Theme.Dark };
+        _ui ??= new Ui(_resources);
+        _ui.Theme = Theme;
 
         var client = ClientRect;
         var card = new Rect(0, 0, client.Width, client.Height);
@@ -165,8 +168,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
             if (context is null) return;
             try
             {
-                // Decoded in two halves rather than via LoadScaled: the pixels are kept so a drag
-                // can build its picture from them instead of decoding the file a second time.
+                // Decoded here rather than via LoadScaled, so a drag can reuse the pixels.
                 _thumbnailPixels?.Dispose();
                 _thumbnailPixels = ImageSurface.DecodeScaled(_card.Item.FilePath,
                     maxWidth: (int)(CardLayout.Width * 2), maxHeight: (int)(CardLayout.Height * 2));
@@ -240,8 +242,8 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
         SetLayeredWindowAttributes(Handle, 0, (byte)(255 * (1 - eased)), LWA_ALPHA);
 
-        var slide = (int)Math.Round(eased * S(8));
-        WindowInterop.SetWindowPos(Handle, HWND_TOPMOST, _dismissOriginX - slide, _dismissOriginY, 0, 0,
+        var slide = (int)Math.Round(eased * S(8)) * CardLayout.DismissDirection(_stack.Settings.CardCorner);
+        WindowInterop.SetWindowPos(Handle, HWND_TOPMOST, _dismissOriginX + slide, _dismissOriginY, 0, 0,
             SWP_NOSIZE | SWP_NOACTIVATE);
 
         if (progress < 1) return;
@@ -292,8 +294,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                     ApplyDwmChrome();
                 }
 
-                // Past the threshold with the button down, and not on an action: the user is
-                // dragging the capture out of the app rather than clicking it.
+                // Past the threshold, button down, not on an action: a drag out of the app.
                 if (_pointerDown && _pressOrigin is { } origin && !_pressedAction)
                 {
                     var now = PointerInClient();
@@ -305,8 +306,6 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                         // DoDragDrop needs the mouse; holding capture would starve it.
                         if (WindowInterop.GetCapture() == Handle) WindowInterop.ReleaseCapture();
 
-                        // A completed drop means the capture reached its destination, so the card is
-                        // done.
                         // DoDragDrop pumps timers while the cursor is off the card; hold the countdown.
                         _dragging = true;
                         bool dropped;
@@ -326,8 +325,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 return new LRESULT { Value = 0 };
 
             case WmMouseLeave:
-                // A live press is a drag beginning - leaving the card is how it starts, so it must
-                // not be cancelled here.
+                // A live press may be a drag leaving the card, so it is not cancelled here.
                 _hovered = false;
                 ApplyDwmChrome();
                 if (!_pointerDown) _pressOrigin = null;
@@ -340,8 +338,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 _pressOrigin = press;
                 _pressedAction = CardLayout.ButtonAt(new Point(press.X / _scale, press.Y / _scale)) is not null;
 
-                // Without capture the moves stop arriving the moment the cursor clears the card -
-                // which is exactly when a drag-out passes its threshold.
+                // Captured, or moves stop as the cursor leaves - exactly when a drag-out begins.
                 WindowInterop.SetCapture(Handle);
                 Invalidate();
                 return new LRESULT { Value = 0 };
@@ -376,8 +373,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     /// press landed, so the image stays under the finger rather than jumping.</summary>
     private DragImage? BuildDragImage(Point press)
     {
-        // The pixels the card is already drawn from, rather than a second decode of the file: this
-        // runs on the UI thread, between the press and the drag actually starting.
+        // The card's own pixels: this runs on the UI thread before the drag starts.
         if (_thumbnailPixels is not { } decoded) return null;
 
         // The press is in card space; the hotspot is in the fitted thumbnail's own pixels.

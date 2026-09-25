@@ -46,23 +46,45 @@ public abstract class CaptionWindow : D2DRenderWindow
     protected bool IsMaximised => WindowInterop.IsZoomedWindow(Handle);
 
     /// <summary>Whether a client point falls in the region that drags the window. Everything that is
-    /// not a control in the top strip should be draggable, so each window says which is which.</summary>
+    /// not a control in the top band should be draggable, so each window says which is which.</summary>
     protected abstract bool IsDragRegion(Point client);
+
+    /// <summary>How far down the window its drag band reaches. The caption height by default; a window
+    /// whose title area is taller than the system buttons extends it.</summary>
+    protected virtual double DragBandHeight => CaptionHeight;
 
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
 
-        // The frame is only recalculated on request, so ask for one now that we intend to handle
-        // WM_NCCALCSIZE - otherwise the caption stays until the first resize.
+        // Frame changes apply only on request; without this the caption stays until a resize.
         WindowInterop.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
     /// <summary>Ui keys hover and press by id alone, so an id shared with a widget in the window's
-    /// own content makes the two light up together - these sat on 9001-9003, which the editor's
-    /// toolbar already used for its thickness slider and colour chip.</summary>
+    /// own content makes the two light up together.</summary>
     private const int CaptionIdBase = 900_001;
+
+    /// <summary>
+    /// Keeps the window repainting at <paramref name="interval"/> milliseconds, or stops with null.
+    /// Idempotent, so a window calls it after every frame with what that frame still needs: display
+    /// rate while something moves, a slow tick for a blinking caret, nothing once all is still.
+    /// </summary>
+    protected void Repaint(uint? interval)
+    {
+        if (interval == _repaint) return;
+        _repaint = interval;
+        if (interval is { } ms) WindowInterop.SetTimer(Handle, RepaintTimerId, ms, IntPtr.Zero);
+        else WindowInterop.KillTimer(Handle, RepaintTimerId);
+    }
+
+    private uint? _repaint;
+    private const nuint RepaintTimerId = 0x7E57;
+
+    /// <summary>Display rate for motion. Windows rounds timer periods to its tick, so this lands near
+    /// 60 Hz rather than exactly on it; the animations are time-based, so that costs smoothness only.</summary>
+    protected const uint FrameInterval = 16;
 
     /// <summary>Minimise, maximise/restore, close - drawn by us, in our theme, over our own pixels.</summary>
     protected void DrawCaptionButtons(Ui ui, double width)
@@ -98,22 +120,27 @@ public abstract class CaptionWindow : D2DRenderWindow
     private void QueueSystemCommand(int command) =>
         _ = WindowInterop.PostMessageW(Handle, WM_SYSCOMMAND, new IntPtr(command), IntPtr.Zero);
 
-    private static readonly Rgba CloseHover = new(0xC4, 0x2B, 0x1C, 0xFF);
     private static readonly Rgba ClosePressed = new(0xC8, 0x4B, 0x3F, 0xFF);
 
-    private bool CaptionButton(Ui ui, int id, Rect bounds, string glyph, double size, bool danger)
+    /// <summary>Whether this window is the foreground one. An inactive window's caption glyphs dim,
+    /// as the system's do.</summary>
+    protected bool IsActiveWindow => WindowInterop.GetForegroundWindow() == Handle;
+
+    private bool CaptionButton(Ui ui, int id, Rect bounds, Icon glyph, double size, bool danger)
     {
         var clicked = ui.Interact(id, bounds);
         var hot = ui.IsHot(id);
         var active = ui.IsActive(id);
 
         var fill = danger
-            ? active ? ClosePressed : hot ? CloseHover : default
-            : active ? ui.Theme.FillPressed : hot ? ui.Theme.FillHover : default;
+            ? active ? ClosePressed : hot ? Theme.CaptionClose : default
+            : active ? ui.Theme.SurfacePressed : hot ? ui.Theme.SurfaceHover : default;
 
         if (fill.A > 0) ui.FillRect(bounds, fill);
 
-        var foreground = danger && (hot || active) ? Rgba.White : ui.Theme.TextSecondary;
+        var foreground = danger && (hot || active) ? Rgba.White
+            : hot ? ui.Theme.TextPrimary
+            : IsActiveWindow ? ui.Theme.TextSecondary : ui.Theme.TextTertiary;
         ui.Icon(glyph, bounds, foreground, size);
 
         return clicked;
@@ -124,8 +151,7 @@ public abstract class CaptionWindow : D2DRenderWindow
         switch (msg)
         {
             case WM_ERASEBKGND:
-                // Claim the erase without doing it. The class brush is white, and letting Windows
-                // paint it before the first D2D frame is what flashes white on open.
+                // Claim the erase: the white class brush would flash before the first D2D frame.
                 return new LRESULT { Value = 1 };
 
             case WM_NCCALCSIZE when wParam.Value != 0:
@@ -133,6 +159,15 @@ public abstract class CaptionWindow : D2DRenderWindow
 
             case WM_NCHITTEST:
                 return OnNcHitTest(lParam);
+
+            case WM_TIMER when (nuint)wParam.Value == RepaintTimerId:
+                Invalidate();
+                return new LRESULT { Value = 0 };
+
+            case WM_ACTIVATE:
+                // The caption glyphs dim with focus, and they are ours to repaint.
+                Invalidate();
+                break;
 
             case WM_DPICHANGED:
                 // Dragged to a monitor at a different scale; every caption metric derives from it.
@@ -203,13 +238,15 @@ public abstract class CaptionWindow : D2DRenderWindow
             if (hit != 0) return new LRESULT { Value = hit };
         }
 
-        if (point.Y < CaptionHeight && IsDragRegion(new Point(point.X, point.Y)))
+        if (point.Y < DragBandHeight && IsDragRegion(new Point(point.X, point.Y)))
             return new LRESULT { Value = HTCAPTION };
 
         return new LRESULT { Value = HTCLIENT };
     }
 
     private const uint WM_ERASEBKGND = 0x0014;
+    private const uint WM_TIMER = 0x0113;
+    private const uint WM_ACTIVATE = 0x0006;
     private const uint WM_NCCALCSIZE = 0x0083;
     private const uint WM_NCHITTEST = 0x0084;
     private const uint WM_DPICHANGED = 0x02E0;

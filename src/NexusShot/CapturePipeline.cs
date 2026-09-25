@@ -45,11 +45,21 @@ public sealed class CapturePipeline : IDisposable
         _main.OpenRequested += Open;
     }
 
+    /// <summary>A filed capture joins the library, then goes where the user asked: a card, straight
+    /// into the editor, or nowhere - the clipboard already has it.</summary>
     public void Land(ScreenshotHistoryItem item)
     {
         Log.Info("capture", $"{item.Width}x{item.Height}");
         _main.AddCapture(item);
-        ShowPreview(item);
+        switch (_settings.AfterCapture)
+        {
+            case AfterCapture.Editor:
+                Edit(item);
+                break;
+            case AfterCapture.Card:
+                ShowPreview(item);
+                break;
+        }
     }
 
     public void RefreshExistingPreview(ScreenshotHistoryItem item)
@@ -150,8 +160,7 @@ public sealed class CapturePipeline : IDisposable
     /// </summary>
     private void ReflowPreviews()
     {
-        // The monitor the pointer is on, not the one the shell happens to be on: a capture belongs
-        // to the screen the user is looking at.
+        // The monitor under the pointer, not the shell's: that is the screen being looked at.
         var work = Monitors.WorkAreaUnderCursor();
         var scale = Monitors.DpiScaleUnderCursor(_main.Handle);
 
@@ -191,7 +200,7 @@ public sealed class CapturePipeline : IDisposable
             return;
         }
 
-        var editor = new EditorWindow(item.FilePath, _settings.Theme);
+        var editor = new EditorWindow(item.FilePath, _settings, () => _storage.SaveSettings(_settings));
         editor.CanSaveTo = path => !_openEditors.Any(other => !ReferenceEquals(other, editor)
             && (string.Equals(other.FilePath, path, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(other.PendingSavePath, path, StringComparison.OrdinalIgnoreCase)));
@@ -211,8 +220,7 @@ public sealed class CapturePipeline : IDisposable
             _main.Invalidate();
         };
 
-        // Save overwrites the capture, so its history row and its card are both showing stale pixels
-        // at a size a crop may have changed.
+        // Save overwrites the capture, so its history row and its card are both stale.
         editor.Saved += path =>
         {
             var (width, height) = ImageSurface.ReadSize(path);
@@ -276,10 +284,11 @@ public sealed class CapturePipeline : IDisposable
         editor.SetForeground();
     }
 
-    /// <summary>Open editors follow the shell's theme rather than the one they were opened with.</summary>
+    /// <summary>Open editors follow the library's theme and accent rather than the ones they were
+    /// opened with.</summary>
     public void RethemeEditors()
     {
-        foreach (var editor in _openEditors) editor.SetTheme(_settings.Theme);
+        foreach (var editor in _openEditors) editor.Retheme();
     }
 
     public void Dispose()

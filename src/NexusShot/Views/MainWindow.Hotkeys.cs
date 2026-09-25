@@ -1,17 +1,16 @@
 using NexusShot.Core;
-using NexusShot.Render;
 
 namespace NexusShot.Views;
 
-/// <summary>Recording, resetting and reporting the global shortcuts the settings pane edits.</summary>
+/// <summary>Recording, resetting and reporting the global shortcuts the settings sheet edits.</summary>
 public sealed partial class MainWindow
 {
     /// <summary>
     /// Turns the key press into a binding for the armed row.
     ///
-    /// A bare modifier is not a shortcut, so those are ignored and recording stays armed until a
-    /// real key arrives. Esc cancels, Backspace unbinds, Delete restores the default - and a single key such as F9
-    /// or PrtScn is a legitimate shortcut, so no modifier is required.
+    /// A bare modifier is not a shortcut, so those are ignored and recording stays armed until a real
+    /// key arrives. Esc cancels, Backspace unbinds, Delete restores the default - and a single key such
+    /// as F9 or PrtScn is a legitimate shortcut, so no modifier is required.
     /// </summary>
     private void RecordHotkey(VIRTUAL_KEY key)
     {
@@ -33,13 +32,7 @@ public sealed partial class MainWindow
             or VIRTUAL_KEY.VK_LMENU or VIRTUAL_KEY.VK_RMENU)
             return;
 
-        var target = Binding(id);
-        if (target is null)
-        {
-            _recordingHotkey = null;
-            RecordingChanged?.Invoke(false);
-            return;
-        }
+        var target = _settings.Hotkey(id);
 
         // Backspace unbinds - key 0 is never registered. Delete puts the default back.
         if (key == VIRTUAL_KEY.VK_BACK)
@@ -49,7 +42,7 @@ public sealed partial class MainWindow
         }
         else if (key == VIRTUAL_KEY.VK_DELETE)
         {
-            var restored = Binding(id, new AppSettings())!;
+            var restored = new AppSettings().Hotkey(id);
             target.Modifiers = restored.Modifiers;
             target.Key = restored.Key;
         }
@@ -73,34 +66,20 @@ public sealed partial class MainWindow
         static bool Down(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
     }
 
-    /// <summary>The hotkey rows, in the order they are drawn. One table: the recorder, the reset,
-    /// the defaults check and the row itself all read the binding from here, so adding a hotkey
-    /// cannot leave one of them behind.</summary>
-    private static readonly (int Id, Func<AppSettings, HotkeyBinding> Binding, string Title)[] Hotkeys =
-    [
-        .. HotkeyIds.All.Select(hotkey => (
-            Ui.Id($"hotkey.{hotkey}"),
-            (Func<AppSettings, HotkeyBinding>)(settings => settings.Hotkey(hotkey)),
-            hotkey.Title())),
-    ];
-
     /// <summary>Whether every binding already matches a fresh AppSettings.</summary>
     private bool HotkeysAreDefault()
     {
         var defaults = new AppSettings();
-        foreach (var (_, binding, _) in Hotkeys)
-            if (!binding(_settings).IsSameGesture(binding(defaults))) return false;
-
-        return true;
+        return HotkeyIds.All.All(id => _settings.Hotkey(id).IsSameGesture(defaults.Hotkey(id)));
     }
 
     private void ResetHotkeys()
     {
         var defaults = new AppSettings();
-        foreach (var (_, binding, _) in Hotkeys)
+        foreach (var id in HotkeyIds.All)
         {
-            var current = binding(_settings);
-            var fallback = binding(defaults);
+            var current = _settings.Hotkey(id);
+            var fallback = defaults.Hotkey(id);
             current.Modifiers = fallback.Modifiers;
             current.Key = fallback.Key;
         }
@@ -112,15 +91,6 @@ public sealed partial class MainWindow
         Invalidate();
     }
 
-    /// <summary>The binding a hotkey row edits.</summary>
-    private HotkeyBinding? Binding(int id, AppSettings? from = null)
-    {
-        foreach (var (rowId, binding, _) in Hotkeys)
-            if (rowId == id) return binding(from ?? _settings);
-
-        return null;
-    }
-
     /// <summary>Reports bindings that another application already owns, so the user can see which
     /// one clashed rather than wondering why nothing happens.</summary>
     public void ReportHotkeyConflicts(IReadOnlyList<HotkeyId> failed)
@@ -129,6 +99,5 @@ public sealed partial class MainWindow
             ? null
             : $"Another app already owns: {string.Join(", ", failed.Select(id => id.Title()))}.";
         Invalidate();
-
     }
 }

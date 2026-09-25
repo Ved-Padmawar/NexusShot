@@ -43,8 +43,29 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File build.ps1 installer -Version ${{ steps.version.outputs.value }}
 
+      # The in-app updater runs an installer only when its SHA-256 carries this signature; the
+      # private key lives in the repository secrets and the app holds the public half. A missing
+      # secret fails the release rather than publishing an installer no copy of the app will accept.
+      - name: Sign installer
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if (-not $env:UPDATE_SIGNING_KEY) { throw "UPDATE_SIGNING_KEY is not set." }
+          $name = "NexusShot-${{ steps.version.outputs.value }}.exe"
+          $key = [System.Security.Cryptography.ECDsa]::Create()
+          $read = 0
+          $key.ImportPkcs8PrivateKey([Convert]::FromBase64String($env:UPDATE_SIGNING_KEY), [ref]$read)
+          $digest = [System.Security.Cryptography.SHA256]::HashData([System.IO.File]::ReadAllBytes("dist/$name"))
+          Set-Content -Path "dist/$name.sig" -Value ([Convert]::ToBase64String($key.SignHash($digest))) -NoNewline
+          $hash = [Convert]::ToHexString($digest).ToLowerInvariant()
+          Set-Content -Path "dist/$name.sha256" -Value "$hash  $name" -NoNewline
+
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/NexusShot-${{ steps.version.outputs.value }}.exe
+          files: |
+            dist/NexusShot-${{ steps.version.outputs.value }}.exe
+            dist/NexusShot-${{ steps.version.outputs.value }}.exe.sig
+            dist/NexusShot-${{ steps.version.outputs.value }}.exe.sha256
           generate_release_notes: true

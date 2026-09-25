@@ -10,6 +10,13 @@ public static class ImageFiles
     public static bool CanOpen(string path) =>
         Extensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
+    public static string ExtensionOf(ImageFormat format) => format switch
+    {
+        ImageFormat.Jpeg => ".jpg",
+        ImageFormat.Bmp => ".bmp",
+        _ => ".png",
+    };
+
     /// <summary>The format a path is written in; anything unrecognised is PNG.</summary>
     public static ImageFormat FormatOf(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {

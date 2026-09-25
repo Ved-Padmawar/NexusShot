@@ -29,14 +29,15 @@ public sealed class App : IDisposable
         _settings = _storage.LoadSettings();
         _history = _storage.LoadHistory();
 
-        // Captures whose files have been deleted behind our back are dropped on load, so the grid
-        // never shows a row that cannot be opened.
         _history.RemoveAll(item => !File.Exists(item.FilePath));
 
         _main = new MainWindow(_storage, _settings, _history);
         _pipeline = new CapturePipeline(_storage, _settings, _history, _main);
         _main.CaptureRequested += Capture;
+        _main.CaptureTextRequested += CaptureText;
+        _main.TimedCaptureRequested += TimedCapture;
         _main.HotkeysChanged += ApplyHotkeys;
+        _main.UpdateReady += InstallUpdate;
         _main.RecordingChanged += SuspendHotkeys;
 
         var scale = Functions.GetDpiForWindow(_main.Handle) / 96.0;
@@ -52,10 +53,7 @@ public sealed class App : IDisposable
         _main.ThemeChanged += RethemeEditors;
         WatchSaveFolder();
 
-        // The watcher only reports changes from here on, so whatever is already in the folder is
-        // invisible to it. A reinstall keeps the captures but loses the history file, and pointing
-        // the setting at an existing folder is the same situation: without this scan those captures
-        // appear only once some later change happens to fire the watcher.
+        // The watcher sees only later changes; this picks up captures already in the folder.
         SyncHistory();
 
         // Rewrites a Run entry from an older build, which had no --startup flag.
@@ -63,8 +61,7 @@ public sealed class App : IDisposable
 
         Log.Info("app.started", $"{_history.Count} captures");
 
-        // The main window's WndProc is the app's message pump: the tray and the hotkeys both post
-        // here, which is why they are registered against its handle.
+        // The tray and hotkeys post to this window, so its WndProc is the app's message pump.
         _main.MessageIntercept = OnMessage;
     }
 
@@ -76,6 +73,8 @@ public sealed class App : IDisposable
             _main.Show();
             _main.SetForeground();
         }
+
+        _main.ScheduleUpdateChecks();
 
         using var application = new Application();
         application.Run();
@@ -191,15 +190,20 @@ public sealed class App : IDisposable
         try
         {
             // The desktop must be sampled before focus changes; only encoding/filing is deferred.
+            var cursor = _settings.IncludeCursor;
             var pixels = mode switch
             {
-                CaptureMode.FullScreen => ScreenCapture.CaptureFullScreen(),
-                CaptureMode.ActiveWindow => ScreenCapture.CaptureActiveWindow(),
-                _ => RegionOverlay.Pick(),
+                CaptureMode.FullScreen => ScreenCapture.CaptureFullScreen(cursor),
+                CaptureMode.ActiveWindow => ScreenCapture.CaptureActiveWindow(cursor),
+                _ => RegionOverlay.Pick(cursor, Theme),
             };
             if (pixels is null) { _captureRunning = false; return; }
+            if (_settings.ShutterSound) Shutter.Play();
+
+            // "Copy only" means the clipboard is the whole result, whatever the auto-copy setting says.
             _ = FinishCapture(pixels, _settings.ScreenshotFolder, _settings.SaveAutomatically,
-                _settings.CopyToClipboardAutomatically);
+                _settings.CopyToClipboardAutomatically || _settings.AfterCapture == AfterCapture.CopyOnly,
+                _settings.CaptureFormat);
         }
         catch (Exception exception)
         {
@@ -208,6 +212,9 @@ public sealed class App : IDisposable
             UserFeedback.Error(_main.Handle, "Could not capture the screen. Please retry.");
         }
     }
+
+    /// <summary>The theme the pickers draw their accents in.</summary>
+    private Theme Theme => SystemTheme.Resolve(_settings.Theme, _settings.Accent);
 
     private CountdownBadge? _countdown;
 
@@ -237,9 +244,9 @@ public sealed class App : IDisposable
         _captureRunning = true;
         try
         {
-            var pixels = RegionOverlay.Pick();
+            var pixels = RegionOverlay.Pick(includeCursor: false, Theme);
             if (pixels is null) { _captureRunning = false; return; }
-            _ = FinishCaptureText(pixels);
+            _ = FinishCaptureText(pixels, _settings.OcrLanguage);
         }
         catch (Exception exception)
         {
@@ -249,11 +256,11 @@ public sealed class App : IDisposable
         }
     }
 
-    private async Task FinishCaptureText(DecodedImage pixels)
+    private async Task FinishCaptureText(DecodedImage pixels, string? language)
     {
         var lines = 0;
         Exception? failure = null;
-        try { lines = await MediaWorker.Run(() => TextRecognition.CopyText(pixels)); }
+        try { lines = await MediaWorker.Run(() => TextRecognition.CopyText(pixels, language)); }
         catch (Exception exception) { failure = exception; }
         finally { pixels.Dispose(); }
         _main.Post(() =>
@@ -273,7 +280,7 @@ public sealed class App : IDisposable
         });
     }
 
-    private async Task FinishCapture(DecodedImage pixels, string folder, bool autoSave, bool autoCopy)
+    private async Task FinishCapture(DecodedImage pixels, string folder, bool autoSave, bool autoCopy, ImageFormat format)
     {
         ScreenshotHistoryItem? item = null;
         Exception? failure = null;
@@ -282,7 +289,7 @@ public sealed class App : IDisposable
         {
             item = await MediaWorker.Run(() =>
             {
-                var saved = CaptureStore.Save(pixels, folder, autoSave);
+                var saved = CaptureStore.Save(pixels, folder, autoSave, format);
                 if (autoCopy)
                 {
                     try { ClipboardImage.Copy(pixels, saved.FilePath); }
@@ -326,6 +333,23 @@ public sealed class App : IDisposable
         }
         _pipeline.CloseEditors(FinishExit);
     }
+
+    /// <summary>Closes the editors - each may ask to save - then hands over to the installer and exits,
+    /// so it can replace the running exe. The installer starts NexusShot again when it is done.</summary>
+    private void InstallUpdate(string installer) => _pipeline.CloseEditors(() =>
+    {
+        try
+        {
+            Updater.Install(installer);
+        }
+        catch (System.ComponentModel.Win32Exception exception)
+        {
+            Log.Error("update.install", exception, installer);
+            _main.UpdateFailed("the installer could not be started");
+            return;
+        }
+        FinishExit();
+    });
 
     private void FinishExit()
     {
@@ -424,8 +448,7 @@ public sealed class App : IDisposable
                 var live = _history.ToDictionary(item => item.FilePath, StringComparer.OrdinalIgnoreCase);
                 foreach (var (candidate, version) in result.Changed)
                 {
-                    // Reject a file deleted or replaced after the scan. A queued watcher event
-                    // will rescan replacements; no old dimensions overwrite a newer save.
+                    // Skip a file deleted or replaced since the scan; the watcher rescans replacements.
                     try
                     {
                         if (FileVersion.Read(candidate.FilePath) != version) { _syncQueued = true; continue; }
@@ -464,9 +487,10 @@ public sealed class App : IDisposable
     public void Dispose()
     {
         _disposed = true;
-        // Detached before the window goes: a handler that outlives its subscriber can still be
-        // reached from a late message, and would run against disposed hotkeys or a dead tray icon.
+        // Detached first, so a late message cannot reach disposed hotkeys or a dead tray icon.
         _main.CaptureRequested -= Capture;
+        _main.CaptureTextRequested -= CaptureText;
+        _main.TimedCaptureRequested -= TimedCapture;
         _main.HotkeysChanged -= ApplyHotkeys;
         _main.RecordingChanged -= SuspendHotkeys;
         _main.SettingsChanged -= OnSettingsChanged;

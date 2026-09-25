@@ -12,6 +12,10 @@ public sealed class LruCache<TKey, TValue>(int capacity) where TKey : notnull
     private readonly Dictionary<TKey, LinkedListNode<(TKey Key, TValue Value)>> _entries = [];
     private readonly LinkedList<(TKey Key, TValue Value)> _recency = [];
 
+    /// <summary>Raised by a caller whose working set grew; an insert evicts one entry at a time, so
+    /// lowering it would not shrink the cache.</summary>
+    public int Capacity { get; set; } = capacity;
+
     public int Count => _entries.Count;
     public IEnumerable<TValue> Values => _recency.Select(entry => entry.Value);
 
@@ -45,7 +49,7 @@ public sealed class LruCache<TKey, TValue>(int capacity) where TKey : notnull
 
         Insert(key, value);
 
-        if (_entries.Count <= capacity)
+        if (_entries.Count <= Capacity)
         {
             evicted = default!;
             return false;

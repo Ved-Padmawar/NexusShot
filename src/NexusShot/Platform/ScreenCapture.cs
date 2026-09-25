@@ -34,7 +34,7 @@ public static partial class ScreenCapture
         WindowInterop.GetSystemMetrics(SM_CXVIRTUALSCREEN),
         WindowInterop.GetSystemMetrics(SM_CYVIRTUALSCREEN));
 
-    public static DecodedImage CaptureFullScreen() => Capture(VirtualDesktop);
+    public static DecodedImage CaptureFullScreen(bool includeCursor) => Capture(VirtualDesktop, includeCursor);
 
     /// <summary>
     /// Blits the foreground window.
@@ -42,7 +42,7 @@ public static partial class ScreenCapture
     /// The DWM extended frame is preferred over <c>GetWindowRect</c>: the latter includes the drop
     /// shadow, which lands as a band of desktop around the window.
     /// </summary>
-    public static DecodedImage CaptureActiveWindow()
+    public static DecodedImage CaptureActiveWindow(bool includeCursor)
     {
         var window = GetForegroundWindow();
         if (window == IntPtr.Zero)
@@ -53,7 +53,7 @@ public static partial class ScreenCapture
         else if (WindowInterop.GetWindowRect(window, out var rect))
             winRect = new RectInt(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
         else throw new InvalidOperationException("Could not determine the active window.");
-        return Capture(Intersect(winRect, VirtualDesktop));
+        return Capture(Intersect(winRect, VirtualDesktop), includeCursor);
     }
 
     /// <summary>
@@ -65,7 +65,7 @@ public static partial class ScreenCapture
     /// re-decoding a full virtual desktop for each one. Callers that want a file encode it
     /// themselves, once.
     /// </summary>
-    public static unsafe DecodedImage Capture(RectInt bounds)
+    public static unsafe DecodedImage Capture(RectInt bounds, bool includeCursor = false)
     {
         if (bounds.Width <= 0 || bounds.Height <= 0)
             throw new ArgumentOutOfRangeException(nameof(bounds), "The capture area must have positive dimensions.");
@@ -102,14 +102,15 @@ public static partial class ScreenCapture
             var previous = SelectObject(memory, bitmap);
             try
             {
-                // CAPTUREBLT includes layered windows, which is what makes a capture match what the
-                // user can actually see.
+                // CAPTUREBLT includes layered windows, so the capture matches what is on screen.
                 if (!BitBlt(memory, 0, 0, bounds.Width, bounds.Height,
                         screen, bounds.X, bounds.Y, SRCCOPY | CAPTUREBLT))
                     throw new InvalidOperationException("The screen copy failed.");
             }
             finally
             {
+                // GDI copies never contain the cursor (a hardware overlay), so it is drawn in after the blit.
+                if (includeCursor) DrawCursor(memory, bounds);
                 SelectObject(memory, previous);
             }
 
@@ -129,6 +130,59 @@ public static partial class ScreenCapture
             ReleaseDC(IntPtr.Zero, screen);
         }
     }
+
+    /// <summary>Draws the visible cursor at its hotspot-corrected position. A hidden cursor (a game,
+    /// a video in full screen) is left out, as the user sees it.</summary>
+    private static unsafe void DrawCursor(IntPtr dc, RectInt bounds)
+    {
+        var info = new CURSORINFO { cbSize = (uint)sizeof(CURSORINFO) };
+        if (!GetCursorInfo(ref info) || (info.flags & CURSOR_SHOWING) == 0 || info.hCursor == IntPtr.Zero) return;
+        if (!GetIconInfo(info.hCursor, out var icon)) return;
+
+        // GetIconInfo hands back bitmaps the caller owns.
+        if (icon.hbmMask != IntPtr.Zero) DeleteObject(icon.hbmMask);
+        if (icon.hbmColor != IntPtr.Zero) DeleteObject(icon.hbmColor);
+
+        DrawIconEx(dc,
+            info.ptScreenPos.X - (int)icon.xHotspot - bounds.X,
+            info.ptScreenPos.Y - (int)icon.yHotspot - bounds.Y,
+            info.hCursor, 0, 0, 0, IntPtr.Zero, DI_NORMAL);
+    }
+
+    private const uint CURSOR_SHOWING = 0x00000001;
+    private const uint DI_NORMAL = 0x0003;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CURSORINFO
+    {
+        public uint cbSize;
+        public uint flags;
+        public IntPtr hCursor;
+        public WindowInterop.POINT ptScreenPos;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ICONINFO
+    {
+        public int fIcon;
+        public uint xHotspot;
+        public uint yHotspot;
+        public IntPtr hbmMask;
+        public IntPtr hbmColor;
+    }
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetCursorInfo(ref CURSORINFO info);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetIconInfo(IntPtr icon, out ICONINFO info);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DrawIconEx(IntPtr dc, int x, int y, IntPtr icon, int width, int height,
+        uint step, IntPtr flickerFreeBrush, uint flags);
 
     private static RectInt Intersect(RectInt requested, RectInt available)
     {

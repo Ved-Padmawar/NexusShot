@@ -75,9 +75,17 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; The in-app updater runs this installer silently with /UPDATE=1 and exits; start the new version.
+Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: IsUpdate
 
 [UninstallRun]
 ; The tray process holds no window, so Restart Manager alone may not see it at uninstall time.
 Filename: "{cmd}"; Parameters: "/C taskkill /IM ""{#AppExeName}"" /F"; Flags: runhidden; RunOnceId: "KillTray"
 ; Remove the HKCU Run entry the in-app "Start with Windows" toggle may have written.
 Filename: "{cmd}"; Parameters: "/C reg delete ""HKCU\Software\Microsoft\Windows\CurrentVersion\Run"" /v NexusShot /f"; Flags: runhidden; RunOnceId: "RemoveRunKey"
+
+[Code]
+function IsUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:update|0}') = '1';
+end;

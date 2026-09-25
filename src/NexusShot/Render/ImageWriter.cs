@@ -8,9 +8,9 @@ namespace NexusShot.Render;
 /// </summary>
 public static class ImageWriter
 {
-    /// <summary>Writes premultiplied BGRA pixels, top-down, as a PNG.</summary>
-    public static void Write(string path, DecodedImage image) =>
-        Write(path, image.Pointer, image.Width, image.Height, image.Stride, ImageFormat.Png);
+    /// <summary>Writes premultiplied BGRA pixels, top-down.</summary>
+    public static void Write(string path, DecodedImage image, ImageFormat format = ImageFormat.Png) =>
+        Write(path, image.Pointer, image.Width, image.Height, image.Stride, format);
 
     /// <summary>Writes from a raw buffer, for a caller that already holds one - the exporter reads
     /// back from a mapped GPU bitmap, whose rows the driver may pad beyond width * 4. JPEG and BMP

@@ -36,8 +36,8 @@ or tooltip can be opened for the shot.
 **🔤 Capture text** — select a region and its text goes straight to the clipboard, using the OCR built
 into Windows (offline). Cards and the editor can copy an image's text too.
 
-**🃏 Quick Access cards** — after each capture a thumbnail card appears at the **bottom-left** and
-stacks upward. It never steals focus. Hovering shows Pin, Close, Edit and Save as in the corners and
+**🃏 Quick Access cards** — after each capture a thumbnail card appears in the corner you choose
+(bottom-left by default) and stacks from there. It never steals focus. Hovering shows Pin, Close, Edit and Save as in the corners and
 Copy / Copy text in the centre; drag the card anywhere else into another app — as a file, or as its
 path into a text field. Auto-dismiss is configurable and pauses while hovered, pinned or dragged.
 
@@ -48,28 +48,34 @@ the screen; click Restore to bring one back.
 highlight, blur, pixelate, spotlight, and crop. Annotations stay selectable and editable after they
 are drawn: boxes have eight resize grips, lines and arrows have endpoint grips, and text is edited
 in place, wrapping inside its box. Crop is a handle-draggable frame applied on `Enter` and discarded
-with `Esc`. Blur and pixelate run on the GPU. The colour picker takes a hex value or R/G/B directly,
-so a colour can be matched to a spec. Closing with unsaved edits asks first.
+with `Esc`. Blur and pixelate run on the GPU. Shapes can be outlined, tinted or filled. The colour picker
+works in HEX, RGB, HSL or HSB, with opacity, an eyedropper, and recent and saved colours. Zoom with
+`Ctrl`+wheel. Closing with unsaved edits asks first.
 
-**🗂 Shell** — a sidebar of every capture in the save folder, kept in sync with File Explorer, plus a
-detail pane to preview, copy, share (Windows share sheet), open in the editor, or delete. Drop an
-image on it, or use **Open with** in Explorer, to edit any PNG, JPEG or BMP. Settings live here too:
-save folder, auto-save, auto-copy, card dismiss time, timer delay, theme, and start with Windows.
-Errors and results arrive as Windows notifications, never as blocking dialogs.
+**🗂 Library** — every capture in the save folder, in a grid grouped by day and kept in sync with
+File Explorer, with search. Hover a capture to delete, show in folder, copy, share (Windows share
+sheet) or open it in the editor; double-click to edit. **Select** (or `Ctrl`+click) picks several to
+delete at once. Scrolling is GPU-composited and smooth on touchpads. Drop an image on it, or use
+**Open with** in Explorer, to edit any PNG, JPEG or BMP. Settings live here too: capture format,
+after-capture action, card corner, OCR language, theme and accent, hotkeys, and more. Errors and
+results arrive as Windows notifications.
+
+**🔄 Updates** — NexusShot checks GitHub for a new version and says so; one click in Settings
+downloads it, verifies its signature, installs it and restarts.
 
 **⌨️ Global hotkeys** — `Ctrl+Shift+S` region, `Ctrl+Shift+F` full screen, `Ctrl+Shift+W` active
 window, `Ctrl+Shift+O` capture text, `Ctrl+Shift+H` restore closed cards, `Ctrl+Shift+N` open the
-shell; timed capture is unbound by default. All can be rebound (including to a single key such as
+Library; timed capture is unbound by default. All can be rebound (including to a single key such as
 `F9`) or unbound in Settings. A binding another app already owns fails on its own, the rest still
-register, and the shell says which one clashed.
+register, and the Library says which one clashed.
 
 ### Keyboard shortcuts
 
 | Context | Shortcuts |
 | --- | --- |
-| **Shell** | `Esc` closes the open list, then Settings, then the selected capture, then the window |
+| **Library** | `Ctrl+,` settings · `Esc` closes the open prompt or list, then Settings, then selection mode, then the window |
 | **Editor tools** | `V` select · `R` rectangle · `E` ellipse · `L` line · `A` arrow · `D` pen · `M` brush · `X` eraser · `T` text · `N` counter · `H` highlight · `B` blur · `P` pixelate · `S` spotlight · `C` crop |
-| **Editor** | `Ctrl+S` save · `Ctrl+Z` / `Ctrl+Y` undo / redo · `Del` delete selection · `1` toggle fit / 100% · `Enter` apply crop · `Esc` cancel |
+| **Editor** | `Ctrl+S` save · `Ctrl+C` copy · `Ctrl+Z` / `Ctrl+Y` undo / redo · `Ctrl+B` / `I` / `U` text style · `Ctrl+0` 100% · `Ctrl+9` fit · `Del` delete selection · `Enter` apply crop · `Esc` cancel |
 | **Hotkey recorder** | `Backspace` unbind · `Delete` restore default · `Esc` cancel |
 
 ---
@@ -90,7 +96,7 @@ register, and the shell says which one clashed.
 .\build.ps1 release              # build the native executable
 ```
 
-The app starts in the notification area. The shell's close button hides it; use **Exit** on the
+The app starts in the notification area. The Library's close button hides it; use **Exit** on the
 tray menu to quit. A second launch raises the running instance instead of starting another one,
 because only one process can own the global hotkeys; a file opened from Explorer is handed to it.
 
@@ -107,7 +113,7 @@ because only one process can own the global hotkeys; a file opened from Explorer
 .\build.ps1 installer            # release + Inno Setup -> dist\NexusShot-<version>.exe
 ```
 
-`release` publishes a single Native AOT executable (~12 MB) — no .NET runtime, no framework payload,
+`release` publishes a single Native AOT executable (~15 MB) — no .NET runtime, no framework payload,
 so the target machine needs nothing installed. `installer` wraps that in Inno Setup.
 
 > **Prerequisite:** [Inno Setup 6](https://jrsoftware.org/isdl.php) — `winget install JRSoftware.InnoSetup`
@@ -126,17 +132,19 @@ src/NexusShot/
               AdornerGeometry  the exact geometry of selection and crop adorners
               AppSettings      settings + history persistence
               Theme, Palette   design tokens and colours as values
+              Updates          release reading and signature checks
   Platform/   Win32, COM and WinRT interop: capture, tray notifications, hotkeys, clipboard,
               drag-out, OCR, share sheet, file dialogs, folder watcher, single instance,
-              background media queue
+              touchpad (DirectManipulation), updater, background media queue
   Render/     Direct2D / DirectWrite
               AnnotationRenderer  draws a document onto any D2D target
               Exporter            the same renderer, pointed at an offscreen target
               Ui, Dropdown        immediate-mode widgets
-              ColorPicker         hex / RGB picker with editable fields
+              ColorPicker         HEX / RGB / HSL / HSB picker with eyedropper
+              CompositionLayers   the Library's DirectComposition layers
               PixelEffectSource   blur and pixelate as GPU effects
   Views/      Windows and their message handling
-              MainWindow       the shell: sidebar, detail pane, settings
+              MainWindow       the Library: day-grouped grid, settings
               EditorWindow     canvas + EditorChrome (toolbar, footer)
               FloatingPreview  the quick-access card
               RestoreStrip     recently closed captures
@@ -149,8 +157,9 @@ src/NexusShot.Tests/  unit tests for Core
 
 The UI is **immediate mode**: there is no retained visual tree. Input mutates the document and asks
 for a repaint; a frame is one allocation-free pass over the annotation list, and `WM_PAINT`
-coalesces a burst of pointer messages into a single repaint. File work — PNG encoding, clipboard,
-thumbnail decoding — runs off the UI thread.
+coalesces a burst of pointer messages into a single repaint. The Library's grid is the exception:
+it is drawn once into a DirectComposition layer that the compositor scrolls, so scrolling redraws
+nothing. File work — encoding, clipboard, thumbnail decoding — runs off the UI thread.
 
 <details>
 <summary><b>NexusShot used to be built on WinUI 3 — why it was rewritten in raw Win32 + Direct2D</b></summary>
@@ -173,7 +182,7 @@ problems turned out to be the same problem:
 | **Export** | A separate GDI+ flattener, kept in agreement with the screen by hand. | The same renderer, pointed at an offscreen target — they cannot drift. |
 | **Preview sharpness** | A XAML `Image` got either a soft pre-scaled thumbnail or a heavy full-size bitmap. | One full-resolution GPU bitmap, rescaled each frame. |
 | **Cursor** | Chased through `ProtectedCursor`, and lagged. | `WM_SETCURSOR`: Windows draws it. |
-| **Payload** | 117 MB (Windows App SDK, self-contained). | **~12 MB**, single exe. |
+| **Payload** | 117 MB (Windows App SDK, self-contained). | **~15 MB**, single exe. |
 | **RAM idle** | ~140 MB | **~10 MB** |
 
 The editing model — `EditorDocument`, `BoxGeometry`, `Annotation` and the adorner geometry — carried
@@ -201,10 +210,13 @@ over essentially unchanged, because it never depended on the framework.
 - **Drag-out.** Cards drag the shell's own data object (every format Explorer offers) plus
   `CF_UNICODETEXT`, so a drop onto a text field pastes the path.
 - **Idle memory.** Small windows render in software, the export device is released after use, and
-  large buffers never go through the managed heap, so the app settles back to ~10 MB.
+  large buffers never go through the managed heap, so the app idles at ~10 MB in the tray. Opening
+  the Library or editor loads the GPU driver, which Windows keeps loaded until the app exits.
+- **Signed updates.** Each release installer is signed in CI; the app refuses any download whose
+  signature does not match its built-in key.
 - **Rebinding a hotkey** unregisters all bindings while the recorder is armed; otherwise the key
   being rebound fires its action and never reaches the recorder.
 - **Icons.** `assets/icons/icon-source.svg` is the source of truth for the app icon;
-  `export-icons.ps1` writes the `.ico`. UI glyphs come from Segoe Fluent Icons.
+  `export-icons.ps1` writes the `.ico`. UI icons are SVG paths drawn by Direct2D.
 
 </details>

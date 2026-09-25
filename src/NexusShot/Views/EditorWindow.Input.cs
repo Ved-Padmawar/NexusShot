@@ -1,46 +1,31 @@
-﻿using NexusShot.Core;
+using NexusShot.Core;
 using NexusShot.Platform;
 
 namespace NexusShot.Views;
 
 /// <summary>
-/// The editor's message handling: pointer, keyboard, and the text-box lifecycle they drive.
+/// The editor's message handling: pointer, wheel, keyboard, and the text-box lifecycle they drive.
 ///
 /// Every path here mutates the document and invalidates. The gesture state that decides which tool
 /// a drag belongs to lives in Core, so this only routes.
 /// </summary>
 public sealed partial class EditorWindow
 {
-    //
-    // Input mutates the document and invalidates. There is no per-event render, no buffering of
-    // samples, and no frame-batching machinery: WM_PAINT is already coalesced to the display rate,
-    // so a burst of pointer messages collapses into one frame on its own.
+    // Input mutates the document and invalidates. There is no per-event render and no buffering of
+    // samples: WM_PAINT is already coalesced to the display rate, so a burst of pointer messages
+    // collapses into one frame on its own.
 
     private const uint WmMouseMove = 0x0200;
     private const uint WmLButtonDown = 0x0201;
     private const uint WmLButtonUp = 0x0202;
+    private const uint WmMouseWheel = 0x020A;
+    private const uint WmMouseHWheel = 0x020E;
     private const uint WmKeyDown = 0x0100;
     private const uint WmChar = 0x0102;
     private const uint WmSetCursor = 0x0020;
-    private const uint WmTimer = 0x0113;
 
-    /// <summary>Drives the caret blink and the toast fade.</summary>
-    private const nuint AnimationTimerId = 1;
-    /// <summary>Paced to the caret's 530 ms blink, not to the frame: nothing here animates at
-    /// display rate.</summary>
-    private const uint AnimationIntervalMs = 120;
-    private bool _animating;
-
-    /// <summary>Starts or stops the repaint tick. Idempotent - called every frame.</summary>
-    private void SetAnimating(bool animating)
-    {
-        if (animating == _animating) return;
-        _animating = animating;
-
-        if (animating)
-            WindowInterop.SetTimer(Handle, AnimationTimerId, AnimationIntervalMs, IntPtr.Zero);
-        else WindowInterop.KillTimer(Handle, AnimationTimerId);
-    }
+    /// <summary>One wheel notch; touchpads send fractions of it, applied as they arrive.</summary>
+    private const double WheelDelta = 120;
 
     /// <summary>Runs <paramref name="work"/> once the frame has finished - the chrome reports presses
     /// during Render, and resizing a render target mid-frame fails with D2DERR_WRONG_STATE.</summary>
@@ -58,16 +43,13 @@ public sealed partial class EditorWindow
     {
         if (msg == 0x0010 && !RequestClose()) return Handled; // WM_CLOSE
         // Repaints and caption messages remain responsive; editing waits for the save result.
-        if ((_fileBusy || _confirmingClose) && msg is WmLButtonDown or WmLButtonUp or WmMouseMove or WmKeyDown or WmChar)
+        if ((_fileBusy || _confirmingClose)
+            && msg is WmLButtonDown or WmLButtonUp or WmMouseMove or WmKeyDown or WmChar or WmMouseWheel)
             return Handled;
         switch (msg)
         {
             case UiThreadDispatch.Message:
                 _dispatch.Drain();
-                return Handled;
-
-            case WmTimer when (nuint)wParam.Value == AnimationTimerId:
-                Invalidate();
                 return Handled;
 
             case WmLButtonDown:
@@ -82,13 +64,17 @@ public sealed partial class EditorWindow
                 OnPointerReleased(ClientPoint(lParam));
                 return Handled;
 
+            case WmMouseWheel:
+            case WmMouseHWheel:
+                OnWheel((short)(((ulong)wParam.Value >> 16) & 0xFFFF), horizontal: msg == WmMouseHWheel,
+                    control: ((ulong)wParam.Value & 0x0008) != 0, shift: ((ulong)wParam.Value & 0x0004) != 0);
+                return Handled;
+
             case WmSetCursor:
                 // Only the client area is ours; DefWindowProc owns the frame's resize arrows.
                 if ((lParam.Value.ToInt64() & 0xFFFF) != HTCLIENT) break;
 
-                // The live pointer, not _clientPointer: WM_SETCURSOR arrives ahead of the
-                // WM_MOUSEMOVE that would refresh it, so on re-entry from the toolbar the field
-                // still holds the old outside-the-canvas coordinate.
+                // The live pointer: WM_SETCURSOR arrives before the WM_MOUSEMOVE that updates it.
                 if (SetToolCursor(PointerNow())) return new LRESULT { Value = 1 };
                 break;
 
@@ -97,18 +83,38 @@ public sealed partial class EditorWindow
                 break;
 
             case WmChar:
-                // The typed character, already mapped through the keyboard layout - which is what a
-                // text box wants, rather than a raw virtual key code.
+                // The typed character, already mapped through the keyboard layout.
                 if (OnChar((char)(ulong)wParam.Value)) return Handled;
                 break;
 
             case SystemTheme.WM_SETTINGCHANGE:
                 if (SystemTheme.IsColorSetChange(msg, (IntPtr)lParam.Value.ToInt64())
-                    && _theme == AppTheme.System)
-                    SetTheme(_theme);
+                    && _settings.Theme == AppTheme.System)
+                    Retheme();
                 break;
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Ctrl+wheel zooms about the pointer; the wheel alone scrolls an image larger than the stage,
+    /// Shift turning it sideways. A fitted image does not move, so the wheel does nothing then.
+    /// </summary>
+    private void OnWheel(short delta, bool horizontal, bool control, bool shift)
+    {
+        if (_image is null) return;
+
+        if (control)
+        {
+            ZoomBy(Math.Pow(Viewport.Step, delta / WheelDelta), PointerNow());
+            return;
+        }
+
+        var distance = delta / WheelDelta * 60 * DpiScale;
+        if (horizontal) _viewport.PanBy(-distance, 0);
+        else if (shift) _viewport.PanBy(distance, 0);
+        else _viewport.PanBy(0, distance);
+        Invalidate();
     }
 
     /// <summary>
@@ -136,8 +142,7 @@ public sealed partial class EditorWindow
 
         var image = ToImage((int)client.X, (int)client.Y);
 
-        // A crop session owns the pointer, so the cursor answers only to the frame: the interior
-        // moves it, and everything outside is inert.
+        // A crop session owns the pointer, so only the frame sets the cursor.
         if (_document.PendingCrop is { } crop)
         {
             Functions.SetCursor(new HCURSOR
@@ -147,8 +152,7 @@ public sealed partial class EditorWindow
             return true;
         }
 
-        // The cursor reads off the same split the press uses, so it cannot promise a move the
-        // input path will not perform.
+        // The same split the press uses, so the cursor never promises a move input will not make.
         if (_text.Editor is { } editing && editing.Annotation.HitTest(image))
         {
             Functions.SetCursor(new HCURSOR
@@ -172,15 +176,13 @@ public sealed partial class EditorWindow
             EditorTool.Select => ToolCursors.Arrow,
             EditorTool.Pen => ToolCursors.Pencil(),
 
-            // The brush and eraser show their true footprint at its on-screen size. The brush is
-            // filled with the paint colour, so what you see is what the stroke will lay down; the
-            // eraser stays faint, because it removes rather than adds.
+            // The true on-screen footprint: the brush in its paint colour, the eraser faint.
             EditorTool.Brush => ToolCursors.Circle(
-                PaintStrokeGeometry.Diameter(_document.ActiveThickness) * _scale,
+                PaintStrokeGeometry.Diameter(_document.BrushThickness) * _scale,
                 Palette.Parse(_document.ColorHex)),
 
             EditorTool.Eraser => ToolCursors.Circle(
-                PaintStrokeGeometry.Diameter(_document.ActiveThickness) * _scale,
+                PaintStrokeGeometry.Diameter(_document.EraserThickness) * _scale,
                 Rgba.White.WithAlpha(28)),
 
             _ => ToolCursors.Cross,
@@ -205,6 +207,9 @@ public sealed partial class EditorWindow
     private bool GrabsBox(Annotation annotation, Point point) =>
         BoxGeometry.GrabsBox(annotation.Bounds, point, HandleTolerance);
 
+    /// <summary>True where the canvas owns the pointer: the stage, anywhere the chrome is not.</summary>
+    private bool InCanvas(Point client) => !(_chrome?.Covers(client) ?? true);
+
     private void OnPointerPressed((int X, int Y) client)
     {
         _clientPointer = new Point(client.X, client.Y);
@@ -213,9 +218,7 @@ public sealed partial class EditorWindow
         if (_image is null)
         { Invalidate(); return; }
 
-        // A click inside the open box moves the caret rather than committing and reopening, which
-        // would reselect the whole string. Grips are excluded: they sit on the bounds, so testing
-        // the box alone swallowed every resize.
+        // A click inside the open box moves the caret; grips are excluded so resizing still works.
         if (_text.Editor is { } open
             && InCanvas(_clientPointer)
             && !(_ui?.WantsPointer ?? false)
@@ -229,26 +232,25 @@ public sealed partial class EditorWindow
             return;
         }
 
-        // The chrome gets first refusal, and leaves an open text box alone: reaching for the font
-        // slider is an adjustment to the box, not a click away from it, and committing here would
-        // cancel an empty one outright and delete the annotation.
+        // The chrome gets first refusal; an open picker swallows the press that closes it.
         if (!InCanvas(_clientPointer)
             || (_ui?.WantsPointer ?? false)
-            || (_chrome?.PopupOpen ?? false))
+            || (_chrome?.PickerOpen ?? false))
         {
+            // Captured, so a slider or picker drag released outside the window still ends.
+            Functions.SetCapture(Handle);
+            _chromeCaptured = true;
             Invalidate();
             return;
         }
 
         var point = ToImage(client.X, client.Y);
 
-        // A press that grabs the open box keeps it, so the gesture below moves or resizes it. Only
-        // a press away from it ends the edit and discards a box that was never typed into.
+        // Grabbing the open box keeps it for the gesture; pressing away ends the edit.
         var wasEditing = _text.Annotation;
         _text.End(commit: wasEditing is not null && GrabsBox(wasEditing, point));
 
-        // Typing opens on a press inside a box that is already selected and not being grabbed. The
-        // press that merely selects a box stays free to drag it.
+        // A press inside an already-selected box types; the press that selects it only drags.
         if (_document.Selected is { Tool: EditorTool.Text } text
             && !ReferenceEquals(text, wasEditing)
             && !GrabsBox(text, point)
@@ -259,8 +261,7 @@ public sealed partial class EditorWindow
             return;
         }
 
-        // The text tool reaches an unselected box by selecting it first, so the press after this
-        // one edits that box rather than drawing another over it.
+        // The text tool selects an unselected box first, so the next press edits it.
         if (_document.ActiveTool == EditorTool.Text
             && _document.Selected is null
             && _document.HitTestTopmost(point) is { Tool: EditorTool.Text } unselected)
@@ -277,7 +278,8 @@ public sealed partial class EditorWindow
     private void OnPointerMoved((int X, int Y) client, bool leftDown)
     {
         _clientPointer = new Point(client.X, client.Y);
-        _pointerDown = leftDown;
+        // A move never starts a press: the eyedropper closes on its press, leaving the button down.
+        _pointerDown &= leftDown;
 
         if (_image is null)
         { Invalidate(); return; }
@@ -290,9 +292,6 @@ public sealed partial class EditorWindow
             return;
         }
 
-        // A drag mutates the document and asks for a repaint. That is the whole hot path: no
-        // element scans, no sample buffering, no manual frame batching. WM_PAINT is already
-        // coalesced to the display rate, so a burst of moves collapses into one frame by itself.
         if (_dragging && leftDown)
         {
             _document.ContinueGesture(point);
@@ -308,9 +307,7 @@ public sealed partial class EditorWindow
                         : null;
         }
 
-
-        // The chrome is immediate: hover states only update when something repaints, so every move
-        // invalidates. A frame is ~1 ms, and Windows coalesces WM_PAINT, so this is not a hot loop.
+        // Hover is immediate-mode, so every move repaints; WM_PAINT is coalesced.
         Invalidate();
     }
 
@@ -318,6 +315,14 @@ public sealed partial class EditorWindow
     {
         _clientPointer = new Point(client.X, client.Y);
         _pointerDown = false;
+
+        // A slider or picker drag is one undo step, ended by the release.
+        _document.EndAdjustment();
+        if (_chromeCaptured)
+        {
+            _chromeCaptured = false;
+            Functions.ReleaseCapture();
+        }
 
         if (_caretDragging)
         {
@@ -332,8 +337,7 @@ public sealed partial class EditorWindow
             _dragging = false;
             Functions.ReleaseCapture();
 
-            // Read before EndGesture clears the draft: only a brand-new box opens for typing, or
-            // ending a move would reopen the editor over the box just dragged.
+            // Read before EndGesture clears the draft: only a new box opens for typing.
             var created = _document.IsDrawGestureActive;
             _document.EndGesture(ToImage(client.X, client.Y));
 
@@ -379,13 +383,12 @@ public sealed partial class EditorWindow
         Invalidate();
     }
 
-    /// <summary>A printable character while a box is open. Control characters arrive here too, and
-    /// are the business of WM_KEYDOWN.</summary>
+    /// <summary>A printable character: the focused chrome field's, then an open text box's.</summary>
     private bool OnChar(char character)
     {
-        if (_chrome is { TextFieldFocused: true })
+        if (_ui is { HasKeyboardFocus: true })
         {
-            _chrome.HandleKey(_document, character, backspace: false, enter: false, escape: false);
+            if (!char.IsControl(character)) _ui.Char(character);
             Invalidate();
             return true;
         }
@@ -395,12 +398,11 @@ public sealed partial class EditorWindow
         return true;
     }
 
-    /// <summary>Editing keys for an open box, routed to the box; undo and redo come back here
-    /// because they reach past it into the document.</summary>
-    private bool OnTextKey(VIRTUAL_KEY key)
+    /// <summary>Editing keys for an open box, routed to the box; undo, redo and formatting come back
+    /// here because they reach past it into the document.</summary>
+    private bool OnTextKey(VIRTUAL_KEY key, bool control, bool shift)
     {
-        var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
-        var shift = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0;
+        if (control && ToggleTextFormat(key)) return true;
 
         switch (_text.HandleKey(key, control, shift))
         {
@@ -418,40 +420,76 @@ public sealed partial class EditorWindow
         }
     }
 
+    /// <summary>Ctrl+B, I and U: the selected text box's formatting, or the defaults for new text.</summary>
+    private bool ToggleTextFormat(VIRTUAL_KEY key)
+    {
+        var text = _document.Selected is { Tool: EditorTool.Text } selected ? selected : null;
+        switch (key)
+        {
+            case VIRTUAL_KEY.VK_B:
+                var bold = !(text?.IsBold ?? _document.TextBold);
+                _document.SetTextFormat(d => d.TextBold = bold, a => a.IsBold = bold);
+                break;
+            case VIRTUAL_KEY.VK_I:
+                var italic = !(text?.IsItalic ?? _document.TextItalic);
+                _document.SetTextFormat(d => d.TextItalic = italic, a => a.IsItalic = italic);
+                break;
+            case VIRTUAL_KEY.VK_U:
+                var underline = !(text?.IsUnderline ?? _document.TextUnderline);
+                _document.SetTextFormat(d => d.TextUnderline = underline, a => a.IsUnderline = underline);
+                break;
+            default:
+                return false;
+        }
+        Invalidate();
+        return true;
+    }
+
     /// <summary>Writes the box's text back and closes it, discarding one that was never typed into.</summary>
     private void CommitText() => _text.End(commit: false);
 
-    /// <summary>True inside the image well - the region the canvas owns, between the bars.</summary>
-    private bool InCanvas(Point client) => CanvasWell().Contains(client);
-
     private bool OnKeyDown(VIRTUAL_KEY key)
     {
-        // A focused colour box owns the keyboard: the printable keys arrive as WM_CHAR, and only the
-        // editing keys are handled here. Otherwise typing a hex digit would drive the toolbar.
-        if (_chrome is not null && _chrome.TextFieldFocused)
-        {
-            var handled = _chrome.HandleKey(
-                _document, '\0',
-                backspace: key == VIRTUAL_KEY.VK_BACK,
-                enter: key == VIRTUAL_KEY.VK_RETURN,
-                escape: key == VIRTUAL_KEY.VK_ESCAPE);
+        var control = KeyDown(VIRTUAL_KEY.VK_CONTROL);
+        var shift = KeyDown(VIRTUAL_KEY.VK_SHIFT);
 
-            if (handled) Invalidate();
-            return handled;
+        // A focused field owns the keyboard, so a hex digit typed into the picker never switches tools.
+        if (_ui is { HasKeyboardFocus: true } ui)
+        {
+            if (control && key == VIRTUAL_KEY.VK_V && ClipboardText.Paste() is { } pasted)
+                foreach (var character in pasted.Trim()) ui.Char(character);
+            else ui.Key(key, shift);
+            Invalidate();
+            return true;
         }
 
-        // An open text box owns the keyboard: its keystrokes are text, not shortcuts, or typing
-        // "rectangle" would switch tools eight times.
-        if (_text.IsOpen && OnTextKey(key)) return true;
+        if (_chrome is { PickerOpen: true } chrome && !control)
+        {
+            if (key == VIRTUAL_KEY.VK_ESCAPE)
+            {
+                chrome.PickerClosed(_settings);
+                if (chrome.SettingsChanged) { chrome.SettingsChanged = false; _settingsChanged(); }
+                Invalidate();
+                return true;
+            }
+            if (key == VIRTUAL_KEY.VK_I)
+            {
+                Post(PickFromScreen);
+                return true;
+            }
+            // Letters while the picker is open belong to it, not to the tool shortcuts.
+            return true;
+        }
 
-        var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
+        // An open text box owns the keyboard: its keystrokes are text, not shortcuts.
+        if (_text.IsOpen && OnTextKey(key, control, shift)) return true;
 
         if (control)
         {
             switch (key)
             {
                 case VIRTUAL_KEY.VK_Z:
-                    Undo();
+                    if (shift) Redo(); else Undo();
                     return true;
                 case VIRTUAL_KEY.VK_Y:
                     Redo();
@@ -459,8 +497,27 @@ public sealed partial class EditorWindow
                 case VIRTUAL_KEY.VK_S:
                     Post(() => RunFileAction(Save));
                     return true;
+                case VIRTUAL_KEY.VK_C:
+                    Post(() => RunFileAction(CopyToClipboard));
+                    return true;
+                case VIRTUAL_KEY.VK_OEM_PLUS:
+                case VIRTUAL_KEY.VK_ADD:
+                    ZoomBy(Viewport.Step, null);
+                    return true;
+                case VIRTUAL_KEY.VK_OEM_MINUS:
+                case VIRTUAL_KEY.VK_SUBTRACT:
+                    ZoomBy(1 / Viewport.Step, null);
+                    return true;
+                case VIRTUAL_KEY.VK_0:
+                case VIRTUAL_KEY.VK_NUMPAD0:
+                    ZoomActual();
+                    return true;
+                case VIRTUAL_KEY.VK_9:
+                case VIRTUAL_KEY.VK_NUMPAD9:
+                    ZoomFit();
+                    return true;
             }
-            return false;
+            return ToggleTextFormat(key);
         }
 
         switch (key)
@@ -472,14 +529,14 @@ public sealed partial class EditorWindow
 
             case VIRTUAL_KEY.VK_ESCAPE:
                 if (_text.IsOpen) CommitText();
-                else if (_document.IsCropSessionActive) _document.CancelCropSession();
-                else _document.SelectAnnotation(null);
+                else if (_document.IsCropSessionActive) SelectTool(EditorTool.Select);
+                else if (_document.Selected is not null) _document.SelectAnnotation(null);
+                else if (_document.ActiveTool != EditorTool.Select) SelectTool(EditorTool.Select);
                 Invalidate();
                 return true;
 
             case VIRTUAL_KEY.VK_RETURN:
-                // Enter applies the crop frame without writing the file, so it can be adjusted
-                // against the cropped result before saving.
+                // Enter applies the frame without saving, so it can still be adjusted.
                 if (_document.IsCropSessionActive)
                 {
                     _document.CommitCrop();
@@ -489,49 +546,36 @@ public sealed partial class EditorWindow
                 break;
 
             // B is Blur, not Brush; P is Pixelate, not Pen.
-            case VIRTUAL_KEY.VK_V:
-                return SelectTool(EditorTool.Select);
-            case VIRTUAL_KEY.VK_R:
-                return SelectTool(EditorTool.Rectangle);
-            case VIRTUAL_KEY.VK_E:
-                return SelectTool(EditorTool.Ellipse);
-            case VIRTUAL_KEY.VK_A:
-                return SelectTool(EditorTool.Arrow);
-            case VIRTUAL_KEY.VK_L:
-                return SelectTool(EditorTool.Line);
-            case VIRTUAL_KEY.VK_D:
-                return SelectTool(EditorTool.Pen);
-            case VIRTUAL_KEY.VK_M:
-                return SelectTool(EditorTool.Brush);
-            case VIRTUAL_KEY.VK_X:
-                return SelectTool(EditorTool.Eraser);
-            case VIRTUAL_KEY.VK_T:
-                return SelectTool(EditorTool.Text);
-            case VIRTUAL_KEY.VK_N:
-                return SelectTool(EditorTool.Counter);
-            case VIRTUAL_KEY.VK_H:
-                return SelectTool(EditorTool.Highlight);
-            case VIRTUAL_KEY.VK_B:
-                return SelectTool(EditorTool.Blur);
-            case VIRTUAL_KEY.VK_P:
-                return SelectTool(EditorTool.Pixelate);
-            case VIRTUAL_KEY.VK_S:
-                return SelectTool(EditorTool.Spotlight);
-            case VIRTUAL_KEY.VK_C:
-                return SelectTool(EditorTool.Crop);
-
-            case VIRTUAL_KEY.VK_1:
-                _fitToViewport = !_fitToViewport;
-                Invalidate();
-                return true;
+            case VIRTUAL_KEY.VK_V: return SelectTool(EditorTool.Select);
+            case VIRTUAL_KEY.VK_R: return SelectTool(EditorTool.Rectangle);
+            case VIRTUAL_KEY.VK_E: return SelectTool(EditorTool.Ellipse);
+            case VIRTUAL_KEY.VK_A: return SelectTool(EditorTool.Arrow);
+            case VIRTUAL_KEY.VK_L: return SelectTool(EditorTool.Line);
+            case VIRTUAL_KEY.VK_D: return SelectTool(EditorTool.Pen);
+            case VIRTUAL_KEY.VK_M: return SelectTool(EditorTool.Brush);
+            case VIRTUAL_KEY.VK_X: return SelectTool(EditorTool.Eraser);
+            case VIRTUAL_KEY.VK_T: return SelectTool(EditorTool.Text);
+            case VIRTUAL_KEY.VK_N: return SelectTool(EditorTool.Counter);
+            case VIRTUAL_KEY.VK_H: return SelectTool(EditorTool.Highlight);
+            case VIRTUAL_KEY.VK_B: return SelectTool(EditorTool.Blur);
+            case VIRTUAL_KEY.VK_P: return SelectTool(EditorTool.Pixelate);
+            case VIRTUAL_KEY.VK_S: return SelectTool(EditorTool.Spotlight);
+            case VIRTUAL_KEY.VK_C: return SelectTool(EditorTool.Crop);
         }
         return false;
     }
 
+    /// <summary>
+    /// Switches tools. Picking the active tool again returns to Select, so a tool is a toggle; leaving
+    /// a tool ends an open text edit and a crop session, which a different tool cannot continue.
+    /// </summary>
     private bool SelectTool(EditorTool tool)
     {
-        // Leaving the tool ends the edit, or the box would stay open under a tool that cannot type.
+        if (tool == _document.ActiveTool && tool != EditorTool.Select && !_document.IsCropSessionActive)
+            tool = EditorTool.Select;
+
         CommitText();
+        _chrome?.ClosePicker();
         if (tool != EditorTool.Crop) _document.CancelCropSession();
         _document.ActiveTool = tool;
         if (tool == EditorTool.Crop && _image is not null) _document.BeginCropSession();
@@ -555,6 +599,8 @@ public sealed partial class EditorWindow
         if (!Functions.ScreenToClient(new HWND { Value = Handle }, ref point)) return _clientPointer;
         return new Point(point.x, point.y);
     }
+
+    private static bool KeyDown(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
 
     protected override void Dispose(bool disposing)
     {

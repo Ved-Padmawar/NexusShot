@@ -142,7 +142,7 @@ public class WorkflowRegressionTests : IDisposable
         {
             using var image = DecodedImage.Allocate(4, 4);
             image.Span.Fill(255);
-            return CaptureStore.Save(image, invalidFolder, autoSave: false);
+            return CaptureStore.Save(image, invalidFolder, autoSave: false, ImageFormat.Png);
         });
         try
         {
@@ -160,8 +160,8 @@ public class WorkflowRegressionTests : IDisposable
         {
             using var image = DecodedImage.Allocate(4, 4);
             image.Span.Fill(255);
-            var first = CaptureStore.Save(image, _directory, autoSave: true);
-            var second = CaptureStore.Save(image, _directory, autoSave: true);
+            var first = CaptureStore.Save(image, _directory, autoSave: true, ImageFormat.Png);
+            var second = CaptureStore.Save(image, _directory, autoSave: true, ImageFormat.Png);
             Assert.NotEqual(first.FilePath, second.FilePath);
             return true;
         });
