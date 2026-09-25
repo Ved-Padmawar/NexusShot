@@ -97,6 +97,12 @@ public sealed class App : IDisposable
             return true;
         }
 
+        if (TrayIcon.WM_TASKBARCREATED != 0 && message == TrayIcon.WM_TASKBARCREATED)
+        {
+            _tray.Add();
+            return true;
+        }
+
         if (message == TrayIcon.WM_TRAY)
         {
             switch (_tray.OnMessage(lParam))

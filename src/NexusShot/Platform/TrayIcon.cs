@@ -32,20 +32,34 @@ public sealed class TrayIcon : IDisposable
     /// <summary>The private message the icon posts to our window for every mouse event on it.</summary>
     public const uint WM_TRAY = 0x0400 + 1;   // WM_APP + 1
 
+    /// <summary>Broadcast when Explorer (re)creates the taskbar - after a restart or a crash, or on
+    /// login once the tray is ready - which leaves the tray empty until each app adds itself back.</summary>
+    public static readonly uint WM_TASKBARCREATED = RegisterWindowMessageW("TaskbarCreated");
+
     private const uint WM_RBUTTONUP = 0x0205;
     private const uint WM_LBUTTONDBLCLK = 0x0203;
 
     private readonly IntPtr _window;
     private readonly uint _id;
+    private readonly string _tooltip;
+    private readonly IntPtr _icon;
     private bool _added;
 
     public TrayIcon(IntPtr window, string tooltip, IntPtr icon)
     {
         _window = window;
         _id = 1;
+        _tooltip = tooltip;
+        _icon = icon;
+        Add();
+    }
 
-        var data = Build(tooltip, icon);
-        _added = Shell_NotifyIconW(NIM_ADD, ref data);
+    /// <summary>Adds the icon to the tray. Also the answer to <see cref="WM_TASKBARCREATED"/>, which
+    /// covers both an Explorer restart and a first add that failed because the tray was not up yet.</summary>
+    public void Add()
+    {
+        var data = Build(_tooltip, _icon);
+        _added = Shell_NotifyIconW(NIM_ADD, ref data) || Shell_NotifyIconW(NIM_MODIFY, ref data);
     }
 
     /// <summary>The menu items, in order. The index the user picked comes back from Show.</summary>
@@ -193,6 +207,9 @@ public sealed class TrayIcon : IDisposable
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern bool Shell_NotifyIconW(uint message, ref NOTIFYICONDATAW data);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint RegisterWindowMessageW(string message);
 
     [DllImport("user32.dll")] private static extern IntPtr CreatePopupMenu();
     [DllImport("user32.dll")] private static extern bool DestroyMenu(IntPtr menu);
