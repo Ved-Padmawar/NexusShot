@@ -37,7 +37,8 @@ public sealed class App : IDisposable
         _main.CaptureTextRequested += CaptureText;
         _main.TimedCaptureRequested += TimedCapture;
         _main.HotkeysChanged += ApplyHotkeys;
-        _main.UpdateReady += InstallUpdate;
+        _main.InstallRequested += InstallUpdate;
+        _main.UnsavedEditors = () => _pipeline.UnsavedEditors;
         _main.RecordingChanged += SuspendHotkeys;
 
         var scale = Functions.GetDpiForWindow(_main.Handle) / 96.0;
@@ -70,8 +71,7 @@ public sealed class App : IDisposable
     {
         if (showWindow)
         {
-            _main.Show();
-            _main.SetForeground();
+            _main.Reveal();
         }
 
         _main.ScheduleUpdateChecks();
@@ -170,8 +170,7 @@ public sealed class App : IDisposable
 
     private void ShowMain()
     {
-        _main.Show();
-        _main.SetForeground();
+        _main.Reveal();
     }
 
     /// <summary>
@@ -334,9 +333,10 @@ public sealed class App : IDisposable
         _pipeline.CloseEditors(FinishExit);
     }
 
-    /// <summary>Closes the editors - each may ask to save - then hands over to the installer and exits,
-    /// so it can replace the running exe. The installer starts NexusShot again when it is done.</summary>
-    private void InstallUpdate(string installer) => _pipeline.CloseEditors(() =>
+    /// <summary>Closes the editors, saving or dropping their changes as the restart prompt chose, then
+    /// hands over to the installer and exits so it can replace the running exe. The installer starts
+    /// NexusShot again when it is done.</summary>
+    private void InstallUpdate(string installer, bool saveEditors) => _pipeline.CloseEditors(saveEditors, () =>
     {
         try
         {
@@ -404,7 +404,7 @@ public sealed class App : IDisposable
     /// <summary>
     /// Reconciles the history with what is actually on disk.
     ///
-    /// Deletes and renames made in Explorer drop out; PNGs that appeared there are adopted. The
+    /// Deletes and renames made in Explorer drop out; images that appeared there are adopted. The
     /// watcher fires on a background thread, so the work is posted to the UI thread rather than
     /// mutating the list underneath a frame that is drawing it.
     /// </summary>

@@ -9,6 +9,9 @@ public enum Face { Text, Display, Mono }
 
 public enum TextAlign { Left, Center, Right }
 
+/// <summary>The cursor a control asks for; the window maps it to a system cursor.</summary>
+public enum PointerCursor { Arrow, Hand, Text }
+
 public enum ButtonStyle { Ghost, Primary, Outline, Secondary, Danger, Destructive }
 
 /// <summary>Where a tooltip sits relative to its anchor: below for bars, to the right for a rail.</summary>
@@ -95,6 +98,7 @@ public sealed class Ui(D2DResources resources)
         Now = Environment.TickCount64;
         _tip = null;
         _clips.Clear();
+        _cursors.Clear();
 
         // A press outside the focused field takes the keyboard back, as it would from a text box.
         if (PointerPressed && _focus != 0 && !_focusBounds.Contains(pointer)) Blur();
@@ -383,9 +387,10 @@ public sealed class Ui(D2DResources resources)
     /// The interaction core every widget shares: track hot/active and report a click. A click is
     /// press-then-release on the same widget - pressing and dragging off must not fire.
     /// </summary>
-    public bool Interact(int id, Rect bounds)
+    public bool Interact(int id, Rect bounds, PointerCursor cursor = PointerCursor.Hand)
     {
         if (Inert) return false;
+        AddCursor(bounds, cursor);
         var inside = bounds.Contains(Pointer) && PointerVisible;
         if (inside && Active == 0) Hot = id;
         if (inside && PointerPressed) Active = id;
@@ -746,17 +751,23 @@ public sealed class Ui(D2DResources resources)
         return clicked;
     }
 
-    /// <summary>An on/off switch. The knob slides; the track takes the accent when on.</summary>
+    /// <summary>An on/off switch. On uses the accent tokens the theme adapts per mode, so every accent
+    /// shows in both themes.</summary>
     public bool Toggle(int id, Rect bounds, bool on)
     {
         var track = new Rect(bounds.Right - S(36), bounds.Center.Y - S(10), S(36), S(20));
         var clicked = Interact(id, track);
 
         var t = Animate(id, on ? 1 : 0);
-        FillRounded(track, (float)S(10), on ? Theme.Accent : IsHot(id) ? Theme.StrokeStrong : Theme.SurfacePressed);
+        if (on)
+        {
+            FillRounded(track, (float)S(10), Theme.AccentSoft);
+            StrokeRounded(track, (float)S(10), Theme.AccentLine);
+        }
+        else FillRounded(track, (float)S(10), IsHot(id) ? Theme.StrokeStrong : Theme.SurfacePressed);
 
         var knob = new Point(track.X + S(10) + S(16) * t, track.Center.Y);
-        FillCircle(knob, (float)S(7), on ? Theme.TextOnAccent : Theme.TextSecondary);
+        FillCircle(knob, (float)S(on ? 6 : 7), on ? Theme.AccentText : Theme.TextSecondary);
         return clicked;
     }
 
@@ -850,9 +861,28 @@ public sealed class Ui(D2DResources resources)
     private Rect _focusBounds;
 
     /// <summary>Keys the window routed here since the last frame, consumed by the focused field.</summary>
-    private readonly List<(char Char, VIRTUAL_KEY Key, bool Shift)> _keys = [];
+    private readonly List<(char Char, VIRTUAL_KEY Key, bool Shift, bool Control)> _keys = [];
 
     public bool HasKeyboardFocus => _focus != 0;
+
+    /// <summary>Where the last frame drew live controls, and the cursor each wants: the hand over
+    /// anything clickable, the text cursor over a field. Windows asks for a cursor between frames and
+    /// only the Ui knows where its controls are, so the window reads it here. Clipped to what shows,
+    /// and later entries sit on top of earlier ones, as they are drawn.</summary>
+    private readonly List<(Rect Bounds, PointerCursor Cursor)> _cursors = [];
+
+    public PointerCursor CursorAt(Point point)
+    {
+        for (var i = _cursors.Count - 1; i >= 0; i--)
+            if (_cursors[i].Bounds.Contains(point)) return _cursors[i].Cursor;
+        return PointerCursor.Arrow;
+    }
+
+    private void AddCursor(Rect bounds, PointerCursor cursor)
+    {
+        foreach (var clip in _clips) bounds = bounds.Intersect(clip);
+        if (!bounds.IsEmpty) _cursors.Add((bounds, cursor));
+    }
 
     /// <summary>True while a caret is showing. A blink needs a slow tick, not the display rate, so the
     /// window schedules it apart from <see cref="Animating"/>.</summary>
@@ -863,10 +893,10 @@ public sealed class Ui(D2DResources resources)
 
     /// <summary>A typed character, for the focused field. The window sends WM_CHAR here while
     /// <see cref="HasKeyboardFocus"/>, so a letter typed into a box never reaches a tool shortcut.</summary>
-    public void Char(char character) => _keys.Add((character, 0, false));
+    public void Char(char character) => _keys.Add((character, 0, false, false));
 
-    /// <summary>An editing key - Backspace, Enter, Escape, the arrows - for the focused field.</summary>
-    public void Key(VIRTUAL_KEY key, bool shift) => _keys.Add(('\0', key, shift));
+    /// <summary>An editing key - Backspace, Enter, Escape, the arrows, Ctrl+A - for the focused field.</summary>
+    public void Key(VIRTUAL_KEY key, bool shift, bool control) => _keys.Add(('\0', key, shift, control));
 
     public void Blur()
     {
@@ -875,10 +905,11 @@ public sealed class Ui(D2DResources resources)
     }
 
     /// <summary>
-    /// A single-line field. Clicking focuses it with everything selected; typing edits a draft that is
+    /// A single-line field. Clicking or Ctrl+A selects everything; typing edits a draft that is
     /// reported every time it changes, so the caller applies each valid step live and ignores the
     /// half-typed ones. Up and Down step a numeric field (Shift for tens). Enter and Escape let go of
-    /// the keyboard, leaving whatever was applied - there is no pending edit to throw away.
+    /// the keyboard, leaving whatever was applied - there is no pending edit to throw away. There is
+    /// no hover state: the focus border is a field's only feedback.
     /// </summary>
     public FieldResult Field(
         int id, Rect bounds, string value, Func<char, bool> accept, int maxLength,
@@ -891,6 +922,7 @@ public sealed class Ui(D2DResources resources)
             _draft = value;
             _replace = true;
         }
+        if (!Inert) AddCursor(bounds, PointerCursor.Text);
 
         var focused = _focus == id;
         var changed = false;
@@ -899,7 +931,7 @@ public sealed class Ui(D2DResources resources)
         if (focused)
         {
             _focusBounds = bounds;
-            foreach (var (character, key, shift) in _keys)
+            foreach (var (character, key, shift, control) in _keys)
             {
                 if (character != '\0')
                 {
@@ -914,6 +946,9 @@ public sealed class Ui(D2DResources resources)
 
                 switch (key)
                 {
+                    case VIRTUAL_KEY.VK_A when control:
+                        _replace = true;
+                        break;
                     case VIRTUAL_KEY.VK_BACK:
                         _draft = _replace ? "" : _draft.Length > 0 ? _draft[..^1] : _draft;
                         _replace = false;
@@ -940,10 +975,8 @@ public sealed class Ui(D2DResources resources)
 
         focused = _focus == id;
         var radius = (float)S(Metrics.RadiusSm);
-        FillRounded(bounds, radius, IsHot(id) && !focused ? Theme.SurfaceHover : Theme.SurfacePane);
-        StrokeRounded(bounds, radius,
-            focused ? Theme.Accent : IsHot(id) ? Theme.StrokeStrong : Theme.StrokeDefault,
-            focused ? (float)S(1.5) : 1);
+        FillRounded(bounds, radius, Theme.SurfacePane);
+        StrokeRounded(bounds, radius, focused ? Theme.Accent : Theme.StrokeDefault);
 
         var font = S(Metrics.FontSm);
         var x = bounds.X + S(8);
@@ -951,7 +984,7 @@ public sealed class Ui(D2DResources resources)
 
         if (leading is not null)
         {
-            Icon(leading, new Rect(x, bounds.Y, S(15), bounds.Height), focused || IsHot(id) ? Theme.TextPrimary : Theme.TextSecondary, S(15));
+            Icon(leading, new Rect(x, bounds.Y, S(15), bounds.Height), focused ? Theme.TextPrimary : Theme.TextSecondary, S(15));
             x += S(15) + S(8);
         }
 

@@ -100,9 +100,7 @@ public sealed partial class EditorDocument
 
     /// <summary>The fill new rectangles and ellipses are drawn with.</summary>
     public ShapeFill ShapeFill { get; private set; }
-    public bool TextBold { get; set; }
-    public bool TextItalic { get; set; }
-    public bool TextUnderline { get; set; }
+    public TextStyle TextStyle { get; set; }
     /// <summary>The selected annotation. Changing it closes any editor on a different annotation,
     /// so the two cannot drift apart.</summary>
     public Annotation? Selected
@@ -259,16 +257,21 @@ public sealed partial class EditorDocument
     /// snapshot.</summary>
     public void EndAdjustment() => _adjusting = false;
 
-    /// <summary>Commits an inline editor's text and final box (clamped to the image) as one undo
-    /// step - the single write-back for a text edit.</summary>
-    public void SetTextContent(Annotation annotation, string text, Rect bounds)
+    /// <summary>Commits an inline editor's text, formatting and final box (clamped to the image) as
+    /// one undo step - the single write-back for a text edit. Without <paramref name="format"/> the
+    /// box keeps its base style, and its runs only while the length they cover is unchanged.</summary>
+    public void SetTextContent(Annotation annotation, string text, Rect bounds, (TextStyle Style, TextRun[] Runs)? format = null)
     {
+        var (style, runs) = format ?? (annotation.Style, text.Length == annotation.Text.Length ? annotation.Runs : []);
         var clamped = ClampTextBounds(bounds);
-        var boundsChanged = clamped != annotation.Bounds;
-        if (annotation.Text == text && !boundsChanged) return;
+        var unchanged = annotation.Text == text && clamped == annotation.Bounds
+            && annotation.Style == style && annotation.Runs.AsSpan().SequenceEqual(runs);
+        if (unchanged) return;
 
         PushUndo();
         annotation.Text = text;
+        annotation.Style = style;
+        annotation.Runs = runs;
         annotation.Start = new Point(clamped.X, clamped.Y);
         annotation.End = new Point(clamped.Right, clamped.Bottom);
         Notify();
@@ -288,14 +291,14 @@ public sealed partial class EditorDocument
         return new Rect(x, y, width, height);
     }
 
-    /// <summary>Applies a formatting change to the defaults and, when a text annotation is
-    /// selected, to that annotation as one undo step.</summary>
-    public void SetTextFormat(Action<EditorDocument> setDefault, Action<Annotation> apply)
+    /// <summary>Sets or clears a style on the defaults for new text and, when a text box is selected,
+    /// over all of its text as one undo step.</summary>
+    public void SetTextStyle(TextStyle flag, bool on)
     {
-        setDefault(this);
+        TextStyle = on ? TextStyle | flag : TextStyle & ~flag;
         if (Selected is not { Tool: EditorTool.Text } text) return;
         PushUndo();
-        apply(text);
+        (text.Style, text.Runs) = TextRuns.Apply(text.Style, text.Runs, text.Text.Length, 0, text.Text.Length, flag, on);
         Notify();
     }
 

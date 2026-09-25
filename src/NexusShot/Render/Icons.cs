@@ -81,6 +81,12 @@ public static class Icons
     public static readonly Icon Plus = new("M12 5v14M5 12h14");
     public static readonly Icon Minus = new("M5 12h14");
     public static readonly Icon Fit = new("M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5");
+    public static readonly Icon Download = new("M12 4v11M7 10l5 5 5-5M5 20h14");
+    public static readonly Icon Restart = new("M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5");
+    /// <summary>Two chasing arrows: check again, as distinct from Restart's single loop.</summary>
+    public static readonly Icon Refresh = new("M4 11a8 8 0 0 1 14.3-4.3M20 4v5h-5M20 13a8 8 0 0 1-14.3 4.3M4 20v-5h5");
+    public static readonly Icon Warning = new(
+        "M12 9v4M12 16.5v.5M10.3 3.9L2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z");
     public static readonly Icon Tick = new("M5 12.5l4.5 4.5L19 7.5");
     public static readonly Icon SelectAll = new(Rect(4, 4, 16, 16, 3.5) + "M8.5 12.2l2.4 2.4 4.6-5");
     public static readonly Icon Close = new("M6 6l12 12M18 6L6 18");

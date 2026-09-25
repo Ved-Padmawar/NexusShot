@@ -1,5 +1,6 @@
 using NexusShot.Core;
 using NexusShot.Platform;
+using NexusShot.Render;
 
 namespace NexusShot.Views;
 
@@ -75,7 +76,7 @@ public sealed partial class EditorWindow
                 if ((lParam.Value.ToInt64() & 0xFFFF) != HTCLIENT) break;
 
                 // The live pointer: WM_SETCURSOR arrives before the WM_MOUSEMOVE that updates it.
-                if (SetToolCursor(PointerNow())) return new LRESULT { Value = 1 };
+                if (SetToolCursor(PointerNow() ?? _clientPointer)) return new LRESULT { Value = 1 };
                 break;
 
             case WmKeyDown:
@@ -106,7 +107,7 @@ public sealed partial class EditorWindow
 
         if (control)
         {
-            ZoomBy(Math.Pow(Viewport.Step, delta / WheelDelta), PointerNow());
+            ZoomBy(Math.Pow(Viewport.Step, delta / WheelDelta), PointerNow() ?? _clientPointer);
             return;
         }
 
@@ -129,7 +130,7 @@ public sealed partial class EditorWindow
 
         if (!InCanvas(client))
         {
-            Functions.SetCursor(new HCURSOR { Value = ToolCursors.Arrow });
+            Functions.SetCursor(new HCURSOR { Value = SystemCursor(_ui?.CursorAt(client) ?? PointerCursor.Arrow) });
             return true;
         }
 
@@ -183,6 +184,10 @@ public sealed partial class EditorWindow
 
             EditorTool.Eraser => ToolCursors.Circle(
                 PaintStrokeGeometry.Diameter(_document.EraserThickness) * _scale,
+                Rgba.White.WithAlpha(28)),
+
+            EditorTool.Blur or EditorTool.Pixelate => ToolCursors.Circle(
+                PaintStrokeGeometry.EffectRadius(_document.ActiveThickness) * 2 * _scale,
                 Rgba.White.WithAlpha(28)),
 
             _ => ToolCursors.Cross,
@@ -372,7 +377,7 @@ public sealed partial class EditorWindow
     private void PlaceCaret(TextEditor editor, Point point, bool extend = false)
     {
         if (_renderer is null) return;
-        editor.MoveTo(_renderer.HitTestCaret(editor.Annotation, editor.Text, point), extend);
+        editor.MoveTo(_renderer.HitTestCaret(editor.Annotation, editor.Text, editor.Style, editor.Runs, point), extend);
     }
 
     /// <summary>Opens the inline box over an annotation.</summary>
@@ -404,6 +409,16 @@ public sealed partial class EditorWindow
     {
         if (control && ToggleTextFormat(key)) return true;
 
+        // Up and Down need the drawn layout, which the box itself does not have.
+        if (key is VIRTUAL_KEY.VK_UP or VIRTUAL_KEY.VK_DOWN && _text.Editor is { } editor && _renderer is { } renderer)
+        {
+            editor.MoveLine(key == VIRTUAL_KEY.VK_UP ? -1 : 1, shift,
+                index => renderer.CaretBounds(editor.Annotation, editor.Text, editor.Style, editor.Runs, index),
+                point => renderer.HitTestCaret(editor.Annotation, editor.Text, editor.Style, editor.Runs, point));
+            Invalidate();
+            return true;
+        }
+
         switch (_text.HandleKey(key, control, shift))
         {
             case TextKeyResult.Undo:
@@ -420,29 +435,32 @@ public sealed partial class EditorWindow
         }
     }
 
-    /// <summary>Ctrl+B, I and U: the selected text box's formatting, or the defaults for new text.</summary>
+    /// <summary>Ctrl+B, I and U.</summary>
     private bool ToggleTextFormat(VIRTUAL_KEY key)
     {
-        var text = _document.Selected is { Tool: EditorTool.Text } selected ? selected : null;
         switch (key)
         {
-            case VIRTUAL_KEY.VK_B:
-                var bold = !(text?.IsBold ?? _document.TextBold);
-                _document.SetTextFormat(d => d.TextBold = bold, a => a.IsBold = bold);
-                break;
-            case VIRTUAL_KEY.VK_I:
-                var italic = !(text?.IsItalic ?? _document.TextItalic);
-                _document.SetTextFormat(d => d.TextItalic = italic, a => a.IsItalic = italic);
-                break;
-            case VIRTUAL_KEY.VK_U:
-                var underline = !(text?.IsUnderline ?? _document.TextUnderline);
-                _document.SetTextFormat(d => d.TextUnderline = underline, a => a.IsUnderline = underline);
-                break;
-            default:
-                return false;
+            case VIRTUAL_KEY.VK_B: ToggleTextStyle(TextStyle.Bold); return true;
+            case VIRTUAL_KEY.VK_I: ToggleTextStyle(TextStyle.Italic); return true;
+            case VIRTUAL_KEY.VK_U: ToggleTextStyle(TextStyle.Underline); return true;
+            default: return false;
         }
+    }
+
+    /// <summary>What Bold, Italic and Underline show as on: the open box's selection (or all of it),
+    /// else the selected box, else the defaults for new text.</summary>
+    private TextStyle ActiveTextStyle => _text.Editor is { } editor ? editor.ActiveStyle
+        : _document.Selected is { Tool: EditorTool.Text } text
+            ? TextRuns.Common(text.Style, text.Runs, text.Text.Length, 0, text.Text.Length)
+            : _document.TextStyle;
+
+    /// <summary>The one writer for text formatting. An open box formats its selection, or all of it,
+    /// in its own undo; otherwise the selected box and the defaults change together.</summary>
+    private void ToggleTextStyle(TextStyle flag)
+    {
+        if (_text.Editor is { } editor) editor.Toggle(flag);
+        else _document.SetTextStyle(flag, !ActiveTextStyle.HasFlag(flag));
         Invalidate();
-        return true;
     }
 
     /// <summary>Writes the box's text back and closes it, discarding one that was never typed into.</summary>
@@ -458,7 +476,7 @@ public sealed partial class EditorWindow
         {
             if (control && key == VIRTUAL_KEY.VK_V && ClipboardText.Paste() is { } pasted)
                 foreach (var character in pasted.Trim()) ui.Char(character);
-            else ui.Key(key, shift);
+            else ui.Key(key, shift, control);
             Invalidate();
             return true;
         }
@@ -544,25 +562,10 @@ public sealed partial class EditorWindow
                     return true;
                 }
                 break;
-
-            // B is Blur, not Brush; P is Pixelate, not Pen.
-            case VIRTUAL_KEY.VK_V: return SelectTool(EditorTool.Select);
-            case VIRTUAL_KEY.VK_R: return SelectTool(EditorTool.Rectangle);
-            case VIRTUAL_KEY.VK_E: return SelectTool(EditorTool.Ellipse);
-            case VIRTUAL_KEY.VK_A: return SelectTool(EditorTool.Arrow);
-            case VIRTUAL_KEY.VK_L: return SelectTool(EditorTool.Line);
-            case VIRTUAL_KEY.VK_D: return SelectTool(EditorTool.Pen);
-            case VIRTUAL_KEY.VK_M: return SelectTool(EditorTool.Brush);
-            case VIRTUAL_KEY.VK_X: return SelectTool(EditorTool.Eraser);
-            case VIRTUAL_KEY.VK_T: return SelectTool(EditorTool.Text);
-            case VIRTUAL_KEY.VK_N: return SelectTool(EditorTool.Counter);
-            case VIRTUAL_KEY.VK_H: return SelectTool(EditorTool.Highlight);
-            case VIRTUAL_KEY.VK_B: return SelectTool(EditorTool.Blur);
-            case VIRTUAL_KEY.VK_P: return SelectTool(EditorTool.Pixelate);
-            case VIRTUAL_KEY.VK_S: return SelectTool(EditorTool.Spotlight);
-            case VIRTUAL_KEY.VK_C: return SelectTool(EditorTool.Crop);
         }
-        return false;
+
+        // A letter key's virtual-key code is its uppercase ASCII.
+        return ToolShortcuts.ToolFor((char)key) is { } tool && SelectTool(tool);
     }
 
     /// <summary>
@@ -588,17 +591,10 @@ public sealed partial class EditorWindow
     /// would otherwise leave the ring at its old diameter until you jiggled the mouse.</summary>
     private void RefreshCursor()
     {
-        var pointer = PointerNow();
+        var pointer = PointerNow() ?? _clientPointer;
         if (InCanvas(pointer)) SetToolCursor(pointer);
     }
 
-    /// <summary>The pointer's current position in client pixels, straight from Windows.</summary>
-    private Point PointerNow()
-    {
-        if (!Functions.GetCursorPos(out var point)) return _clientPointer;
-        if (!Functions.ScreenToClient(new HWND { Value = Handle }, ref point)) return _clientPointer;
-        return new Point(point.x, point.y);
-    }
 
     private static bool KeyDown(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
 

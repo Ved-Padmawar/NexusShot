@@ -53,7 +53,7 @@ internal sealed class TextBoxController(EditorDocument document)
             document.CancelAnnotation(annotation);
             return;
         }
-        document.SetTextContent(annotation, editor.Text, annotation.Bounds);
+        document.SetTextContent(annotation, editor.Text, annotation.Bounds, (editor.Style, editor.Runs));
     }
 
     /// <summary>Undo inside the box, if it has anything of its own to unwind.</summary>

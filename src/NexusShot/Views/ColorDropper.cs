@@ -80,17 +80,6 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
         }
     }
 
-    /// <summary>The snapshot pixel at a client point. The desktop is opaque, so the premultiplied
-    /// bytes are the straight colour.</summary>
-    private Rgba? Sample(Point point)
-    {
-        var x = (int)point.X;
-        var y = (int)point.Y;
-        if (x < 0 || y < 0 || x >= _pixels.Width || y >= _pixels.Height) return null;
-        var pixel = _pixels.Span.Slice(y * _pixels.Stride + x * 4, 4);
-        return new Rgba(pixel[2], pixel[1], pixel[0]);
-    }
-
     protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)
     {
         using var target = renderTarget.AsRenderTarget();
@@ -113,7 +102,7 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
         target.Object.DrawBitmap(_snapshot.Bitmap.Object, (nint)(&full), 1f,
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, 0);
 
-        if (Sample(_cursor) is { } color) DrawLoupe(ui, target, color);
+        if (_pixels.OpaquePixelAt((int)_cursor.X, (int)_cursor.Y) is { } color) DrawLoupe(ui, target, color);
         ui.EndFrame();
     }
 
@@ -127,12 +116,9 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
         var size = LoupePixels * cell;
         var label = 30 * s;
 
-        var x = _cursor.X + 24 * s;
-        var y = _cursor.Y + 24 * s;
-        if (x + size > _desktop.Width) x = _cursor.X - 24 * s - size;
-        if (y + size + label > _desktop.Height) y = _cursor.Y - 24 * s - size - label;
-
-        var loupe = new Rect(x, y, size, size);
+        var origin = OverlayGeometry.Loupe(
+            _cursor, new Size(size, size + label), 24 * s, new Size(_desktop.Width, _desktop.Height));
+        var loupe = new Rect(origin.X, origin.Y, size, size);
         var radius = (float)(Metrics.RadiusLg * s);
         ui.Shadow(loupe, radius, 22 * s, 10 * s, Rgba.Black.WithAlpha(120));
 
@@ -179,7 +165,8 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
                 return new LRESULT { Value = 0 };
 
             case WmLButtonDown:
-                Picked = Sample(ClientPoint(lParam));
+                var picked = ClientPoint(lParam);
+                Picked = _pixels.OpaquePixelAt((int)picked.X, (int)picked.Y);
                 Close();
                 return new LRESULT { Value = 0 };
 

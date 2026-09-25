@@ -97,8 +97,7 @@ public sealed class CapturePipeline : IDisposable
         };
         _strip.HistoryRequested += () =>
         {
-            _main.Show();
-            _main.SetForeground();
+            _main.Reveal();
         };
         _strip.Dismissed += () => _strip = null;
         _strip.Open();
@@ -115,6 +114,27 @@ public sealed class CapturePipeline : IDisposable
 
         ShowPreview(item);
         return true;
+    }
+
+    /// <summary>Open editors with changes not yet saved. Commits any open text box first, since
+    /// typed text counts.</summary>
+    public int UnsavedEditors => _openEditors.Count(editor => editor.HasUnsavedChanges());
+
+    /// <summary>Closes every editor without asking: each saves first when <paramref name="save"/> is
+    /// set, or drops its changes. A save that fails stops here, leaving that editor open with its
+    /// error, and <paramref name="completed"/> does not run.</summary>
+    public void CloseEditors(bool save, Action completed)
+    {
+        foreach (var editor in _openEditors.ToArray())
+        {
+            if (save && editor.HasUnsavedChanges())
+            {
+                editor.SaveThenClose(() => CloseEditors(save, completed));
+                return;
+            }
+            editor.Dispose();
+        }
+        completed();
     }
 
     public void CloseEditors(Action completed)

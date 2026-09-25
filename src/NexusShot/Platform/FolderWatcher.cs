@@ -1,3 +1,5 @@
+using NexusShot.Core;
+
 namespace NexusShot.Platform;
 
 /// <summary>
@@ -22,11 +24,10 @@ public sealed class FolderWatcher : IDisposable
 
         _debounce = new Timer(_ => Fire(), null, Timeout.Infinite, Timeout.Infinite);
 
-        _watcher = new FileSystemWatcher(folder, "*.png")
-        {
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
-            EnableRaisingEvents = true,
-        };
+        // Every format the app writes and opens, or a JPEG or BMP deleted in Explorer stays listed.
+        _watcher = new FileSystemWatcher(folder) { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite };
+        foreach (var extension in ImageFiles.Extensions) _watcher.Filters.Add("*" + extension);
+        _watcher.EnableRaisingEvents = true;
 
         _watcher.Created += OnChanged;
         _watcher.Deleted += OnChanged;

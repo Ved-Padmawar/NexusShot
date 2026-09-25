@@ -45,6 +45,16 @@ public readonly record struct Rect(double X, double Y, double Width, double Heig
     public bool Contains(Point point) =>
         point.X >= Left && point.X <= Right && point.Y >= Top && point.Y <= Bottom;
 
+    /// <summary>The overlap of two rects; empty when they do not meet.</summary>
+    public Rect Intersect(Rect other)
+    {
+        var left = Math.Max(Left, other.Left);
+        var top = Math.Max(Top, other.Top);
+        var right = Math.Min(Right, other.Right);
+        var bottom = Math.Min(Bottom, other.Bottom);
+        return right > left && bottom > top ? new Rect(left, top, right - left, bottom - top) : Empty;
+    }
+
     /// <summary>Shrinks the rect on every side, never past its own centre.</summary>
     public Rect Deflate(double amount)
     {

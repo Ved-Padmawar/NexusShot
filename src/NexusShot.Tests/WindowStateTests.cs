@@ -1,4 +1,3 @@
-using NexusShot.Render;
 using NexusShot.Views;
 
 namespace NexusShot.Tests;

@@ -25,7 +25,7 @@ internal static class HistoryScanner
         var changed = new List<(ScreenshotHistoryItem, FileVersion)>();
         var missing = new List<string>();
         var paths = new HashSet<string>(known, StringComparer.OrdinalIgnoreCase);
-        try { paths.UnionWith(Directory.EnumerateFiles(folder, "*.png")); }
+        try { paths.UnionWith(Directory.EnumerateFiles(folder).Where(ImageFiles.CanOpen)); }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         { Log.Error("history.scan", exception); }
         foreach (var path in paths)

@@ -286,9 +286,9 @@ public sealed partial class EditorWindow : CaptionWindow
         if (_text.Editor is { } editing)
         {
             _renderer.DrawTextEditor(
-                target, editing.Annotation, editing.Text,
+                target, editing.Annotation, editing.Text, editing.Style, editing.Runs,
                 editing.Caret, editing.SelectionStart, editing.SelectionEnd, editing.CaretVisible,
-                AdornerScale, Palette.Selection.WithAlpha(90));
+                AdornerScale);
         }
 
         renderTarget.Object.SetTransform(D2D_MATRIX_3X2_F.Identity());
@@ -298,7 +298,7 @@ public sealed partial class EditorWindow : CaptionWindow
         _chrome.Draw(new EditorChrome.Frame(
             _document, _settings, client.Width, client.Height, CaptionButtonsWidth,
             Path.GetFileNameWithoutExtension(_files.FileName), _scale, imageRect, _scale,
-            new Point(_offsetX, _offsetY), toast, _fileBusy));
+            new Point(_offsetX, _offsetY), toast, _fileBusy, ActiveTextStyle));
         DrawCaptionButtons(_ui, client.Width);
         _ui.EndFrame();
 
@@ -319,6 +319,7 @@ public sealed partial class EditorWindow : CaptionWindow
         if (_chrome is null) return;
 
         if (_chrome.ToolPicked is { } tool) SelectTool(tool);
+        if (_chrome.StyleToggled is { } style) ToggleTextStyle(style);
 
         switch (_chrome.Requested)
         {

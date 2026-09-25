@@ -12,7 +12,7 @@ public class DocumentLifecycleTests
     {
         var document = NewDocument();
         document.ColorHex = "#00FF00";
-        document.TextBold = true;
+        document.TextStyle = TextStyle.Bold;
         Draw(document, EditorTool.Rectangle, new Point(100, 100), new Point(300, 300));
 
         document.ResetAfterSave();
@@ -24,7 +24,7 @@ public class DocumentLifecycleTests
         Assert.False(document.CanRedo);
 
         Assert.Equal("#00FF00", document.ColorHex);
-        Assert.True(document.TextBold);
+        Assert.Equal(TextStyle.Bold, document.TextStyle);
     }
 
     [Fact]

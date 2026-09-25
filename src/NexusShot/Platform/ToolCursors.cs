@@ -13,6 +13,7 @@ public static partial class ToolCursors
     private const int IDC_ARROW = 32512;
     private const int IDC_IBEAM = 32513;
     private const int IDC_CROSS = 32515;
+    private const int IDC_HAND = 32649;
     private const int IDC_PEN = 32631;
     private const int IDC_SIZEALL = 32646;
     private const int IDC_SIZENWSE = 32642;
@@ -29,8 +30,11 @@ public static partial class ToolCursors
     /// <summary>The four-way arrow, for an area that drags what is under it.</summary>
     public static IntPtr Move => Standard(IDC_SIZEALL);
 
-    /// <summary>The text caret, for the inside of an open text box.</summary>
+    /// <summary>The text caret, for the inside of an open text box and for text fields.</summary>
     public static IntPtr Text => Standard(IDC_IBEAM);
+
+    /// <summary>The pointing hand, for anything the chrome lets you click.</summary>
+    public static IntPtr Hand => Standard(IDC_HAND);
 
     public static IntPtr Resize(ResizeHandle handle) => Standard(handle switch
     {

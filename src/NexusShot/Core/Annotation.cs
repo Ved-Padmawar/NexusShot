@@ -9,6 +9,10 @@ public static class PaintStrokeGeometry
 {
     public static double Diameter(double thickness) => Math.Max(1, thickness);
     public static double Radius(double thickness) => Diameter(thickness) / 2;
+
+    /// <summary>Half a blur or pixelate stroke's width. Wider than a paint stroke at the same setting:
+    /// an effect narrower than the text it hides leaves the text readable.</summary>
+    public static double EffectRadius(double thickness) => Math.Max(8, thickness * 3);
 }
 
 /// <summary>How a rectangle or ellipse is painted inside its outline. Tinted is the outline's colour
@@ -62,15 +66,17 @@ public sealed class Annotation
     public bool IsBrushEffect => Tool is EditorTool.Blur or EditorTool.Pixelate;
 
     /// <summary>Half the painted stroke's width, in image pixels. Scales with the thickness slider.</summary>
-    public double BrushRadius => Math.Max(8, StrokeThickness * 3);
+    public double BrushRadius => PaintStrokeGeometry.EffectRadius(StrokeThickness);
 
     public string Text { get; set; } = string.Empty;
 
     /// <summary>Text annotation formatting, in image pixels for the size.</summary>
     public double FontSize { get; set; } = 20;
-    public bool IsBold { get; set; }
-    public bool IsItalic { get; set; }
-    public bool IsUnderline { get; set; }
+
+    /// <summary>The box's base style, and the runs where parts of the text differ from it. See
+    /// <see cref="TextRuns"/>; the runs are replaced whole, never edited in place.</summary>
+    public TextStyle Style { get; set; }
+    public TextRun[] Runs { get; set; } = [];
 
     /// <summary>Step number rendered by <see cref="EditorTool.Counter"/>.</summary>
     public int CounterValue { get; set; }
@@ -230,9 +236,8 @@ public sealed class Annotation
         ColorHex = ColorHex,
         StrokeThickness = StrokeThickness,
         FontSize = FontSize,
-        IsBold = IsBold,
-        IsItalic = IsItalic,
-        IsUnderline = IsUnderline,
+        Style = Style,
+        Runs = Runs,
     };
 
     public static double DistanceToSegment(Point point, Point a, Point b)

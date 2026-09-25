@@ -16,8 +16,11 @@ internal sealed class TextEditor
 {
     public Annotation Annotation { get; }
 
-    /// <summary>The live text, not written back to the annotation until the edit ends.</summary>
+    /// <summary>The live text and its formatting, not written back to the annotation until the edit
+    /// ends.</summary>
     public string Text { get; private set; }
+    public TextStyle Style { get; private set; }
+    public TextRun[] Runs { get; private set; }
 
     /// <summary>Caret and selection anchor, as indices into <see cref="Text"/>.</summary>
     public int Caret { get; private set; }
@@ -37,6 +40,8 @@ internal sealed class TextEditor
     {
         Annotation = annotation;
         Text = annotation.Text;
+        Style = annotation.Style;
+        Runs = annotation.Runs;
 
         // Everything selected, so typing replaces a placeholder.
         Anchor = 0;
@@ -49,12 +54,12 @@ internal sealed class TextEditor
     // The box owns its own history: while it is open the text lives here and never reaches the
     // document, so the document's undo stack has nothing of it to restore.
 
-    private readonly Stack<(string Text, int Caret, int Anchor)> _undo = new();
-    private readonly Stack<(string Text, int Caret, int Anchor)> _redo = new();
+    private readonly Stack<(string Text, TextStyle Style, TextRun[] Runs, int Caret, int Anchor)> _undo = new();
+    private readonly Stack<(string Text, TextStyle Style, TextRun[] Runs, int Caret, int Anchor)> _redo = new();
 
     private EditKind _lastEdit = EditKind.None;
 
-    private enum EditKind { None, Insert, Delete }
+    private enum EditKind { None, Insert, Delete, Format }
 
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
@@ -64,7 +69,7 @@ internal sealed class TextEditor
     private void PushUndo(EditKind kind)
     {
         if (kind != _lastEdit || _undo.Count == 0)
-            _undo.Push((Text, Caret, Anchor));
+            _undo.Push((Text, Style, Runs, Caret, Anchor));
 
         _lastEdit = kind;
         _redo.Clear();
@@ -77,8 +82,8 @@ internal sealed class TextEditor
     {
         if (!_undo.TryPop(out var previous)) return;
 
-        _redo.Push((Text, Caret, Anchor));
-        (Text, Caret, Anchor) = previous;
+        _redo.Push((Text, Style, Runs, Caret, Anchor));
+        (Text, Style, Runs, Caret, Anchor) = previous;
         BreakRun();
         Wake();
     }
@@ -87,8 +92,8 @@ internal sealed class TextEditor
     {
         if (!_redo.TryPop(out var next)) return;
 
-        _undo.Push((Text, Caret, Anchor));
-        (Text, Caret, Anchor) = next;
+        _undo.Push((Text, Style, Runs, Caret, Anchor));
+        (Text, Style, Runs, Caret, Anchor) = next;
         BreakRun();
         Wake();
     }
@@ -103,6 +108,7 @@ internal sealed class TextEditor
             if (position < 0) Caret = boundaries[~position - 1];
         }
         if (!extend) Anchor = Caret;
+        _goalX = null;
         BreakRun();
         Wake();
     }
@@ -120,10 +126,9 @@ internal sealed class TextEditor
         if (text.Length == 0) return;
 
         PushUndo(EditKind.Insert);
-        DeleteSelectionCore();
-        Text = Text.Insert(Caret, text);
-        Caret += text.Length;
-        Anchor = Caret;
+        var start = SelectionStart;
+        Replace(start, SelectionEnd - start, text);
+        Caret = Anchor = start + text.Length;
         Wake();
     }
 
@@ -135,7 +140,7 @@ internal sealed class TextEditor
         if (DeleteSelectionCore()) { Wake(); return; }
 
         var previous = TextBoundary(-1);
-        Text = Text.Remove(previous, Caret - previous);
+        Replace(previous, Caret - previous, "");
         Caret = previous;
         Anchor = Caret;
         Wake();
@@ -148,7 +153,7 @@ internal sealed class TextEditor
         PushUndo(EditKind.Delete);
         if (DeleteSelectionCore()) { Wake(); return; }
 
-        Text = Text.Remove(Caret, TextBoundary(1) - Caret);
+        Replace(Caret, TextBoundary(1) - Caret, "");
         Anchor = Caret;
         Wake();
     }
@@ -160,10 +165,54 @@ internal sealed class TextEditor
         if (!HasSelection) return false;
 
         var start = SelectionStart;
-        Text = Text.Remove(start, SelectionEnd - start);
+        Replace(start, SelectionEnd - start, "");
         Caret = start;
         Anchor = start;
         return true;
+    }
+
+    /// <summary>The one writer of the text, so its runs can never cover a different length.</summary>
+    private void Replace(int start, int removed, string inserted)
+    {
+        (Style, Runs) = TextRuns.Splice(Style, Runs, Text.Length, start, removed, inserted.Length);
+        Text = Text.Remove(start, removed).Insert(start, inserted);
+        _goalX = null;
+    }
+
+    /// <summary>The styles shared by the selection, or by the whole box when nothing is selected - what
+    /// the Bold, Italic and Underline buttons show as on.</summary>
+    public TextStyle ActiveStyle => HasSelection
+        ? TextRuns.Common(Style, Runs, Text.Length, SelectionStart, SelectionEnd)
+        : TextRuns.Common(Style, Runs, Text.Length, 0, Text.Length);
+
+    /// <summary>Turns a style on across the selection, or the whole box, unless all of it already has
+    /// it - then off. One undo step.</summary>
+    public void Toggle(TextStyle flag)
+    {
+        var (start, end) = HasSelection ? (SelectionStart, SelectionEnd) : (0, Text.Length);
+        BreakRun();
+        PushUndo(EditKind.Format);
+        (Style, Runs) = TextRuns.Apply(Style, Runs, Text.Length, start, end, flag, !ActiveStyle.HasFlag(flag));
+        Wake();
+    }
+
+    /// <summary>The x Up and Down aim for, kept across a run of them so passing a short line does not
+    /// pull the caret left for good. Any other move or edit forgets it.</summary>
+    private double? _goalX;
+
+    /// <summary>
+    /// Up or Down one visual line, wrapped lines included. <paramref name="caretAt"/> and
+    /// <paramref name="indexAt"/> are the renderer's layout, so this lands where the text is drawn.
+    /// Past the first or last line, the caret goes to that end of the text.
+    /// </summary>
+    public void MoveLine(int direction, bool extend, Func<int, Rect> caretAt, Func<Point, int> indexAt)
+    {
+        var caret = caretAt(Caret);
+        var goal = _goalX ?? caret.X;
+        var target = indexAt(new Point(goal, direction < 0 ? caret.Top - caret.Height / 2 : caret.Bottom + caret.Height / 2));
+        if (target == Caret) target = direction < 0 ? 0 : Text.Length;
+        MoveTo(target, extend);
+        _goalX = goal;
     }
 
     public void Move(int direction, bool extend, bool byWord)

@@ -55,9 +55,7 @@ public sealed partial class EditorDocument
             CounterRun = _counterRun,
             Fill = ShapeFill,
             FontSize = TextFontSize,
-            IsBold = TextBold,
-            IsItalic = TextItalic,
-            IsUnderline = TextUnderline,
+            Style = TextStyle,
         };
         if (_draft.IsStrokeTool) _draft.Points.Add(point);
         if (ActiveTool != EditorTool.Eraser)

@@ -137,6 +137,98 @@ public class InlineEditingTests
         Assert.Equal(3, editor.Caret);
     }
 
+    [Fact]
+    public void BoldAppliesToTheSelectionOnlyAndCommitsAsOneUndoStep()
+    {
+        var (document, controller, annotation) = Open("make this bold");
+        var editor = controller.Editor!;
+        editor.MoveTo(5);
+        editor.MoveTo(9, extend: true);
+
+        editor.Toggle(TextStyle.Bold);
+        Assert.Equal(TextStyle.Bold, editor.ActiveStyle);
+        controller.End(commit: true);
+
+        Assert.Equal([new TextRun(5, TextStyle.None), new TextRun(4, TextStyle.Bold), new TextRun(5, TextStyle.None)],
+            annotation.Runs);
+        document.Undo();
+        Assert.Empty(Assert.Single(document.Annotations).Runs);
+    }
+
+    [Fact]
+    public void UndoInsideTheBoxTakesBackFormattingButNotTheTypingBeforeIt()
+    {
+        var editor = Editor("");
+        editor.Insert("abc");
+        editor.SelectAll();
+        editor.Toggle(TextStyle.Underline);
+
+        editor.Undo();
+
+        Assert.Equal("abc", editor.Text);
+        Assert.Equal(TextStyle.None, editor.ActiveStyle);
+        Assert.False(editor.Style.HasFlag(TextStyle.Underline));
+    }
+
+    [Fact]
+    public void TypedTextInheritsTheFormattingItContinues()
+    {
+        var editor = Editor("ab");
+        editor.MoveTo(1);
+        editor.MoveTo(2, extend: true);
+        editor.Toggle(TextStyle.Italic);
+
+        editor.MoveTo(2);
+        editor.Insert("cd");
+
+        Assert.Equal([new TextRun(1, TextStyle.None), new TextRun(3, TextStyle.Italic)], editor.Runs);
+    }
+
+    [Fact]
+    public void UpAndDownMoveByLineAndKeepTheirColumnPastAShortLine()
+    {
+        using var screen = new Offscreen(16, 16);
+        using var renderer = new Render.AnnotationRenderer(screen.Resources);
+        var (_, controller, annotation) = Open("a long first line\nab\na long third line");
+        var editor = controller.Editor!;
+        int Caret(int index) => (int)renderer.CaretBounds(annotation, editor.Text, editor.Style, editor.Runs, index).X;
+        void Line(int direction) => editor.MoveLine(direction, extend: false,
+            index => renderer.CaretBounds(annotation, editor.Text, editor.Style, editor.Runs, index),
+            point => renderer.HitTestCaret(annotation, editor.Text, editor.Style, editor.Runs, point));
+
+        editor.MoveTo(9);                       // "a long fi|rst line"
+        Line(1);
+        Assert.Equal(20, editor.Caret);         // clamped to the end of "ab"
+        Line(1);
+        Assert.InRange(editor.Caret, 29, 30);   // back out to the same column on the third line
+        Assert.InRange(Math.Abs(Caret(editor.Caret) - Caret(9)), 0, 6);
+
+        Line(-1);
+        Line(-1);
+        Assert.InRange(editor.Caret, 8, 10);
+    }
+
+    [Fact]
+    public void UpOnTheFirstLineGoesToTheStartAndDownOnTheLastToTheEnd()
+    {
+        using var screen = new Offscreen(16, 16);
+        using var renderer = new Render.AnnotationRenderer(screen.Resources);
+        var (_, controller, annotation) = Open("one\ntwo");
+        var editor = controller.Editor!;
+        void Line(int direction, bool extend = false) => editor.MoveLine(direction, extend,
+            index => renderer.CaretBounds(annotation, editor.Text, editor.Style, editor.Runs, index),
+            point => renderer.HitTestCaret(annotation, editor.Text, editor.Style, editor.Runs, point));
+
+        editor.MoveTo(2);
+        Line(-1);
+        Assert.Equal(0, editor.Caret);
+
+        editor.MoveTo(5);
+        Line(1, extend: true);
+        Assert.Equal(7, editor.Caret);
+        Assert.Equal("wo", editor.SelectedText);
+    }
+
     private static TextEditor Editor(string text) => new(new Annotation { Tool = EditorTool.Text, Text = text });
 
     private static (EditorDocument Document, TextBoxController Controller, Annotation Annotation) Open(string text)

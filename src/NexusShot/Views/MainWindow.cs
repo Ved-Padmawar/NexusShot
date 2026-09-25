@@ -25,6 +25,8 @@ public sealed partial class MainWindow : CaptionWindow
     private const uint WmPowerBroadcast = 0x0218;
     private const ulong PbtApmResumeAutomatic = 0x12;
     private const uint WmClose = 0x0010;
+    private const uint WmSetCursor = 0x0020;
+    private const long HtClient = 1;
 
     private readonly Storage _storage;
     private readonly AppSettings _settings;
@@ -286,10 +288,8 @@ public sealed partial class MainWindow : CaptionWindow
 
         _ui.BeginFrame(resources, _hoverPaused ? new Point(-1, -1) : _pointer, _pointerDown,
             new D2D_SIZE_F((float)width, (float)height));
-        _headerControls.Clear();
 
-        // A modal sheet takes the pointer: the library underneath draws, but must not react.
-        _ui.Inert = _settingsOpen || ConfirmOpen;
+        _ui.Inert = ModalOpen;
         if (_history.Count > 0) DrawGrid(_ui, resources, layers, GridBounds(width, height));
         else
         {
@@ -301,15 +301,7 @@ public sealed partial class MainWindow : CaptionWindow
         using (var chrome = context.AsRenderTarget2())
         {
             _ui.Retarget(chrome);
-            DrawLibraryChrome(_ui, width, height);
-            _ui.Inert = false;
-
-            DrawSettings(_ui, width, height);
-            DrawConfirm(_ui, width, height);
-            DrawToast(_ui, width, height);
-
-            // Last, so the buttons float over the app's own pixels rather than under them.
-            DrawCaptionButtons(_ui, width);
+            DrawChrome(_ui, width, height);
             _ui.EndFrame();
             layers.EndChrome();
         }
@@ -321,6 +313,25 @@ public sealed partial class MainWindow : CaptionWindow
             : _ui.Blinking ? (uint)Ui.CaretBlink
             : null);
         return true;
+    }
+
+    /// <summary>A modal sheet takes the pointer: the library underneath draws, but must not react.</summary>
+    private bool ModalOpen => _settingsOpen || ConfirmOpen || RestartPromptOpen;
+
+    /// <summary>Everything over the grid, in paint order: the library's header and tools row, the
+    /// sheets, the toast, and the caption buttons last so they float over the app's own pixels.</summary>
+    internal void DrawChrome(Ui ui, double width, double height)
+    {
+        _headerControls.Clear();
+        ui.Inert = ModalOpen;
+        DrawLibraryChrome(ui, width, height);
+        ui.Inert = false;
+
+        DrawSettings(ui, width, height);
+        DrawConfirm(ui, width, height);
+        DrawRestartPrompt(ui, width, height);
+        DrawToast(ui, width, height);
+        DrawCaptionButtons(ui, width);
     }
 
     /// <summary>Decides which worker decodes may still be used. See <see cref="DecodeCache"/>.</summary>
@@ -368,6 +379,11 @@ public sealed partial class MainWindow : CaptionWindow
                     && _settings.Theme == AppTheme.System)
                     ApplyTheme();
                 break;
+
+            case WmSetCursor when (lParam.Value.ToInt64() & 0xFFFF) == HtClient && PointerNow() is { } pointer
+                && _ui is { } chrome:
+                Functions.SetCursor(new HCURSOR { Value = SystemCursor(chrome.CursorAt(pointer)) });
+                return new LRESULT { Value = 1 };
 
             case WmLButtonDown:
                 _pointer = ClientPoint(lParam);
@@ -424,7 +440,7 @@ public sealed partial class MainWindow : CaptionWindow
                 return new LRESULT { Value = 0 };
 
             case WmClose:
-                Hide();
+                Conceal();
                 return new LRESULT { Value = 0 };
 
             case FileDrop.WM_DROPFILES:
@@ -457,7 +473,7 @@ public sealed partial class MainWindow : CaptionWindow
             var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
             if (control && key == VIRTUAL_KEY.VK_V && ClipboardText.Paste() is { } pasted)
                 foreach (var character in pasted.Trim()) ui.Char(character);
-            else ui.Key(key, (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0);
+            else ui.Key(key, (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0, control);
             Invalidate();
             return true;
         }
@@ -470,16 +486,56 @@ public sealed partial class MainWindow : CaptionWindow
 
         if (key != VIRTUAL_KEY.VK_ESCAPE) return false;
 
-        // Escape peels one layer: the delete prompt, an open list, settings, multi-select, the window.
+        // Escape peels one layer: a prompt, an open list, settings, multi-select, the window.
         if (ConfirmOpen) _pendingDelete = null;
+        else if (RestartPromptOpen) _restartPrompt = null;
         else if (DropdownOpen) CloseDropdowns();
         else if (_settingsOpen) CloseSettings();
         else if (_selection.Active) _selection.End();
-        else { Hide(); return true; }
+        else { Conceal(); return true; }
 
         Invalidate();
         return true;
     }
+
+    /// <summary>Shows the Library with its first frame already on screen. Shown plainly, DWM puts up
+    /// the window's empty white surface for a frame before composition draws; cloaked, nothing
+    /// shows until the frame is composed.</summary>
+    public void Reveal()
+    {
+        if (!WindowInterop.IsWindowVisible(Handle))
+        {
+            SetCloaked(true);
+            Show();
+            RenderCore();
+            DwmFlush();
+        }
+        SetCloaked(false);
+        Show();
+        SetForeground();
+    }
+
+    /// <summary>Hides cloaked, so the fade-out never animates the white surface left once the frame is
+    /// released. It stays cloaked until <see cref="Reveal"/>.</summary>
+    private void Conceal()
+    {
+        SetCloaked(true);
+        Hide();
+    }
+
+    private void SetCloaked(bool cloaked)
+    {
+        var value = cloaked ? 1 : 0;
+        DwmSetWindowAttribute(Handle, DwmwaCloak, ref value, sizeof(int));
+    }
+
+    private const int DwmwaCloak = 13;
+
+    [System.Runtime.InteropServices.LibraryImport("dwmapi.dll")]
+    private static partial int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+    [System.Runtime.InteropServices.LibraryImport("dwmapi.dll")]
+    private static partial int DwmFlush();
 
     private static Point ClientPoint(LPARAM lParam)
     {

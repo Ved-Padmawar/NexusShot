@@ -49,6 +49,10 @@ public sealed class EditorChrome(Ui ui) : IDisposable
 
     /// <summary>What the user asked for this frame; applied by the window after the frame.</summary>
     public EditorTool? ToolPicked { get; private set; }
+
+    /// <summary>A Bold, Italic or Underline click: the window knows whether it formats a selection
+    /// inside an open box or the whole box.</summary>
+    public TextStyle? StyleToggled { get; private set; }
     public Command Requested { get; private set; }
 
     /// <summary>Text for the clipboard - the picker's copy button.</summary>
@@ -71,11 +75,12 @@ public sealed class EditorChrome(Ui ui) : IDisposable
     public sealed record Frame(
         EditorDocument Document, AppSettings Settings, double Width, double Height, double CaptionButtonsWidth,
         string Title, double Zoom, Rect ImageOnScreen, double ImageScale, Point ImageOrigin,
-        string? Toast, bool Busy);
+        string? Toast, bool Busy, TextStyle TextStyle);
 
     public void Draw(Frame frame)
     {
         ToolPicked = null;
+        StyleToggled = null;
         Requested = Command.None;
         CopyRequested = null;
         _covered.Clear();
@@ -199,7 +204,7 @@ public sealed class EditorChrome(Ui ui) : IDisposable
             }
 
             var bounds = new Rect(pill.X + S(4), y, button, button);
-            if (ui.IconButton(Ui.Id(Ui.Id("editor.tool"), (int)tool), bounds, Glyph(tool), Name(tool), Shortcut(tool),
+            if (ui.IconButton(Ui.Id(Ui.Id("editor.tool"), (int)tool), bounds, Glyph(tool), Name(tool), ToolShortcuts.Letter(tool).ToString(),
                 on: document.ActiveTool == tool, side: TipSide.Right))
                 ToolPicked = tool;
             y += button + gap;
@@ -277,7 +282,7 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         if (hasColor) groups.Add((ColorGroupWidth(), rect => DrawColorGroup(rect, document)));
         if (hasSize) groups.Add((SizeLabelWidth(document) + S(10 + 112 + 10 + 44), rect => DrawSizeGroup(rect, document)));
         if (hasFill) groups.Add((S(30 * 3 + 4), rect => DrawFillGroup(rect, document)));
-        if (isText) groups.Add((S(30 * 3 + 4), rect => DrawTextGroup(rect, document)));
+        if (isText) groups.Add((S(30 * 3 + 4), rect => DrawTextGroup(rect, frame.TextStyle)));
         if (isCounter) groups.Add((CounterGroupWidth(document), rect => DrawCounterGroup(rect, document)));
         if (selected is not null) groups.Add((S(28), rect => DrawDeleteButton(rect, document)));
         if (groups.Count == 0)
@@ -416,22 +421,18 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         }
     }
 
-    private void DrawTextGroup(Rect row, EditorDocument document)
+    private void DrawTextGroup(Rect row, TextStyle active)
     {
-        var text = document.Selected is { Tool: EditorTool.Text } selected ? selected : null;
-        var bold = text?.IsBold ?? document.TextBold;
-        var italic = text?.IsItalic ?? document.TextItalic;
-        var underline = text?.IsUnderline ?? document.TextUnderline;
-
         var bounds = new Rect(row.X, row.Center.Y - S(14), S(30), S(28));
-        if (ui.IconButton(Ui.Id("editor.bold"), bounds, Icons.Bold, "Bold", "Ctrl B", soft: bold, iconSize: 15))
-            document.SetTextFormat(d => d.TextBold = !bold, a => a.IsBold = !bold);
+        if (ui.IconButton(Ui.Id("editor.bold"), bounds, Icons.Bold, "Bold", "Ctrl B",
+            soft: active.HasFlag(TextStyle.Bold), iconSize: 15))
+            StyleToggled = TextStyle.Bold;
         if (ui.IconButton(Ui.Id("editor.italic"), bounds with { X = bounds.X + S(32) }, Icons.Italic, "Italic", "Ctrl I",
-            soft: italic, iconSize: 15))
-            document.SetTextFormat(d => d.TextItalic = !italic, a => a.IsItalic = !italic);
+            soft: active.HasFlag(TextStyle.Italic), iconSize: 15))
+            StyleToggled = TextStyle.Italic;
         if (ui.IconButton(Ui.Id("editor.underline"), bounds with { X = bounds.X + S(64) }, Icons.Underline, "Underline", "Ctrl U",
-            soft: underline, iconSize: 15))
-            document.SetTextFormat(d => d.TextUnderline = !underline, a => a.IsUnderline = !underline);
+            soft: active.HasFlag(TextStyle.Underline), iconSize: 15))
+            StyleToggled = TextStyle.Underline;
     }
 
     private double CounterGroupWidth(EditorDocument document) =>
@@ -575,25 +576,5 @@ public sealed class EditorChrome(Ui ui) : IDisposable
     {
         EditorTool.Eraser => "Eraser · pen and brush",
         _ => tool.ToString(),
-    };
-
-    /// <summary>B is Blur, not Brush; P is Pixelate, not Pen - the letters users arrive with.</summary>
-    public static string Shortcut(EditorTool tool) => tool switch
-    {
-        EditorTool.Select => "V",
-        EditorTool.Rectangle => "R",
-        EditorTool.Ellipse => "E",
-        EditorTool.Arrow => "A",
-        EditorTool.Line => "L",
-        EditorTool.Pen => "D",
-        EditorTool.Brush => "M",
-        EditorTool.Eraser => "X",
-        EditorTool.Text => "T",
-        EditorTool.Counter => "N",
-        EditorTool.Highlight => "H",
-        EditorTool.Blur => "B",
-        EditorTool.Pixelate => "P",
-        EditorTool.Spotlight => "S",
-        _ => "C",
     };
 }

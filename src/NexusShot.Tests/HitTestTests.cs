@@ -1,5 +1,4 @@
 using NexusShot.Core;
-using static NexusShot.Tests.Editing;
 
 namespace NexusShot.Tests;
 

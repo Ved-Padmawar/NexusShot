@@ -179,22 +179,29 @@ public sealed partial class EditorWindow
         }, () => savedPixels?.Dispose());
     }
 
+    internal bool HasUnsavedChanges()
+    {
+        CommitText();
+        return _document.HasUnsavedChanges;
+    }
+
+    internal void SaveThenClose(Action? afterSave)
+    {
+        _closeAfterSave = true;
+        _afterCloseSave = afterSave;
+        RunFileAction(Save);
+    }
+
     internal bool RequestClose(Action? afterSave = null)
     {
         if (_fileBusy || _confirmingClose) return false;
-        CommitText();
-        if (!_document.HasUnsavedChanges) return true;
+        if (!HasUnsavedChanges()) return true;
         _confirmingClose = true;
         int choice;
         try { choice = UserFeedback.ConfirmSave(Handle, _files.FileName); }
         finally { _confirmingClose = false; }
         if (choice == 7) return true;
-        if (choice == 6)
-        {
-            _closeAfterSave = true;
-            _afterCloseSave = afterSave;
-            RunFileAction(Save);
-        }
+        if (choice == 6) SaveThenClose(afterSave);
         return false;
     }
 

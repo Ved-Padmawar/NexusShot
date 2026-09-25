@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
@@ -139,7 +138,7 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         // Dim everything except the selection, so the cut-out shows the true pixels.
         foreach (var band in AdornerGeometry.DimAround(selection, full.Width, full.Height)) ui.FillRect(band, Rgba.Black.WithAlpha(110));
 
-        ui.StrokeRounded(selection, 0, Palette.Selection, 1.5f);
+        ui.StrokeRounded(selection, 0, ui.Theme.Accent, 1.5f);
         DrawSizeBadge(ui, selection);
         ui.EndFrame();
     }
@@ -153,12 +152,9 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         var width = Math.Ceiling(ui.MeasureText(label, font, Weight.Bold, Face.Mono)) + 16;
         const double height = 26;
 
-        // Below the selection normally; above it when there is no room below.
-        var y = selection.Bottom + 8;
-        if (y + height > _desktop.Height) y = Math.Max(0, selection.Top - height - 8);
-
-        var x = Math.Clamp(selection.X, 0, Math.Max(0, _desktop.Width - width));
-        var box = new Rect(x, y, width, height);
+        var origin = OverlayGeometry.SizeBadge(
+            selection, new Size(width, height), new Size(_desktop.Width, _desktop.Height), gap: 8);
+        var box = new Rect(origin.X, origin.Y, width, height);
         ui.FillRounded(box, Metrics.RadiusSm, ui.Theme.Accent);
         ui.Text(label, box, ui.Theme.TextOnAccent, font, Weight.Bold, TextAlign.Center, face: Face.Mono);
     }
@@ -205,23 +201,11 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
 
-    /// <summary>Accepts the region, in desktop coordinates. A click without a drag is a cancel, not
-    /// a zero-pixel capture.</summary>
     private void Commit()
     {
-        var selection = CurrentSelection();
-        if (selection.Width < 2 || selection.Height < 2)
-        {
-            Selection = null;
-        }
-        else
-        {
-            Selection = new RectInt(
-                _desktop.X + (int)Math.Round(selection.X),
-                _desktop.Y + (int)Math.Round(selection.Y),
-                (int)Math.Round(selection.Width),
-                (int)Math.Round(selection.Height));
-        }
+        Selection = OverlayGeometry.Selection(_origin, _cursor) is { } region
+            ? new RectInt(_desktop.X + (int)region.X, _desktop.Y + (int)region.Y, (int)region.Width, (int)region.Height)
+            : null;
         Close();
     }
 

@@ -14,7 +14,7 @@
 
     <!-- The fallback for a local build. A release overrides it with the tag, via build.ps1's
          -p:Version. The settings header reads it back off the assembly. -->
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

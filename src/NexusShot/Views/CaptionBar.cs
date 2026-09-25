@@ -42,6 +42,23 @@ public abstract class CaptionWindow : D2DRenderWindow
     /// under them.</summary>
     public double CaptionButtonsWidth => 3 * 46 * DpiScale;
 
+    /// <summary>The pointer in client pixels, read from Windows now rather than from the last mouse
+    /// message: WM_SETCURSOR arrives before the WM_MOUSEMOVE that would report it.</summary>
+    protected Point? PointerNow()
+    {
+        if (!Functions.GetCursorPos(out var point)) return null;
+        if (!Functions.ScreenToClient(new HWND { Value = Handle }, ref point)) return null;
+        return new Point(point.x, point.y);
+    }
+
+    /// <summary>The system cursor for what the chrome's control under the pointer asked for.</summary>
+    protected static IntPtr SystemCursor(PointerCursor cursor) => cursor switch
+    {
+        PointerCursor.Hand => ToolCursors.Hand,
+        PointerCursor.Text => ToolCursors.Text,
+        _ => ToolCursors.Arrow,
+    };
+
     /// <summary>True while the window is maximised, which changes the restore glyph and the insets.</summary>
     protected bool IsMaximised => WindowInterop.IsZoomedWindow(Handle);
 
@@ -128,7 +145,8 @@ public abstract class CaptionWindow : D2DRenderWindow
 
     private bool CaptionButton(Ui ui, int id, Rect bounds, Icon glyph, double size, bool danger)
     {
-        var clicked = ui.Interact(id, bounds);
+        // The arrow, as every window's own caption buttons keep it.
+        var clicked = ui.Interact(id, bounds, PointerCursor.Arrow);
         var hot = ui.IsHot(id);
         var active = ui.IsActive(id);
 

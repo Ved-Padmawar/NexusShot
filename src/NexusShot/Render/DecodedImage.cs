@@ -93,6 +93,15 @@ public sealed class DecodedImage : IDisposable
         return crop;
     }
 
+    /// <summary>The colour of one pixel, or null outside the image. Alpha is dropped: this reads a
+    /// desktop snapshot, which is opaque, so the premultiplied bytes are the straight colour.</summary>
+    public Core.Rgba? OpaquePixelAt(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= Width || y >= Height) return null;
+        var pixel = Span.Slice(y * Stride + x * 4, 4);
+        return new Core.Rgba(pixel[2], pixel[1], pixel[0]);
+    }
+
     public void Dispose()
     {
         var buffer = Interlocked.Exchange(ref _buffer, IntPtr.Zero);

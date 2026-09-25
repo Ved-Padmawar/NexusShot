@@ -20,7 +20,9 @@ public static class Updates
     /// <summary>The release signing key's public half: ECDSA P-256, SubjectPublicKeyInfo, base64.</summary>
     public const string SigningKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEIZTOrsClu9rgENaTIqyCG3dldW4//FyoTaSl3EpoqLcD2HVJVtXThKS4yZ3twx6a5oGjGANkkZTZ69s8MF/CjA==";
 
-    /// <summary>Null unless the release has both its installer and its signature, from this repository.</summary>
+    /// <summary>Null unless the release has both its installer and its signature, from this repository.
+    /// A field of the wrong type throws InvalidOperationException from the element accessors, not
+    /// JsonException, so both mean "no update".</summary>
     public static UpdateRelease? Parse(string json)
     {
         try
@@ -50,7 +52,7 @@ public static class Updates
 
             return installer is null || signature is null ? null : new UpdateRelease(version, installer, size, signature);
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
             return null;
         }

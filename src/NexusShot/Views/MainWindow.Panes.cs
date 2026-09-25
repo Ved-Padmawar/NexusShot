@@ -90,7 +90,8 @@ public sealed partial class MainWindow
         _ => "Timed capture",
     };
 
-    /// <summary>The count, the search box, and the folder and settings buttons.</summary>
+    /// <summary>The count, the update button when there is one, the search box, and the folder and
+    /// settings buttons.</summary>
     private void DrawToolsRow(Ui ui, double width)
     {
         var theme = ui.Theme;
@@ -111,6 +112,9 @@ public sealed partial class MainWindow
         right -= S(32) + S(8);
 
         var search = new Rect(right - S(220), row.Center.Y - S(15), S(220), S(30));
+        if (ShowsUpdateButton)
+            DrawUpdateButton(ui, new Rect(search.X - S(8) - UpdateButtonWidth, search.Y, UpdateButtonWidth, S(30)));
+
         var result = ui.Field(Ui.Id("library.search"), search, _query, character => !char.IsControl(character), 80,
             leading: Icons.Search, placeholder: "Search", face: Face.Text);
         if (result.Changed && result.Text != _query)

@@ -366,23 +366,20 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         if (string.IsNullOrEmpty(annotation.Text)) return;
         var bounds = annotation.Bounds;
 
-        using var layout = TextLayout(annotation, bounds);
+        using var layout = TextLayout(annotation, annotation.Text, annotation.Style, annotation.Runs, bounds);
         target.DrawTextLayout(ToPoint(TextOrigin(bounds)), layout, resources.Brush(color));
     }
 
-    /// <summary>The laid-out text for an annotation. Shared with the inline editor so the box the
-    /// user types into wraps identically to what gets drawn.</summary>
-    public IComObject<IDWriteTextLayout> TextLayout(Annotation annotation, Rect bounds) =>
-        TextLayout(annotation, annotation.Text, bounds);
-
-    /// <summary>The same layout over arbitrary text, so the editor can lay out what has been typed
-    /// rather than what was last committed.</summary>
-    public IComObject<IDWriteTextLayout> TextLayout(Annotation annotation, string text, Rect bounds)
+    /// <summary>The laid-out text for a box, formatted run by run. Takes the text and runs apart from
+    /// the annotation so the inline editor lays out what has been typed rather than what was last
+    /// committed - and so wraps exactly as the drawn and exported text does.</summary>
+    private IComObject<IDWriteTextLayout> TextLayout(
+        Annotation annotation, string text, TextStyle style, TextRun[] runs, Rect bounds)
     {
         var format = resources.TextFormat(
             resources.Family(Metrics.FontFamily, Metrics.FontFallback), (float)Math.Max(8, annotation.FontSize),
-            annotation.IsBold ? DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_NORMAL,
-            annotation.IsItalic,
+            DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_NORMAL,
+            italic: false,
             alignment: DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING,
             paragraphAlignment: DWRITE_PARAGRAPH_ALIGNMENT.DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
             wordWrapping: DWRITE_WORD_WRAPPING.DWRITE_WORD_WRAPPING_WRAP);
@@ -393,13 +390,12 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             maxWidth: (float)Math.Max(10, bounds.Width - TextInset * 2),
             maxHeight: (float)Math.Max(10, bounds.Height - TextInsetY * 2));
 
-        if (annotation.IsUnderline && text.Length > 0)
+        foreach (var (start, length, spanStyle) in TextRuns.Spans(style, runs, text.Length))
         {
-            layout.Object.SetUnderline(true, new DWRITE_TEXT_RANGE
-            {
-                startPosition = 0,
-                length = (uint)text.Length,
-            });
+            var range = new DWRITE_TEXT_RANGE { startPosition = (uint)start, length = (uint)length };
+            if (spanStyle.HasFlag(TextStyle.Bold)) layout.Object.SetFontWeight(DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_BOLD, range);
+            if (spanStyle.HasFlag(TextStyle.Italic)) layout.Object.SetFontStyle(DWRITE_FONT_STYLE.DWRITE_FONT_STYLE_ITALIC, range);
+            if (spanStyle.HasFlag(TextStyle.Underline)) layout.Object.SetUnderline(true, range);
         }
         return layout;
     }
@@ -409,18 +405,18 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     /// pass as the canvas, so there is no second painter to race.
     /// </summary>
     public void DrawTextEditor(
-        IComObject<ID2D1RenderTarget> target, Annotation annotation, string text,
+        IComObject<ID2D1RenderTarget> target, Annotation annotation, string text, TextStyle style, TextRun[] runs,
         int caret, int selectionStart, int selectionEnd, bool caretVisible,
-        double adornerScale, Rgba selection)
+        double adornerScale)
     {
         var bounds = annotation.Bounds;
         var color = annotation.Color;
 
-        using var layout = TextLayout(annotation, text, bounds);
+        using var layout = TextLayout(annotation, text, style, runs, bounds);
         var origin = TextOrigin(bounds);
 
         if (selectionEnd > selectionStart)
-            DrawSelection(target, layout, selectionStart, selectionEnd, origin, selection);
+            DrawSelection(target, layout, selectionStart, selectionEnd, origin, color.WithAlpha(90));
 
         if (text.Length > 0)
             target.DrawTextLayout(ToPoint(origin), layout, resources.Brush(color));
@@ -470,12 +466,20 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         return new Rect(origin.X + x, origin.Y + y, width, Math.Max(1, metrics.height));
     }
 
+    /// <summary>Where the caret at <paramref name="index"/> is drawn, in image pixels: Up and Down
+    /// aim from it.</summary>
+    public Rect CaretBounds(Annotation annotation, string text, TextStyle style, TextRun[] runs, int index)
+    {
+        using var layout = TextLayout(annotation, text, style, runs, annotation.Bounds);
+        return CaretRect(layout, index, TextOrigin(annotation.Bounds), 1);
+    }
+
     /// <summary>The caret index nearest a point, so a click lands the caret where it looks like it
     /// should.</summary>
-    public int HitTestCaret(Annotation annotation, string text, Point point)
+    public int HitTestCaret(Annotation annotation, string text, TextStyle style, TextRun[] runs, Point point)
     {
         var bounds = annotation.Bounds;
-        using var layout = TextLayout(annotation, text, bounds);
+        using var layout = TextLayout(annotation, text, style, runs, bounds);
 
         var origin = TextOrigin(bounds);
         layout.Object.HitTestPoint(
@@ -531,19 +535,13 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         // Lines and arrows have no box to hang grips on: they get endpoint handles.
         if (annotation.IsLinear)
         {
-            DrawEndpointHandle(target, annotation.Start, adornerScale);
-            DrawEndpointHandle(target, annotation.End, adornerScale);
+            DrawEndpointHandle(target, annotation.Start, annotation.Color, adornerScale);
+            DrawEndpointHandle(target, annotation.End, annotation.Color, adornerScale);
             return;
         }
 
         var adorner = AdornerGeometry.Selection(annotation, adornerScale);
-
-        if (adorner.Frame is { } frame && !frame.IsEmpty)
-        {
-            target.DrawRectangle(
-                ToRect(frame), resources.Brush(Palette.Selection),
-                (float)adorner.FrameThickness);
-        }
+        if (adorner.Frame is { } frame) DrawFrame(target, frame, annotation.Color, adorner.FrameThickness, adornerScale);
 
         if (EditorDocument.IsBoxResizable(annotation))
             DrawBoxGrips(target, adorner.GripBounds, adornerScale);
@@ -560,12 +558,16 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             target.FillRectangle(ToRect(band), resources.Brush(Rgba.Black.WithAlpha(150)));
 
         var adorner = AdornerGeometry.Crop(pending, adornerScale);
-        if (!adorner.Frame.IsEmpty)
-        {
-            target.DrawRectangle(ToRect(adorner.Frame), resources.Brush(Palette.Selection),
-                (float)adorner.FrameThickness);
-        }
+        DrawFrame(target, adorner.Frame, Rgba.White, adorner.FrameThickness, adornerScale);
         DrawBoxGrips(target, adorner.GripBounds, adornerScale);
+    }
+
+    /// <summary>Over a dark underlay, like the grips, so it reads on any capture.</summary>
+    private void DrawFrame(IComObject<ID2D1RenderTarget> target, Rect frame, Rgba color, double thickness, double adornerScale)
+    {
+        if (frame.IsEmpty) return;
+        target.DrawRectangle(ToRect(frame), resources.Brush(Rgba.Black.WithAlpha(120)), (float)(thickness + 2 * adornerScale));
+        target.DrawRectangle(ToRect(frame), resources.Brush(color), (float)thickness);
     }
 
     /// <summary>L-shaped corner grips and short edge bars, drawn inside the bounds: a white stroke
@@ -589,12 +591,12 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     }
 
     /// <summary>Endpoint grip for lines and arrows, scaled against the display zoom.</summary>
-    private void DrawEndpointHandle(IComObject<ID2D1RenderTarget> target, Point center, double adornerScale)
+    private void DrawEndpointHandle(IComObject<ID2D1RenderTarget> target, Point center, Rgba color, double adornerScale)
     {
         var radius = (float)(7 * adornerScale);
         var ellipse = new D2D1_ELLIPSE { point = ToPoint(center), radiusX = radius, radiusY = radius };
         target.FillEllipse(ellipse, resources.Brush(Rgba.White));
-        target.DrawEllipse(ellipse, resources.Brush(Palette.Selection), (float)(2 * adornerScale));
+        target.DrawEllipse(ellipse, resources.Brush(color), (float)(2 * adornerScale));
     }
 
     // ============================  PRIMITIVES  ============================
@@ -629,38 +631,6 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     {
         foreach (var cached in _erasedStrokes.Values) cached.Geometry.Dispose();
         _erasedStrokes.Clear();
-    }
-}
-
-/// <summary>Arrow shaft and head geometry, shared by the renderer and the exporter.</summary>
-public static class ArrowGeometry
-{
-    /// <summary>The shaft stops short of the tip so the head is not drawn over a line end.</summary>
-    public static Point ShaftEnd(Annotation annotation)
-    {
-        var dx = annotation.End.X - annotation.Start.X;
-        var dy = annotation.End.Y - annotation.Start.Y;
-        var length = Math.Sqrt(dx * dx + dy * dy);
-        if (length < 1) return annotation.End;
-        var head = Math.Min(length, annotation.StrokeThickness * 5) * 0.8;
-        return new Point(annotation.End.X - dx / length * head, annotation.End.Y - dy / length * head);
-    }
-
-    public static Point[] Head(Annotation annotation)
-    {
-        var dx = annotation.End.X - annotation.Start.X;
-        var dy = annotation.End.Y - annotation.Start.Y;
-        var angle = Math.Atan2(dy, dx);
-        var length = Math.Sqrt(dx * dx + dy * dy);
-        var head = Math.Min(Math.Max(length, 1), annotation.StrokeThickness * 5);
-        const double spread = 0.45;
-
-        return
-        [
-            annotation.End,
-            new(annotation.End.X - Math.Cos(angle - spread) * head, annotation.End.Y - Math.Sin(angle - spread) * head),
-            new(annotation.End.X - Math.Cos(angle + spread) * head, annotation.End.Y - Math.Sin(angle + spread) * head),
-        ];
     }
 }
 

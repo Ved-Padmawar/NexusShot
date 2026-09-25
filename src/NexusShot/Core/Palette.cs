@@ -10,9 +10,6 @@ public static class Palette
     public static readonly string[] Swatches =
         ["#FF3B30", "#FFCC00", "#34C759", "#0A84FF", "#FFFFFF", "#1C1C1E"];
 
-    /// <summary>Selection blue, shared by adorners, the crop frame and focus rings.</summary>
-    public static readonly Rgba Selection = new(10, 132, 255, 255);
-
     /// <summary>What a malformed hex string resolves to. Named, so the fallback is a deliberate
     /// value rather than whichever swatch happens to be first.</summary>
     public static readonly Rgba Fallback = new(255, 59, 48, 255);

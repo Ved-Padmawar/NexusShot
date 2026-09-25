@@ -47,7 +47,7 @@ the screen; click Restore to bring one back.
 **🎨 Editor** — rectangle, ellipse, line, arrow, pen, brush, eraser, text, numbered counter,
 highlight, blur, pixelate, spotlight, and crop. Annotations stay selectable and editable after they
 are drawn: boxes have eight resize grips, lines and arrows have endpoint grips, and text is edited
-in place, wrapping inside its box. Crop is a handle-draggable frame applied on `Enter` and discarded
+in place, wrapping inside its box, with bold, italic and underline on any part of it. Crop is a handle-draggable frame applied on `Enter` and discarded
 with `Esc`. Blur and pixelate run on the GPU. Shapes can be outlined, tinted or filled. The colour picker
 works in HEX, RGB, HSL or HSB, with opacity, an eyedropper, and recent and saved colours. Zoom with
 `Ctrl`+wheel. Closing with unsaved edits asks first.
@@ -60,8 +60,9 @@ delete at once. Scrolling is GPU-composited and smooth on touchpads. Drop an ima
 after-capture action, card corner, OCR language, theme and accent, hotkeys, and more. Errors and
 results arrive as Windows notifications.
 
-**🔄 Updates** — NexusShot checks GitHub for a new version and says so; one click in Settings
-downloads it, verifies its signature, installs it and restarts.
+**🔄 Updates** — when GitHub has a new version, a button appears in the Library. One click downloads
+it with the progress on the button and verifies its signature; NexusShot then asks once, saving or
+discarding open edits, before it installs and restarts. Nothing restarts on its own.
 
 **⌨️ Global hotkeys** — `Ctrl+Shift+S` region, `Ctrl+Shift+F` full screen, `Ctrl+Shift+W` active
 window, `Ctrl+Shift+O` capture text, `Ctrl+Shift+H` restore closed cards, `Ctrl+Shift+N` open the
@@ -126,6 +127,7 @@ so the target machine needs nothing installed. `installer` wraps that in Inno Se
 src/NexusShot/
   Core/       Framework-free state and logic, unit-tested without a GPU
               EditorDocument   annotations, gestures, selection, undo/redo, crop
+              TextRuns         bold / italic / underline over part of a text box
               QuickAccess      the card stack: open, pinned, countdown, recently closed
               CardLayout       one card size, button and pill positions
               BoxGeometry      shared crop/shape/text handles, hit testing, resize
@@ -152,7 +154,8 @@ src/NexusShot/
               TextEditor       inline text drawn in Direct2D
   App.cs              tray + hotkeys + lifetime
   CapturePipeline.cs  everything after the pixels exist: saving, cards, editors, history
-src/NexusShot.Tests/  unit tests for Core
+src/NexusShot.Tests/  unit tests for Core, plus export pixels, widgets, the editor toolbar and the
+                      Library drawn offscreen and clicked where they draw
 ```
 
 The UI is **immediate mode**: there is no retained visual tree. Input mutates the document and asks

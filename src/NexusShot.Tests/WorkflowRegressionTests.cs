@@ -135,6 +135,57 @@ public class WorkflowRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task HistoryAdoptsAndDropsEveryFormatTheAppWrites()
+    {
+        var jpeg = Path.Combine(_directory, "photo.jpg");
+        var bitmap = Path.Combine(_directory, "scan.bmp");
+        await MediaWorker.Run(() =>
+        {
+            using var image = DecodedImage.Allocate(8, 6);
+            image.Span.Fill(255);
+            ImageWriter.Write(jpeg, image, ImageFormat.Jpeg);
+            ImageWriter.Write(bitmap, image, ImageFormat.Bmp);
+            return true;
+        });
+        File.WriteAllText(Path.Combine(_directory, "notes.txt"), "not an image");
+
+        var found = HistoryScanner.Scan(_directory, [], new Dictionary<string, FileVersion>()).Changed;
+        Assert.Equal(["photo.jpg", "scan.bmp"], found.Select(entry => entry.Item.FileName).Order());
+
+        File.Delete(bitmap);
+        Assert.Equal([bitmap], HistoryScanner.Scan(_directory, [jpeg, bitmap], found.ToDictionary(
+            entry => entry.Item.FilePath, entry => entry.Version, StringComparer.OrdinalIgnoreCase)).Missing);
+    }
+
+    [Theory]
+    [InlineData(".png")]
+    [InlineData(".jpg")]
+    [InlineData(".jpeg")]
+    [InlineData(".bmp")]
+    public void TheWatcherReportsADeletedCaptureInEveryFormat(string extension)
+    {
+        var path = Path.Combine(_directory, "capture" + extension);
+        File.WriteAllBytes(path, [0]);
+        using var fired = new ManualResetEventSlim();
+        using var watcher = new FolderWatcher(_directory, fired.Set);
+
+        File.Delete(path);
+
+        Assert.True(fired.Wait(TimeSpan.FromSeconds(5)), $"no change reported for a deleted {extension}");
+    }
+
+    [Fact]
+    public void TheWatcherIgnoresFilesThatAreNotImages()
+    {
+        using var fired = new ManualResetEventSlim();
+        using var watcher = new FolderWatcher(_directory, fired.Set);
+
+        File.WriteAllText(Path.Combine(_directory, "notes.txt"), "x");
+
+        Assert.False(fired.Wait(TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
     public async Task AutoSaveDisabledDoesNotTouchTheConfiguredFolder()
     {
         var invalidFolder = Path.Combine(_directory, "must-not-exist");

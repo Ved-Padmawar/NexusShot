@@ -12,7 +12,7 @@ public sealed partial class MainWindow
     /// <summary>Kept so the card keeps its text while it fades out.</summary>
     private int _promptCount;
 
-    private bool ConfirmOpen => _pendingDelete is not null;
+    internal bool ConfirmOpen => _pendingDelete is not null;
 
     private void AskDelete(IReadOnlyList<ScreenshotHistoryItem> items)
     {
