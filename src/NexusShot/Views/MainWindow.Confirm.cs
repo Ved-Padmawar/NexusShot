@@ -14,6 +14,9 @@ public sealed partial class MainWindow
 
     internal bool ConfirmOpen => _pendingDelete is not null;
 
+    /// <summary>The Delete button and the Delete key both ask about exactly this.</summary>
+    private void AskDeleteSelected() => AskDelete(_history.Where(item => _selection.Contains(item.FilePath)).ToList());
+
     private void AskDelete(IReadOnlyList<ScreenshotHistoryItem> items)
     {
         if (items.Count == 0) return;

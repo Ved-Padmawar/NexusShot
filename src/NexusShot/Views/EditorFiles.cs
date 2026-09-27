@@ -5,8 +5,9 @@ using NexusShot.Render;
 namespace NexusShot.Views;
 
 /// <summary>Prepares independent exports on the UI thread and adopts successful saves there.
-/// Encoding never mutates the live document, so a failed write leaves crop and undo intact.</summary>
-public sealed class EditorFiles(EditorDocument document)
+/// Encoding never mutates the live document, so a failed write leaves crop and undo intact.
+/// <paramref name="pixels"/> reads the image on screen, which every export flattens.</summary>
+public sealed class EditorFiles(EditorDocument document, Func<DecodedImage> pixels)
 {
     public string Path { get; private set; } = string.Empty;
     public string FileName => System.IO.Path.GetFileName(Path);
@@ -16,7 +17,7 @@ public sealed class EditorFiles(EditorDocument document)
     public ExportRequest PrepareSave()
     {
         Committing?.Invoke();
-        return new(document.CreateExportSnapshot(), Path, Path);
+        return new(document.CreateExportSnapshot(), pixels(), Path, Path);
     }
 
     public ExportRequest? PrepareSaveAs(Func<string, string?, string?> chooseDestination)
@@ -25,7 +26,7 @@ public sealed class EditorFiles(EditorDocument document)
         if (chooseDestination(suggested, System.IO.Path.GetDirectoryName(Path)) is not { } destination)
             return null;
         Committing?.Invoke();
-        return new(document.CreateExportSnapshot(), Path, System.IO.Path.GetFullPath(destination));
+        return new(document.CreateExportSnapshot(), pixels(), Path, System.IO.Path.GetFullPath(destination));
     }
 
     public void CompleteSave(ExportRequest request)
@@ -35,10 +36,14 @@ public sealed class EditorFiles(EditorDocument document)
     }
 }
 
-/// <summary>Owned by one worker after preparation; contains no live view state.</summary>
-public sealed record ExportRequest(EditorDocument Document, string Source, string Destination)
+/// <summary>Owned by one worker after preparation; contains no live view state. <paramref name="Source"/>
+/// names the image; <paramref name="Pixels"/> are what is flattened, and go with the request.</summary>
+public sealed record ExportRequest(EditorDocument Document, DecodedImage Pixels, string Source, string Destination)
+    : IDisposable
 {
-    public void Save() => Exporter.Save(Document, Source, Destination);
+    public void Save() => Exporter.Save(Document, Pixels, Destination);
+
+    public void Dispose() => Pixels.Dispose();
 
     public void CopyToClipboard() => WithFlattened(ClipboardImage.Copy);
 
@@ -75,7 +80,7 @@ public sealed record ExportRequest(EditorDocument Document, string Source, strin
         Directory.CreateDirectory(folder);
 
         var path = System.IO.Path.Combine(folder, System.IO.Path.GetFileNameWithoutExtension(Source) + ".png");
-        Exporter.Save(Document, Source, path);
+        Exporter.Save(Document, Pixels, path);
         return path;
     }
 
@@ -84,7 +89,7 @@ public sealed record ExportRequest(EditorDocument Document, string Source, strin
         var temporary = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"nexusshot-{Guid.NewGuid():N}.png");
         try
         {
-            Exporter.Save(Document, Source, temporary);
+            Exporter.Save(Document, Pixels, temporary);
             use(temporary);
         }
         finally

@@ -366,7 +366,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         if (string.IsNullOrEmpty(annotation.Text)) return;
         var bounds = annotation.Bounds;
 
-        using var layout = TextLayout(annotation, annotation.Text, annotation.Style, annotation.Runs, bounds);
+        using var layout = TextLayout(annotation.Text, annotation.Format, annotation.Runs, bounds);
         target.DrawTextLayout(ToPoint(TextOrigin(bounds)), layout, resources.Brush(color));
     }
 
@@ -374,10 +374,10 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
     /// the annotation so the inline editor lays out what has been typed rather than what was last
     /// committed - and so wraps exactly as the drawn and exported text does.</summary>
     private IComObject<IDWriteTextLayout> TextLayout(
-        Annotation annotation, string text, TextStyle style, TextRun[] runs, Rect bounds)
+        string text, TextFormat baseFormat, TextRun[] runs, Rect bounds)
     {
         var format = resources.TextFormat(
-            resources.Family(Metrics.FontFamily, Metrics.FontFallback), (float)Math.Max(8, annotation.FontSize),
+            resources.Family(Metrics.FontFamily, Metrics.FontFallback), FontSize(baseFormat.Size),
             DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_NORMAL,
             italic: false,
             alignment: DWRITE_TEXT_ALIGNMENT.DWRITE_TEXT_ALIGNMENT_LEADING,
@@ -390,9 +390,10 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             maxWidth: (float)Math.Max(10, bounds.Width - TextInset * 2),
             maxHeight: (float)Math.Max(10, bounds.Height - TextInsetY * 2));
 
-        foreach (var (start, length, spanStyle) in TextRuns.Spans(style, runs, text.Length))
+        foreach (var (start, length, (spanStyle, spanSize)) in TextRuns.Spans(baseFormat, runs, text.Length))
         {
             var range = new DWRITE_TEXT_RANGE { startPosition = (uint)start, length = (uint)length };
+            if (spanSize != baseFormat.Size) layout.Object.SetFontSize(FontSize(spanSize), range);
             if (spanStyle.HasFlag(TextStyle.Bold)) layout.Object.SetFontWeight(DWRITE_FONT_WEIGHT.DWRITE_FONT_WEIGHT_BOLD, range);
             if (spanStyle.HasFlag(TextStyle.Italic)) layout.Object.SetFontStyle(DWRITE_FONT_STYLE.DWRITE_FONT_STYLE_ITALIC, range);
             if (spanStyle.HasFlag(TextStyle.Underline)) layout.Object.SetUnderline(true, range);
@@ -400,19 +401,21 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
         return layout;
     }
 
+    private static float FontSize(double size) => (float)Math.Max(8, size);
+
     /// <summary>
     /// The box being typed into: the selection behind, the text, and the caret. Drawn in the same
     /// pass as the canvas, so there is no second painter to race.
     /// </summary>
     public void DrawTextEditor(
-        IComObject<ID2D1RenderTarget> target, Annotation annotation, string text, TextStyle style, TextRun[] runs,
+        IComObject<ID2D1RenderTarget> target, Annotation annotation, string text, TextFormat format, TextRun[] runs,
         int caret, int selectionStart, int selectionEnd, bool caretVisible,
         double adornerScale)
     {
         var bounds = annotation.Bounds;
         var color = annotation.Color;
 
-        using var layout = TextLayout(annotation, text, style, runs, bounds);
+        using var layout = TextLayout(text, format, runs, bounds);
         var origin = TextOrigin(bounds);
 
         if (selectionEnd > selectionStart)
@@ -468,18 +471,18 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 
     /// <summary>Where the caret at <paramref name="index"/> is drawn, in image pixels: Up and Down
     /// aim from it.</summary>
-    public Rect CaretBounds(Annotation annotation, string text, TextStyle style, TextRun[] runs, int index)
+    public Rect CaretBounds(Annotation annotation, string text, TextFormat format, TextRun[] runs, int index)
     {
-        using var layout = TextLayout(annotation, text, style, runs, annotation.Bounds);
+        using var layout = TextLayout(text, format, runs, annotation.Bounds);
         return CaretRect(layout, index, TextOrigin(annotation.Bounds), 1);
     }
 
     /// <summary>The caret index nearest a point, so a click lands the caret where it looks like it
     /// should.</summary>
-    public int HitTestCaret(Annotation annotation, string text, TextStyle style, TextRun[] runs, Point point)
+    public int HitTestCaret(Annotation annotation, string text, TextFormat format, TextRun[] runs, Point point)
     {
         var bounds = annotation.Bounds;
-        using var layout = TextLayout(annotation, text, style, runs, bounds);
+        using var layout = TextLayout(text, format, runs, bounds);
 
         var origin = TextOrigin(bounds);
         layout.Object.HitTestPoint(

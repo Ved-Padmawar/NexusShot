@@ -209,14 +209,12 @@ public sealed class CapturePipeline : IDisposable
             string.Equals(editor.PendingSavePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
         if (pending is not null)
         {
-            pending.Show();
-            pending.SetForeground();
+            pending.Reveal();
             return;
         }
         if (_editors.TryGetValue(item.FilePath, out var existing))
         {
-            existing.Show();
-            existing.SetForeground();
+            existing.Reveal();
             return;
         }
 
@@ -300,8 +298,7 @@ public sealed class CapturePipeline : IDisposable
         var scale = Functions.GetDpiForWindow(editor.Handle) / 96.0;
         editor.ResizeClient((int)(1180 * scale), (int)(820 * scale));
         editor.Center();
-        editor.Show();
-        editor.SetForeground();
+        editor.Reveal();
     }
 
     /// <summary>Open editors follow the library's theme and accent rather than the ones they were

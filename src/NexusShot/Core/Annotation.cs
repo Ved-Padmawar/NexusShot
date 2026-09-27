@@ -70,12 +70,9 @@ public sealed class Annotation
 
     public string Text { get; set; } = string.Empty;
 
-    /// <summary>Text annotation formatting, in image pixels for the size.</summary>
-    public double FontSize { get; set; } = 20;
-
-    /// <summary>The box's base style, and the runs where parts of the text differ from it. See
+    /// <summary>The box's base format, and the runs where parts of the text differ from it. See
     /// <see cref="TextRuns"/>; the runs are replaced whole, never edited in place.</summary>
-    public TextStyle Style { get; set; }
+    public TextFormat Format { get; set; } = new(TextStyle.None, 20);
     public TextRun[] Runs { get; set; } = [];
 
     /// <summary>Step number rendered by <see cref="EditorTool.Counter"/>.</summary>
@@ -176,6 +173,22 @@ public sealed class Annotation
     /// <summary>True when the tool is defined by two free endpoints rather than a box.</summary>
     public bool IsLinear => Tool is EditorTool.Line or EditorTool.Arrow;
 
+    /// <summary>The box handle whose cursor fits <paramref name="handle"/>: a line end takes the axis
+    /// nearest the line's angle.</summary>
+    public ResizeHandle ResizeAxis(ResizeHandle handle)
+    {
+        if (handle is not (ResizeHandle.LineStart or ResizeHandle.LineEnd)) return handle;
+
+        var degrees = (Math.Atan2(End.Y - Start.Y, End.X - Start.X) * 180 / Math.PI + 180) % 180;
+        return degrees switch
+        {
+            < 22.5 or >= 157.5 => ResizeHandle.Right,
+            < 67.5 => ResizeHandle.BottomRight,
+            < 112.5 => ResizeHandle.Bottom,
+            _ => ResizeHandle.BottomLeft,
+        };
+    }
+
     /// <summary>Shifts the annotation by a delta in image pixels.</summary>
     public void Translate(double dx, double dy)
     {
@@ -235,8 +248,7 @@ public sealed class Annotation
         Fill = Fill,
         ColorHex = ColorHex,
         StrokeThickness = StrokeThickness,
-        FontSize = FontSize,
-        Style = Style,
+        Format = Format,
         Runs = Runs,
     };
 

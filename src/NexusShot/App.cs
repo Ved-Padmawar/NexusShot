@@ -445,6 +445,7 @@ public sealed class App : IDisposable
                     _historyVersions.Remove(path);
                     _main.ForgetMissingCapture(path);
                 }
+                foreach (var (path, version) in result.Unreadable) _historyVersions[path] = version;
                 var live = _history.ToDictionary(item => item.FilePath, StringComparer.OrdinalIgnoreCase);
                 foreach (var (candidate, version) in result.Changed)
                 {

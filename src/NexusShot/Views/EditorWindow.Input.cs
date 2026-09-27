@@ -212,8 +212,9 @@ public sealed partial class EditorWindow
     private bool GrabsBox(Annotation annotation, Point point) =>
         BoxGeometry.GrabsBox(annotation.Bounds, point, HandleTolerance);
 
-    /// <summary>True where the canvas owns the pointer: the stage, anywhere the chrome is not.</summary>
-    private bool InCanvas(Point client) => !(_chrome?.Covers(client) ?? true);
+    /// <summary>True where the canvas owns the pointer: the stage, anywhere the chrome and the caption
+    /// buttons are not.</summary>
+    private bool InCanvas(Point client) => !(_chrome?.Covers(client) ?? true) && !OverCaptionButtons(client);
 
     private void OnPointerPressed((int X, int Y) client)
     {
@@ -308,7 +309,8 @@ public sealed partial class EditorWindow
                 : _document.PendingCrop is not null
                     ? _document.GetCropHandleAt(point, HandleTolerance)
                     : _document.Selected is { } selected
-                        ? _document.GetResizeHandleAt(selected, point, HandleTolerance)
+                        && _document.GetResizeHandleAt(selected, point, HandleTolerance) is { } handle
+                        ? selected.ResizeAxis(handle)
                         : null;
         }
 
@@ -377,7 +379,7 @@ public sealed partial class EditorWindow
     private void PlaceCaret(TextEditor editor, Point point, bool extend = false)
     {
         if (_renderer is null) return;
-        editor.MoveTo(_renderer.HitTestCaret(editor.Annotation, editor.Text, editor.Style, editor.Runs, point), extend);
+        editor.MoveTo(_renderer.HitTestCaret(editor.Annotation, editor.Text, editor.Format, editor.Runs, point), extend);
     }
 
     /// <summary>Opens the inline box over an annotation.</summary>
@@ -393,7 +395,7 @@ public sealed partial class EditorWindow
     {
         if (_ui is { HasKeyboardFocus: true })
         {
-            if (!char.IsControl(character)) _ui.Char(character);
+            _ui.Char(character);
             Invalidate();
             return true;
         }
@@ -413,8 +415,8 @@ public sealed partial class EditorWindow
         if (key is VIRTUAL_KEY.VK_UP or VIRTUAL_KEY.VK_DOWN && _text.Editor is { } editor && _renderer is { } renderer)
         {
             editor.MoveLine(key == VIRTUAL_KEY.VK_UP ? -1 : 1, shift,
-                index => renderer.CaretBounds(editor.Annotation, editor.Text, editor.Style, editor.Runs, index),
-                point => renderer.HitTestCaret(editor.Annotation, editor.Text, editor.Style, editor.Runs, point));
+                index => renderer.CaretBounds(editor.Annotation, editor.Text, editor.Format, editor.Runs, index),
+                point => renderer.HitTestCaret(editor.Annotation, editor.Text, editor.Format, editor.Runs, point));
             Invalidate();
             return true;
         }
@@ -451,7 +453,7 @@ public sealed partial class EditorWindow
     /// else the selected box, else the defaults for new text.</summary>
     private TextStyle ActiveTextStyle => _text.Editor is { } editor ? editor.ActiveStyle
         : _document.Selected is { Tool: EditorTool.Text } text
-            ? TextRuns.Common(text.Style, text.Runs, text.Text.Length, 0, text.Text.Length)
+            ? TextRuns.Common(text.Format, text.Runs, text.Text.Length, 0, text.Text.Length)
             : _document.TextStyle;
 
     /// <summary>The one writer for text formatting. An open box formats its selection, or all of it,
@@ -460,6 +462,20 @@ public sealed partial class EditorWindow
     {
         if (_text.Editor is { } editor) editor.Toggle(flag);
         else _document.SetTextStyle(flag, !ActiveTextStyle.HasFlag(flag));
+        Invalidate();
+    }
+
+    /// <summary>What the size control shows: the open box's selection (or all of it), else what the
+    /// document sizes.</summary>
+    private double ActiveSize => _text.Editor?.ActiveSize ?? _document.ActiveThickness;
+
+    /// <summary>The one writer for the size control. An open box sizes its selection, or all of it,
+    /// in its own undo; otherwise the document sizes the tool and the selection.</summary>
+    private void SetSize(double size, bool adjusting)
+    {
+        if (_text.Editor is { } editor) editor.Resize(size);
+        else _document.SetStrokeThickness(size, adjusting);
+        RefreshCursor();
         Invalidate();
     }
 
@@ -474,9 +490,7 @@ public sealed partial class EditorWindow
         // A focused field owns the keyboard, so a hex digit typed into the picker never switches tools.
         if (_ui is { HasKeyboardFocus: true } ui)
         {
-            if (control && key == VIRTUAL_KEY.VK_V && ClipboardText.Paste() is { } pasted)
-                foreach (var character in pasted.Trim()) ui.Char(character);
-            else ui.Key(key, shift, control);
+            TextKeys.Field(ui, key, control, shift);
             Invalidate();
             return true;
         }

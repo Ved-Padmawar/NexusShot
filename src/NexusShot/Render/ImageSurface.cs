@@ -5,8 +5,8 @@ namespace NexusShot.Render;
 ///
 /// Decoded via WIC and uploaded at full resolution; the GPU rescales it every frame, so the view
 /// always samples the real image rather than a pre-scaled copy. The CPU-side pixels are released as
-/// soon as the upload completes - nothing here reads them back, and holding them would double the
-/// cost of every open image.
+/// soon as the upload completes - holding them would double the cost of every open image - and an
+/// export reads them back only for as long as it runs.
 /// </summary>
 public sealed class ImageSurface : IDisposable
 {
@@ -156,6 +156,47 @@ public sealed class ImageSurface : IDisposable
         {
             image.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>The pixels back from the GPU, so an export flattens what is on screen, not a file that
+    /// may have moved or changed. Runs on the device's thread; the caller owns the result.</summary>
+    public unsafe DecodedImage Read(IComObject<ID2D1DeviceContext> context)
+    {
+        using var staging = context.CreateBitmap<ID2D1Bitmap1>(
+            new D2D_SIZE_U { width = (uint)Width, height = (uint)Height },
+            new D2D1_BITMAP_PROPERTIES1
+            {
+                pixelFormat = new D2D1_PIXEL_FORMAT
+                {
+                    format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode = D2D1_ALPHA_MODE.D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX = 96,
+                dpiY = 96,
+                bitmapOptions = D2D1_BITMAP_OPTIONS.D2D1_BITMAP_OPTIONS_CPU_READ
+                    | D2D1_BITMAP_OPTIONS.D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            });
+        staging.Object.CopyFromBitmap(nint.Zero, Bitmap.Object, nint.Zero).ThrowOnError();
+
+        staging.Object.Map(D2D1_MAP_OPTIONS.D2D1_MAP_OPTIONS_READ, out var mapped).ThrowOnError();
+        var image = DecodedImage.Allocate(Width, Height);
+        try
+        {
+            // Row by row: the GPU's pitch is not width*4.
+            for (var y = 0; y < Height; y++)
+                Buffer.MemoryCopy((byte*)mapped.bits + (long)y * mapped.pitch, (byte*)image.Pointer + (long)y * image.Stride,
+                    image.Stride, image.Stride);
+            return image;
+        }
+        catch
+        {
+            image.Dispose();
+            throw;
+        }
+        finally
+        {
+            staging.Object.Unmap().ThrowOnError();
         }
     }
 

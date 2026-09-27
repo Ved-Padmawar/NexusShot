@@ -49,8 +49,7 @@ public class PersistentObjectTests
     {
         var document = NewDocument();
         var text = PlaceText(document, new Point(100, 100), new Point(300, 180), "hello");
-        text.Style = TextStyle.Bold;
-        text.FontSize = 28;
+        text.Format = new TextFormat(TextStyle.Bold, 28);
 
         Drag(document, new Point(300, 180), new Point(240, 150));
         Drag(document, text.Bounds.BottomRight(), new Point(360, 260));
@@ -58,8 +57,7 @@ public class PersistentObjectTests
         Assert.Single(document.Annotations);
         Assert.Same(text, document.Selected);
         Assert.Equal("hello", text.Text);
-        Assert.Equal(TextStyle.Bold, text.Style);
-        Assert.Equal(28, text.FontSize, 3);
+        Assert.Equal(new TextFormat(TextStyle.Bold, 28), text.Format);
         Assert.Equal(100, text.Bounds.X, 3);
         Assert.Equal(100, text.Bounds.Y, 3);
         Assert.Equal(260, text.Bounds.Width, 3);

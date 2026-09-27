@@ -36,7 +36,7 @@ public sealed class EditorChromeTests : IDisposable
     private EditorChrome.Frame Frame(EditorDocument document, bool busy = false) => new(
         document, _settings, Width, Height, CaptionButtonsWidth: 138, "capture.png", Zoom: 1,
         ImageOnScreen: new Rect(100, 80, ImageWidth / 2, ImageHeight / 2), ImageScale: 0.5, ImageOrigin: new Point(100, 80),
-        Toast: null, Busy: busy, TextStyle: TextStyle.None);
+        Toast: null, Busy: busy, TextStyle: TextStyle.None, Size: document.ActiveThickness);
 
     /// <summary>A press frame then a release frame; the previous click's release already left the
     /// pointer up, so no hover frame is needed first.</summary>
@@ -61,6 +61,22 @@ public sealed class EditorChromeTests : IDisposable
         Assert.Equal(picked.Count, picked.Distinct().Count());
         Assert.Equal(EditorTool.Select, picked[0]);
         Assert.Equal(EditorTool.Crop, picked[^1]);
+    }
+
+    [Fact]
+    public void AToastInAWindowNarrowerThanItDoesNotThrow()
+    {
+        var frame = Frame(NewDocument()) with { Width = 0, Height = 0, Toast = "Copied to clipboard" };
+        _screen.Frame(_ui, new Point(-1, -1), down: false, () => _chrome.Draw(frame));
+    }
+
+    [Fact]
+    public void AnOpenPickerInAWindowNarrowerThanItDoesNotThrow()
+    {
+        var picker = new ColorPicker();
+        picker.Open(Rgba.White);
+        _screen.Frame(_ui, new Point(-1, -1), down: false,
+            () => picker.Draw(_ui, new Rect(0, 0, 40, 30), new Rect(0, 0, 0, 0), [], []));
     }
 
     [Fact]

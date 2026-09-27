@@ -94,7 +94,7 @@ public class TextBoxInteractionTests
 
         // A line box is about 1.2x the font; the renderer pads 3px above and below.
         var text = document.Annotations[^1];
-        Assert.True(text.Bounds.Height >= text.FontSize * 1.2 + 6);
+        Assert.True(text.Bounds.Height >= text.Format.Size * 1.2 + 6);
     }
 
     [Fact]

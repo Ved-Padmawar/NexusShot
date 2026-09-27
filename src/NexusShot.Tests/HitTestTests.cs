@@ -97,4 +97,20 @@ public class HitTestTests
         Assert.True(counter.HitTest(new Point(205, 205)));
         Assert.False(counter.HitTest(new Point(400, 400)));
     }
+
+    [Theory]
+    [InlineData(300, 100, ResizeHandle.Right)]
+    [InlineData(100, 300, ResizeHandle.Bottom)]
+    [InlineData(300, 300, ResizeHandle.BottomRight)]
+    [InlineData(-100, 300, ResizeHandle.BottomLeft)]
+    [InlineData(-100, -100, ResizeHandle.BottomRight)]
+    [InlineData(100, -100, ResizeHandle.Bottom)]
+    public void ALineEndResizesAlongTheAxisNearestTheLine(double endX, double endY, ResizeHandle axis)
+    {
+        var line = new Annotation { Tool = EditorTool.Line, Start = new Point(100, 100), End = new Point(endX, endY) };
+
+        Assert.Equal(axis, line.ResizeAxis(ResizeHandle.LineStart));
+        Assert.Equal(axis, line.ResizeAxis(ResizeHandle.LineEnd));
+        Assert.Equal(ResizeHandle.TopRight, line.ResizeAxis(ResizeHandle.TopRight));
+    }
 }

@@ -12,7 +12,7 @@ namespace NexusShot.Views;
 /// WM_NCCALCSIZE claims the caption's height while leaving the resize borders alone; WM_NCHITTEST
 /// hands back the drag region and the resize edges, so the window still snaps and resizes.
 /// </summary>
-public abstract class CaptionWindow : D2DRenderWindow
+public abstract partial class CaptionWindow : D2DRenderWindow
 {
     protected CaptionWindow(string title) : base(title) { }
 
@@ -42,6 +42,10 @@ public abstract class CaptionWindow : D2DRenderWindow
     /// under them.</summary>
     public double CaptionButtonsWidth => 3 * 46 * DpiScale;
 
+    /// <summary>True over minimise, maximise and close.</summary>
+    protected bool OverCaptionButtons(Point client) =>
+        client.Y < CaptionHeight && client.X >= ClientRect.Width - CaptionButtonsWidth;
+
     /// <summary>The pointer in client pixels, read from Windows now rather than from the last mouse
     /// message: WM_SETCURSOR arrives before the WM_MOUSEMOVE that would report it.</summary>
     protected Point? PointerNow()
@@ -70,9 +74,13 @@ public abstract class CaptionWindow : D2DRenderWindow
     /// whose title area is taller than the system buttons extends it.</summary>
     protected virtual double DragBandHeight => CaptionHeight;
 
+    /// <summary>A minimised window has no client area, so its layout would run against 0 x 0.</summary>
+    protected override bool OnPaint(HDC hdc, PAINTSTRUCT ps) => IsIconic || base.OnPaint(hdc, ps);
+
     protected override void OnCreated(object? sender, EventArgs e)
     {
         base.OnCreated(sender, e);
+        _created = true;
 
         // Frame changes apply only on request; without this the caption stays until a resize.
         WindowInterop.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
@@ -139,6 +147,46 @@ public abstract class CaptionWindow : D2DRenderWindow
 
     private static readonly Rgba ClosePressed = new(0xC8, 0x4B, 0x3F, 0xFF);
 
+    /// <summary>Shows the window with its first frame already on screen: cloaked until the frame is
+    /// composed, so DWM never shows the empty white surface. DirectN posts OnCreated, which makes the
+    /// render target, so a reveal before it waits for it.</summary>
+    public void Reveal()
+    {
+        if (!_created)
+        {
+            _revealOnCreated = true;
+            return;
+        }
+
+        if (!WindowInterop.IsWindowVisible(Handle))
+        {
+            SetCloaked(true);
+            Show();
+            RenderCore();
+            DwmFlush();
+        }
+        SetCloaked(false);
+        Show();
+        SetForeground();
+    }
+
+    private bool _created;
+    private bool _revealOnCreated;
+
+    protected void SetCloaked(bool cloaked)
+    {
+        var value = cloaked ? 1 : 0;
+        DwmSetWindowAttribute(Handle, DwmwaCloak, ref value, sizeof(int));
+    }
+
+    private const int DwmwaCloak = 13;
+
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+
+    [LibraryImport("dwmapi.dll")]
+    private static partial int DwmFlush();
+
     /// <summary>Whether this window is the foreground one. An inactive window's caption glyphs dim,
     /// as the system's do.</summary>
     protected bool IsActiveWindow => WindowInterop.GetForegroundWindow() == Handle;
@@ -193,7 +241,15 @@ public abstract class CaptionWindow : D2DRenderWindow
                 Invalidate();
                 break;
         }
-        return base.WindowProc(hwnd, msg, wParam, lParam);
+        var result = base.WindowProc(hwnd, msg, wParam, lParam);
+
+        // Here, not in OnCreated, so the subclass's OnCreated has run too.
+        if (_revealOnCreated && _created)
+        {
+            _revealOnCreated = false;
+            Reveal();
+        }
+        return result;
     }
 
     /// <summary>Claims the caption for the client area, leaving the other three sides to the default

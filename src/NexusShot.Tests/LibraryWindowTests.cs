@@ -252,6 +252,30 @@ public sealed class LibraryWindowTests : IDisposable
     });
 
     [Fact]
+    public void TheDeleteKeyAsksAboutTheSelectionLikeTheButton() => WithLibrary(Captures(2), library =>
+    {
+        AskToDeleteAll(library);
+        library.Key(0x1B);
+        library.Pump();
+        Assert.False(library.Window.ConfirmOpen);
+
+        library.Key(0x2E);   // Delete
+        library.Pump();
+
+        Assert.True(library.Window.ConfirmOpen);
+        Assert.Equal(2, Directory.GetFiles(_directory, "capture-*.png").Length);
+    });
+
+    [Fact]
+    public void TheDeleteKeyDoesNothingOutsideSelectMode() => WithLibrary(Captures(2), library =>
+    {
+        library.Key(0x2E);   // Delete
+        library.Pump();
+
+        Assert.False(library.Window.ConfirmOpen);
+    });
+
+    [Fact]
     public void ASearchNarrowsWhatSelectAllDeletes()
     {
         var captures = Captures(3);

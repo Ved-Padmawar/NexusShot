@@ -115,7 +115,7 @@ public class RedesignTests
 
         Assert.Equal(EditorTool.Text, document.SizingTool);
         document.SetStrokeThickness(48);
-        Assert.Equal(48, text.FontSize);
+        Assert.Equal(48, text.Format.Size);
         Assert.Equal(48, document.ActiveThickness);
     }
 

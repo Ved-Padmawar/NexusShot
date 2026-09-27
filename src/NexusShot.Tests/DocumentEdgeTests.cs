@@ -34,10 +34,10 @@ public class DocumentEdgeTests
 
         document.SetTextStyle(TextStyle.Bold, on: true);
 
-        Assert.Equal(TextStyle.Bold, text.Style);
+        Assert.Equal(TextStyle.Bold, text.Format.Style);
         Assert.Equal(TextStyle.Bold, document.TextStyle);
         document.Undo();
-        Assert.Equal(TextStyle.None, Assert.Single(document.Annotations).Style);
+        Assert.Equal(TextStyle.None, Assert.Single(document.Annotations).Format.Style);
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public class DocumentEdgeTests
         document.SetTextStyle(TextStyle.Italic, on: true);
 
         Assert.Equal(TextStyle.Italic, document.TextStyle);
-        Assert.Equal(TextStyle.None, document.Annotations[0].Style);
+        Assert.Equal(TextStyle.None, document.Annotations[0].Format.Style);
         document.Undo();
         Assert.Empty(document.Annotations);     // the undo was the shape's creation, not a format step
     }

@@ -175,8 +175,9 @@ public sealed unsafe class D2DResources : IDisposable
         using var layout = DWrite.CreateTextLayout(format, text);
         layout.Object.GetMetrics(out var metrics);
 
-        _measurements.Add(key, metrics.width, out _);
-        return metrics.width;
+        // Including trailing whitespace, so "Next " leaves the gap it was measured for.
+        _measurements.Add(key, metrics.widthIncludingTrailingWhitespace, out _);
+        return metrics.widthIncludingTrailingWhitespace;
     }
 
     private readonly LruCache<(string Text, string Family, float Size, DWRITE_FONT_WEIGHT Weight), double> _measurements =

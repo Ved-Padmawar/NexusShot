@@ -39,7 +39,8 @@ public class ExportRenderTests : IDisposable
 
     private DecodedImage Export(EditorDocument document, Rect? crop = null)
     {
-        Exporter.Save(document, _source, _output, crop);
+        using var pixels = ImageSurface.Decode(_source);
+        Exporter.Save(document, pixels, _output, crop);
         return ImageSurface.Decode(_output);
     }
 
@@ -176,12 +177,12 @@ public class ExportRenderTests : IDisposable
         {
             var document = Blank();
             var text = Draw(document, EditorTool.Text, new Point(4, 10), new Point(124, 60), thickness: 20);
-            document.SetTextContent(text, "Hi Hi", text.Bounds, (style, runs));
+            document.SetTextContent(text, "Hi Hi", text.Bounds, (new TextFormat(style, 20), runs));
             using var image = Export(document);
             return image.Span.ToArray();
         }
 
-        var firstBold = Render(TextStyle.None, [new(3, TextStyle.Bold), new(2, TextStyle.None)]);
+        var firstBold = Render(TextStyle.None, [new(3, new TextFormat(TextStyle.Bold, 20)), new(2, new TextFormat(TextStyle.None, 20))]);
         var allBold = Render(TextStyle.Bold, []);
 
         // The first word, bold in both, sits in the same place in both; so the second word starts at
@@ -302,7 +303,8 @@ public class ExportRenderTests : IDisposable
     public void TheFileIsWrittenInTheFormatItsNameAsksFor(string extension, byte[] magic)
     {
         var path = Path.Combine(_directory, "out" + extension);
-        Exporter.Save(Blank(), _source, path);
+        using var pixels = ImageSurface.Decode(_source);
+        Exporter.Save(Blank(), pixels, path);
         Assert.Equal(magic, File.ReadAllBytes(path)[..2]);
     }
 
@@ -338,9 +340,10 @@ public class ExportRenderTests : IDisposable
         var document = Blank();
         Draw(document, EditorTool.Rectangle, new Point(10, 10), new Point(60, 60));
 
+        using var pixels = ImageSurface.Decode(_source);
         using (new FileStream(_output, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            var failure = Record.Exception(() => Exporter.Save(document, _source, _output));
+            var failure = Record.Exception(() => Exporter.Save(document, pixels, _output));
             Assert.True(failure is IOException or UnauthorizedAccessException, failure?.ToString());
         }
 

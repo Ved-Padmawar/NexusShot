@@ -69,7 +69,8 @@ internal static class RenderTest
             + $"(first frame {frames[0]:F3} ms)");
 
         var output = Path.Combine(Path.GetDirectoryName(imagePath)!, "render-test.png");
-        Exporter.Save(document, imagePath, output);
+        using var pixels = ImageSurface.Decode(imagePath);
+        Exporter.Save(document, pixels, output);
         Console.WriteLine($"exported {output}");
 
         // Crop. The session opens on the whole image and is resized by its handles, so this drags
@@ -83,7 +84,7 @@ internal static class RenderTest
         document.CommitCrop();
 
         var cropped = Path.Combine(Path.GetDirectoryName(imagePath)!, "render-test-cropped.png");
-        Exporter.Save(document, imagePath, cropped);
+        Exporter.Save(document, pixels, cropped);
 
         using var croppedImage = ImageSurface.Decode(cropped);
         var (croppedWidth, croppedHeight) = (croppedImage.Width, croppedImage.Height);

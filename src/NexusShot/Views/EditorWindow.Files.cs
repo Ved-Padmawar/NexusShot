@@ -55,9 +55,10 @@ public sealed partial class EditorWindow
         var copy = action is FileAction.Copy or FileAction.CopyAndClose or FileAction.CopyText or FileAction.Share;
         if (_image is null || _fileBusy) return;
         _fileBusy = true;
+        ExportRequest? request = null;
         try
         {
-            var request = saveAs
+            request = saveAs
                 ? _files.PrepareSaveAs((name, folder) => FilePicker.SavePng(Handle, name, folder))
                 : _files.PrepareSave();
             if (request is null) { _fileBusy = false; _closeAfterSave = false; return; }
@@ -75,6 +76,7 @@ public sealed partial class EditorWindow
         }
         catch
         {
+            request?.Dispose();
             _fileBusy = false;
             _closeAfterSave = false;
             _afterCloseSave = null;
@@ -105,6 +107,7 @@ public sealed partial class EditorWindow
             });
         }
         catch (Exception exception) { failure = exception; }
+        finally { request.Dispose(); }
         _dispatch.Post(() =>
         {
             using var completedPixels = savedPixels;

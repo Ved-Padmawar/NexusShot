@@ -1,6 +1,7 @@
 using DirectN;
 using NexusShot.Core;
 using NexusShot.Render;
+using NexusShot.Views;
 
 namespace NexusShot.Tests;
 
@@ -171,7 +172,7 @@ public sealed class UiWidgetTests : IDisposable
     public void BackspaceOnAFreshlyFocusedFieldClearsIt()
     {
         _screen.Click(_ui, Inside, () => Field());
-        _ui.Key(VIRTUAL_KEY.VK_BACK, shift: false, control: false);
+        TextKeys.Field(_ui, VIRTUAL_KEY.VK_BACK, control: false, shift: false);
         var result = default(FieldResult);
         _screen.Frame(_ui, Inside, down: false, () => result = Field());
 
@@ -185,8 +186,8 @@ public sealed class UiWidgetTests : IDisposable
         foreach (var digit in "345") _ui.Char(digit);
         _screen.Frame(_ui, Inside, down: false, () => Field("345"));
 
-        _ui.Key(VIRTUAL_KEY.VK_A, shift: false, control: true);
-        _ui.Key(VIRTUAL_KEY.VK_BACK, shift: false, control: false);
+        TextKeys.Field(_ui, VIRTUAL_KEY.VK_A, control: true, shift: false);
+        TextKeys.Field(_ui, VIRTUAL_KEY.VK_BACK, control: false, shift: false);
         var result = default(FieldResult);
         _screen.Frame(_ui, Inside, down: false, () => result = Field("345"));
 
@@ -200,7 +201,7 @@ public sealed class UiWidgetTests : IDisposable
         _ui.Char('9');
         _screen.Frame(_ui, Inside, down: false, () => Field("129"));
 
-        _ui.Key(VIRTUAL_KEY.VK_A, shift: false, control: true);
+        TextKeys.Field(_ui, VIRTUAL_KEY.VK_A, control: true, shift: false);
         _ui.Char('7');
         var result = default(FieldResult);
         _screen.Frame(_ui, Inside, down: false, () => result = Field("129"));
@@ -216,7 +217,7 @@ public sealed class UiWidgetTests : IDisposable
     public void ArrowKeysStepANumericField(VIRTUAL_KEY key, bool shift, int step)
     {
         _screen.Click(_ui, Inside, () => Field());
-        _ui.Key(key, shift, control: false);
+        TextKeys.Field(_ui, key, control: false, shift);
         var result = default(FieldResult);
         _screen.Frame(_ui, Inside, down: false, () => result = Field());
 
@@ -227,7 +228,7 @@ public sealed class UiWidgetTests : IDisposable
     public void EnterAndAClickElsewhereBothLetGoOfTheKeyboard()
     {
         _screen.Click(_ui, Inside, () => Field());
-        _ui.Key(VIRTUAL_KEY.VK_RETURN, shift: false, control: false);
+        TextKeys.Field(_ui, VIRTUAL_KEY.VK_RETURN, control: false, shift: false);
         _screen.Frame(_ui, Inside, down: false, () => Field());
         Assert.False(_ui.HasKeyboardFocus);
 
@@ -236,6 +237,78 @@ public sealed class UiWidgetTests : IDisposable
         _screen.Frame(_ui, Outside, down: true, () => Field());
         Assert.False(_ui.HasKeyboardFocus);
     }
+
+    private FieldResult Search(string value) =>
+        _ui.Field(Id, Box, value, character => !char.IsControl(character), 80, face: Face.Text);
+
+    private string Edit(string value, Action keys)
+    {
+        _screen.Click(_ui, Inside, () => Search(value));
+        keys();
+        var result = default(FieldResult);
+        _screen.Frame(_ui, Outside, down: false, () => result = Search(value));
+        return result.Text;
+    }
+
+    private void Press(VIRTUAL_KEY key, bool control = false, bool shift = false) =>
+        TextKeys.Field(_ui, key, control, shift);
+
+    [Fact]
+    public void ArrowsMoveTheCaretInAFieldSoTypingLandsMidText() =>
+        Assert.Equal("cats", Edit("cts", () =>
+        {
+            Press(VIRTUAL_KEY.VK_HOME);
+            Press(VIRTUAL_KEY.VK_RIGHT);
+            _ui.Char('a');
+        }));
+
+    [Fact]
+    public void ShiftArrowsSelectAndDeleteRemovesTheSelection() =>
+        Assert.Equal("one ", Edit("one two", () =>
+        {
+            Press(VIRTUAL_KEY.VK_END);
+            Press(VIRTUAL_KEY.VK_LEFT, control: true, shift: true);
+            Press(VIRTUAL_KEY.VK_DELETE);
+        }));
+
+    [Fact]
+    public void CtrlZInAFieldUndoesItsTyping() =>
+        Assert.Equal("keep", Edit("keep", () =>
+        {
+            _ui.Char('x');
+            Press(VIRTUAL_KEY.VK_Z, control: true);
+        }));
+
+    [Fact]
+    public void TextTypedJustBeforeEnterIsReportedBeforeTheFieldLetsGo()
+    {
+        _screen.Click(_ui, Inside, () => Search("old"));
+        _ui.Char('n');
+        Press(VIRTUAL_KEY.VK_RETURN);
+        var result = default(FieldResult);
+        _screen.Frame(_ui, Outside, down: false, () => result = Search("old"));
+
+        Assert.True(result.Changed);
+        Assert.Equal("n", result.Text);
+        Assert.False(_ui.HasKeyboardFocus);
+    }
+
+    [Fact]
+    public void ClickingIntoAFocusedFieldPlacesTheCaretWhereItLands()
+    {
+        _screen.Click(_ui, Inside, () => Search("abcdef"));
+        _screen.Frame(_ui, new Point(Box.X + 8, Inside.Y), down: true, () => Search("abcdef"));
+        _screen.Frame(_ui, new Point(Box.X + 8, Inside.Y), down: false, () => Search("abcdef"));
+
+        Assert.Equal(0, _ui.FocusedText!.Caret);
+        Assert.False(_ui.FocusedText.HasSelection);
+    }
+
+    [Theory]
+    [InlineData("Next ", "Next")]
+    [InlineData("a  b ", "a  b")]
+    public void ATrailingSpaceIsMeasured(string spaced, string bare) =>
+        Assert.True(_ui.MeasureText(spaced, 13) > _ui.MeasureText(bare, 13) + 1);
 
     [Fact]
     public void AFieldAsksForTheTextCursorAndNothingElseDoesOutsideIt()

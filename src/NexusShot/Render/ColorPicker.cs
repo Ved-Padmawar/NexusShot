@@ -69,7 +69,7 @@ public sealed class ColorPicker
 
         var width = S(Width);
         var height = S(464);
-        var x = Math.Clamp(anchor.X - S(8), within.X + S(8), within.Right - width - S(8));
+        var x = Math.Clamp(anchor.X - S(8), within.X + S(8), Math.Max(within.X + S(8), within.Right - width - S(8)));
         var y = Math.Max(within.Y + S(8), anchor.Y - S(12) - height);
         _bounds = new Rect(x, y, width, height);
 

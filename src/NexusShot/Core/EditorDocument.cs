@@ -84,7 +84,7 @@ public sealed partial class EditorDocument
     /// identically, or the control shows one value and writes another.</summary>
     public double ActiveThickness => Selected switch
     {
-        { Tool: EditorTool.Text } text => text.FontSize,
+        { Tool: EditorTool.Text } text => TextRuns.SizeAt(text.Format, text.Runs, text.Text.Length, 0, text.Text.Length),
         { } selected => selected.StrokeThickness,
         _ => ActiveTool switch
         {
@@ -232,17 +232,19 @@ public sealed partial class EditorDocument
         Notify();
     }
 
-    /// <summary>The font size for new text, and for the text being edited or selected. The box grows
-    /// with the font, or the larger glyphs are clipped by bounds sized for the old one.</summary>
+    /// <summary>The font size for new text, and for all of the selected box. The box grows with the
+    /// font, or the larger glyphs are clipped by bounds sized for the old one.</summary>
     private void SetFontSize(double size, bool isAdjusting)
     {
         TextFontSize = size;
+        if (Selected is not { Tool: EditorTool.Text } target) return;
 
-        var target = Selected is { Tool: EditorTool.Text } selected ? selected : null;
-        if (target is null || target.FontSize == size) return;
+        var length = target.Text.Length;
+        var (format, runs) = TextRuns.Resize(target.Format, target.Runs, length, 0, length, size);
+        if (format == target.Format && runs.AsSpan().SequenceEqual(target.Runs)) return;
 
         PrepareAdjustUndo(isAdjusting);
-        target.FontSize = size;
+        (target.Format, target.Runs) = (format, runs);
         NormalizeTextBounds(target);
         Notify();
     }
@@ -259,21 +261,23 @@ public sealed partial class EditorDocument
 
     /// <summary>Commits an inline editor's text, formatting and final box (clamped to the image) as
     /// one undo step - the single write-back for a text edit. Without <paramref name="format"/> the
-    /// box keeps its base style, and its runs only while the length they cover is unchanged.</summary>
-    public void SetTextContent(Annotation annotation, string text, Rect bounds, (TextStyle Style, TextRun[] Runs)? format = null)
+    /// box keeps its base format, and its runs only while the length they cover is unchanged. The box
+    /// grows to fit the largest size in it.</summary>
+    public void SetTextContent(Annotation annotation, string text, Rect bounds, (TextFormat Format, TextRun[] Runs)? format = null)
     {
-        var (style, runs) = format ?? (annotation.Style, text.Length == annotation.Text.Length ? annotation.Runs : []);
+        var (baseFormat, runs) = format ?? (annotation.Format, text.Length == annotation.Text.Length ? annotation.Runs : []);
         var clamped = ClampTextBounds(bounds);
         var unchanged = annotation.Text == text && clamped == annotation.Bounds
-            && annotation.Style == style && annotation.Runs.AsSpan().SequenceEqual(runs);
+            && annotation.Format == baseFormat && annotation.Runs.AsSpan().SequenceEqual(runs);
         if (unchanged) return;
 
         PushUndo();
         annotation.Text = text;
-        annotation.Style = style;
+        annotation.Format = baseFormat;
         annotation.Runs = runs;
         annotation.Start = new Point(clamped.X, clamped.Y);
         annotation.End = new Point(clamped.Right, clamped.Bottom);
+        NormalizeTextBounds(annotation);
         Notify();
     }
 
@@ -298,7 +302,7 @@ public sealed partial class EditorDocument
         TextStyle = on ? TextStyle | flag : TextStyle & ~flag;
         if (Selected is not { Tool: EditorTool.Text } text) return;
         PushUndo();
-        (text.Style, text.Runs) = TextRuns.Apply(text.Style, text.Runs, text.Text.Length, 0, text.Text.Length, flag, on);
+        (text.Format, text.Runs) = TextRuns.Apply(text.Format, text.Runs, text.Text.Length, 0, text.Text.Length, flag, on);
         Notify();
     }
 

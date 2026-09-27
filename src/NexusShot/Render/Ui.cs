@@ -1,3 +1,4 @@
+using System.Globalization;
 using NexusShot.Core;
 
 namespace NexusShot.Render;
@@ -119,7 +120,10 @@ public sealed class Ui(D2DResources resources)
         DrawTip();
 
         if (_pointerReleased) Active = 0;
-        _keys.Clear();
+
+        // A field that was not drawn this frame cannot report, so its keys lapse rather than wait.
+        _step = 0;
+        if (_blurPending) Blur();
     }
 
     // ============================  PRIMITIVES  ============================
@@ -853,17 +857,31 @@ public sealed class Ui(D2DResources resources)
 
     // ============================  TEXT FIELDS  ============================
 
-    /// <summary>The field that has the keyboard, the text as typed, and whether the next keystroke
-    /// replaces it - a field selects all on focus, so typing overwrites rather than appends.</summary>
+    /// <summary>The field that has the keyboard and its text. Focusing a field selects all of it,
+    /// so typing overwrites rather than appends.</summary>
     private int _focus;
-    private string _draft = "";
-    private bool _replace;
+    private TextBuffer? _text;
     private Rect _focusBounds;
 
-    /// <summary>Keys the window routed here since the last frame, consumed by the focused field.</summary>
-    private readonly List<(char Char, VIRTUAL_KEY Key, bool Shift, bool Control)> _keys = [];
+    /// <summary>The text the focused field last reported, so a change is reported once.</summary>
+    private string _reported = "";
+
+    /// <summary>Field-level keys since the last frame. The blur waits for the field to report, so
+    /// characters typed just before Enter are not dropped with the focus.</summary>
+    private int _step;
+    private bool _blurPending;
+
+    /// <summary>Set after a step, so the next frame rebuilds the text from the value the caller
+    /// applied.</summary>
+    private bool _resync;
+
+    private bool _selecting;
 
     public bool HasKeyboardFocus => _focus != 0;
+
+    /// <summary>The focused field's text. The window routes the shared editing keys straight into
+    /// it, the same keymap the canvas text box uses.</summary>
+    public TextBuffer? FocusedText => _text;
 
     /// <summary>Where the last frame drew live controls, and the cursor each wants: the hand over
     /// anything clickable, the text cursor over a field. Windows asks for a cursor between frames and
@@ -893,23 +911,44 @@ public sealed class Ui(D2DResources resources)
 
     /// <summary>A typed character, for the focused field. The window sends WM_CHAR here while
     /// <see cref="HasKeyboardFocus"/>, so a letter typed into a box never reaches a tool shortcut.</summary>
-    public void Char(char character) => _keys.Add((character, 0, false, false));
+    public void Char(char character)
+    {
+        if (!char.IsControl(character)) _text?.Insert(character.ToString());
+    }
 
-    /// <summary>An editing key - Backspace, Enter, Escape, the arrows, Ctrl+A - for the focused field.</summary>
-    public void Key(VIRTUAL_KEY key, bool shift, bool control) => _keys.Add(('\0', key, shift, control));
+    /// <summary>The keys that mean something to a field rather than to its text: Up and Down step a
+    /// numeric field (Shift for tens), Enter and Escape let go of the keyboard.</summary>
+    public void Key(VIRTUAL_KEY key, bool shift)
+    {
+        switch (key)
+        {
+            case VIRTUAL_KEY.VK_UP:
+                _step = shift ? 10 : 1;
+                break;
+            case VIRTUAL_KEY.VK_DOWN:
+                _step = shift ? -10 : -1;
+                break;
+            case VIRTUAL_KEY.VK_RETURN:
+            case VIRTUAL_KEY.VK_ESCAPE:
+                _blurPending = _focus != 0;
+                break;
+        }
+    }
 
     public void Blur()
     {
         _focus = 0;
-        _draft = "";
+        _text = null;
+        _step = 0;
+        _blurPending = _resync = _selecting = false;
     }
 
     /// <summary>
-    /// A single-line field. Clicking or Ctrl+A selects everything; typing edits a draft that is
-    /// reported every time it changes, so the caller applies each valid step live and ignores the
-    /// half-typed ones. Up and Down step a numeric field (Shift for tens). Enter and Escape let go of
-    /// the keyboard, leaving whatever was applied - there is no pending edit to throw away. There is
-    /// no hover state: the focus border is a field's only feedback.
+    /// A single-line field. Clicking focuses it with everything selected; once focused, a press
+    /// places the caret and a drag selects. Editing is <see cref="TextBuffer"/>'s, and every change
+    /// is reported, so the caller applies each valid step live and ignores the half-typed ones. Enter
+    /// and Escape let go of the keyboard, leaving whatever was applied - there is no pending edit to
+    /// throw away. There is no hover state: the focus border is a field's only feedback.
     /// </summary>
     public FieldResult Field(
         int id, Rect bounds, string value, Func<char, bool> accept, int maxLength,
@@ -918,110 +957,122 @@ public sealed class Ui(D2DResources resources)
     {
         if (Interact(id, bounds) && _focus != id)
         {
+            Blur();
             _focus = id;
-            _draft = value;
-            _replace = true;
+            _text = new TextBuffer(value, accept: accept, maxLength: maxLength);
+            _reported = value;
         }
         if (!Inert) AddCursor(bounds, PointerCursor.Text);
 
-        var focused = _focus == id;
+        var text = _focus == id ? _text : null;
         var changed = false;
         var step = 0;
 
-        if (focused)
+        if (text is not null)
         {
             _focusBounds = bounds;
-            foreach (var (character, key, shift, control) in _keys)
+            if (_resync && value != text.Text)
             {
-                if (character != '\0')
-                {
-                    if (!accept(character)) continue;
-                    if (_replace) _draft = "";
-                    _replace = false;
-                    if (_draft.Length >= maxLength) continue;
-                    _draft += character;
-                    changed = true;
-                    continue;
-                }
-
-                switch (key)
-                {
-                    case VIRTUAL_KEY.VK_A when control:
-                        _replace = true;
-                        break;
-                    case VIRTUAL_KEY.VK_BACK:
-                        _draft = _replace ? "" : _draft.Length > 0 ? _draft[..^1] : _draft;
-                        _replace = false;
-                        changed = true;
-                        break;
-                    case VIRTUAL_KEY.VK_UP:
-                        step = shift ? 10 : 1;
-                        break;
-                    case VIRTUAL_KEY.VK_DOWN:
-                        step = shift ? -10 : -1;
-                        break;
-                    case VIRTUAL_KEY.VK_RETURN:
-                    case VIRTUAL_KEY.VK_ESCAPE:
-                        Blur();
-                        break;
-                }
-                if (_focus != id) break;
+                text = _text = new TextBuffer(value, accept: accept, maxLength: maxLength);
+                _reported = value;
             }
-            _keys.Clear();
+            _resync = false;
 
-            // A step rewrites the draft from the value the caller will now apply, next frame.
-            if (step != 0) _replace = true;
+            step = _step;
+            _step = 0;
+            if (step != 0) _resync = true;
         }
 
-        focused = _focus == id;
+        var font = S(Metrics.FontSm);
+        var left = bounds.X + S(8);
+        var x = left;
+        var right = bounds.Right - S(8);
+        if (leading is not null) x += S(15) + S(8);
+        var prefixX = x;
+        if (prefix is not null) x += MeasureText(prefix, S(10.5), Weight.Bold) + S(5);
+        var suffixWidth = suffix is null ? 0 : MeasureText(suffix, S(10.5));
+        if (suffix is not null) right -= suffixWidth + S(3);
+
+        double TextX(string shown) => align == TextAlign.Center
+            ? x + (right - x - MeasureText(shown, font, face: face)) / 2
+            : x;
+
+        if (text is not null)
+        {
+            if (PointerPressed && bounds.Contains(Pointer) && !Inert)
+            {
+                text.MoveTo(IndexAt(text.Text, Pointer.X - TextX(text.Text), font, face));
+                _selecting = true;
+            }
+            else if (_selecting && PointerDown)
+                text.MoveTo(IndexAt(text.Text, Pointer.X - TextX(text.Text), font, face), extend: true);
+            else
+                _selecting = false;
+
+            changed = text.Text != _reported;
+            _reported = text.Text;
+        }
+
+        var result = new FieldResult(changed, text?.Text ?? value, step);
+        if (_blurPending && text is not null)
+        {
+            Blur();
+            text = null;
+        }
+
+        var focused = text is not null;
         var radius = (float)S(Metrics.RadiusSm);
         FillRounded(bounds, radius, Theme.SurfacePane);
         StrokeRounded(bounds, radius, focused ? Theme.Accent : Theme.StrokeDefault);
 
-        var font = S(Metrics.FontSm);
-        var x = bounds.X + S(8);
-        var right = bounds.Right - S(8);
-
         if (leading is not null)
-        {
-            Icon(leading, new Rect(x, bounds.Y, S(15), bounds.Height), focused ? Theme.TextPrimary : Theme.TextSecondary, S(15));
-            x += S(15) + S(8);
-        }
-
+            Icon(leading, new Rect(left, bounds.Y, S(15), bounds.Height), focused ? Theme.TextPrimary : Theme.TextSecondary, S(15));
         if (prefix is not null)
-        {
-            var w = MeasureText(prefix, S(10.5), Weight.Bold);
-            Text(prefix, new Rect(x, bounds.Y, w + 1, bounds.Height), Theme.TextTertiary, S(10.5), Weight.Bold);
-            x += w + S(5);
-        }
+            Text(prefix, new Rect(prefixX, bounds.Y, x - S(5) - prefixX + 1, bounds.Height), Theme.TextTertiary, S(10.5), Weight.Bold);
         if (suffix is not null)
+            Text(suffix, new Rect(bounds.Right - S(8) - suffixWidth, bounds.Y, suffixWidth + 1, bounds.Height), Theme.TextQuaternary, S(10.5));
+
+        var shown = text?.Text ?? value;
+        var textX = TextX(shown);
+        double Offset(int index) => MeasureText(shown[..index], font, face: face);
+
+        if (text is { HasSelection: true })
         {
-            var w = MeasureText(suffix, S(10.5));
-            Text(suffix, new Rect(right - w, bounds.Y, w + 1, bounds.Height), Theme.TextQuaternary, S(10.5));
-            right -= w + S(3);
+            var start = Offset(text.SelectionStart);
+            FillRect(new Rect(textX + start - S(1), bounds.Center.Y - S(8), Offset(text.SelectionEnd) - start + S(2), S(16)),
+                Theme.AccentSoft);
         }
-
-        var shown = focused ? _draft : value;
-        var textWidth = MeasureText(shown, font, face: face);
-        var textX = align == TextAlign.Center ? x + (right - x - textWidth) / 2 : x;
-
-        if (focused && _replace && shown.Length > 0)
-            FillRect(new Rect(textX - S(1), bounds.Center.Y - S(8), textWidth + S(2), S(16)), Theme.AccentSoft);
 
         if (shown.Length == 0 && placeholder is not null)
             Text(placeholder, new Rect(textX + S(3), bounds.Y, Math.Max(1, right - textX), bounds.Height), Theme.TextTertiary, font);
         Text(shown, new Rect(textX, bounds.Y, Math.Max(1, right - textX), bounds.Height), Theme.TextPrimary, font,
             face: face);
 
-        // Shown whenever the field is focused, so an empty focused box never looks dead.
-        if (focused)
+        // Drawn whenever the field is focused, so an empty focused box never looks dead.
+        if (text is not null)
         {
             Blinking = true;
-            if (Now / CaretBlink % 2 == 0)
-                FillRect(new Rect(textX + textWidth + S(1), bounds.Center.Y - S(8), S(1.5), S(16)), Theme.TextPrimary);
+            if (text.CaretVisible)
+                FillRect(new Rect(textX + Offset(text.Caret) + S(0.25), bounds.Center.Y - S(8), S(1.5), S(16)), Theme.TextPrimary);
         }
 
-        return new FieldResult(changed, focused ? _draft : value, step);
+        return result;
+    }
+
+    /// <summary>The caret index nearest <paramref name="x"/>, measured from the text's left edge.
+    /// Only grapheme boundaries are candidates, so a click never lands inside a combined character.</summary>
+    private int IndexAt(string text, double x, double font, Face face)
+    {
+        var best = 0;
+        var bestDistance = Math.Abs(x);
+        foreach (var boundary in StringInfo.ParseCombiningCharacters(text).Skip(1).Append(text.Length))
+        {
+            var distance = Math.Abs(MeasureText(text[..boundary], font, face: face) - x);
+            if (distance >= bestDistance) continue;
+            best = boundary;
+            bestDistance = distance;
+        }
+        return best;
     }
 
     // ============================  TOOLTIPS  ============================

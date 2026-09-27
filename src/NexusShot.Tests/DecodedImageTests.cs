@@ -136,4 +136,19 @@ public class DecodedImageTests
 
         static WeakReference AllocateAndAbandon() => new(DecodedImage.Allocate(256, 256));
     }
+
+    [Fact]
+    public void PixelsReadBackFromTheGpuMatchWhatWasUploaded()
+    {
+        // Three pixels wide, so the GPU's row pitch differs from width*4 and the copy must honour it.
+        using var screen = new Offscreen(8, 8);
+        using var context = screen.Target.AsDeviceContext()!;
+        using var pixels = DecodedImage.Allocate(3, 2);
+        for (var i = 0; i < pixels.ByteLength; i++) pixels.Span[i] = (byte)(i % 4 == 3 ? 255 : i * 20);
+
+        using var surface = ImageSurface.Upload(pixels, context);
+        using var back = surface.Read(context);
+
+        Assert.True(back.Span.SequenceEqual(pixels.Span));
+    }
 }

@@ -1,5 +1,4 @@
 using NexusShot.Core;
-using NexusShot.Platform;
 
 namespace NexusShot.Views;
 
@@ -53,7 +52,7 @@ internal sealed class TextBoxController(EditorDocument document)
             document.CancelAnnotation(annotation);
             return;
         }
-        document.SetTextContent(annotation, editor.Text, annotation.Bounds, (editor.Style, editor.Runs));
+        document.SetTextContent(annotation, editor.Text, annotation.Bounds, (editor.Format, editor.Runs));
     }
 
     /// <summary>Undo inside the box, if it has anything of its own to unwind.</summary>
@@ -90,57 +89,22 @@ internal sealed class TextBoxController(EditorDocument document)
 
     /// <summary>
     /// Editing keys. An open box owns the keyboard, so everything is swallowed except Escape, which
-    /// closes it, and undo/redo, which the window routes.
+    /// closes it, and the undo/redo the box has run out of, which the window takes on to the document.
     /// </summary>
     public TextKeyResult HandleKey(VIRTUAL_KEY key, bool control, bool shift)
     {
         if (Editor is not { } editor) return TextKeyResult.NotHandled;
+        if (TextKeys.Apply(editor, key, control, shift)) return TextKeyResult.Handled;
 
         switch (key)
         {
-            case VIRTUAL_KEY.VK_BACK:
-                editor.Backspace();
-                break;
-            case VIRTUAL_KEY.VK_DELETE:
-                editor.Delete();
-                break;
-            case VIRTUAL_KEY.VK_LEFT:
-                editor.Move(-1, shift, control);
-                break;
-            case VIRTUAL_KEY.VK_RIGHT:
-                editor.Move(1, shift, control);
-                break;
-            case VIRTUAL_KEY.VK_HOME:
-                editor.MoveToLineEdge(end: false, shift);
-                break;
-            case VIRTUAL_KEY.VK_END:
-                editor.MoveToLineEdge(end: true, shift);
-                break;
-
-            case VIRTUAL_KEY.VK_A when control:
-                editor.SelectAll();
-                break;
-
-            case VIRTUAL_KEY.VK_C when control:
-                if (editor.HasSelection) CopySelection(editor);
-                break;
-
-            // Only removed once it is safely on the clipboard: a cut that failed must not lose it.
-            case VIRTUAL_KEY.VK_X when control:
-                if (editor.HasSelection && CopySelection(editor)) editor.Backspace();
-                break;
-
-            case VIRTUAL_KEY.VK_V when control:
-                if (ClipboardText.Paste() is { Length: > 0 } pasted) editor.Insert(pasted);
-                break;
-
             // Enter is a newline in a text box, not a crop commit.
             case VIRTUAL_KEY.VK_RETURN:
                 editor.Insert("\n");
-                break;
+                return TextKeyResult.Handled;
 
             case VIRTUAL_KEY.VK_Z when control:
-                return TextKeyResult.Undo;
+                return shift ? TextKeyResult.Redo : TextKeyResult.Undo;
             case VIRTUAL_KEY.VK_Y when control:
                 return TextKeyResult.Redo;
 
@@ -152,23 +116,6 @@ internal sealed class TextBoxController(EditorDocument document)
             // inserted there, and letting them through would run the tool shortcuts too.
             default:
                 return TextKeyResult.Handled;
-        }
-
-        return TextKeyResult.Handled;
-    }
-
-    /// <summary>A busy clipboard fails this one keystroke; it must not take the editor with it.</summary>
-    private static bool CopySelection(TextEditor editor)
-    {
-        try
-        {
-            ClipboardText.Copy(editor.SelectedText);
-            return true;
-        }
-        catch (InvalidOperationException exception)
-        {
-            Log.Error("text.copy", exception);
-            return false;
         }
     }
 }

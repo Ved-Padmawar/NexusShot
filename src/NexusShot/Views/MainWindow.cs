@@ -434,8 +434,7 @@ public sealed partial class MainWindow : CaptionWindow
 
             case WmChar:
                 if (_ui is not { HasKeyboardFocus: true } ui) break;
-                var character = (char)(ulong)wParam.Value;
-                if (!char.IsControl(character)) ui.Char(character);
+                ui.Char((char)(ulong)wParam.Value);
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
@@ -470,10 +469,8 @@ public sealed partial class MainWindow : CaptionWindow
         // A focused field owns the keyboard; its characters arrive as WM_CHAR.
         if (_ui is { HasKeyboardFocus: true } ui)
         {
-            var control = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0;
-            if (control && key == VIRTUAL_KEY.VK_V && ClipboardText.Paste() is { } pasted)
-                foreach (var character in pasted.Trim()) ui.Char(character);
-            else ui.Key(key, (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0, control);
+            TextKeys.Field(ui, key, (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0,
+                (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0);
             Invalidate();
             return true;
         }
@@ -481,6 +478,12 @@ public sealed partial class MainWindow : CaptionWindow
         if (key == VIRTUAL_KEY.VK_OEM_COMMA && (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0)
         {
             if (_settingsOpen) CloseSettings(); else OpenSettings();
+            return true;
+        }
+
+        if (key == VIRTUAL_KEY.VK_DELETE && _selection.Active && !ModalOpen)
+        {
+            AskDeleteSelected();
             return true;
         }
 
@@ -498,23 +501,6 @@ public sealed partial class MainWindow : CaptionWindow
         return true;
     }
 
-    /// <summary>Shows the Library with its first frame already on screen. Shown plainly, DWM puts up
-    /// the window's empty white surface for a frame before composition draws; cloaked, nothing
-    /// shows until the frame is composed.</summary>
-    public void Reveal()
-    {
-        if (!WindowInterop.IsWindowVisible(Handle))
-        {
-            SetCloaked(true);
-            Show();
-            RenderCore();
-            DwmFlush();
-        }
-        SetCloaked(false);
-        Show();
-        SetForeground();
-    }
-
     /// <summary>Hides cloaked, so the fade-out never animates the white surface left once the frame is
     /// released. It stays cloaked until <see cref="Reveal"/>.</summary>
     private void Conceal()
@@ -522,20 +508,6 @@ public sealed partial class MainWindow : CaptionWindow
         SetCloaked(true);
         Hide();
     }
-
-    private void SetCloaked(bool cloaked)
-    {
-        var value = cloaked ? 1 : 0;
-        DwmSetWindowAttribute(Handle, DwmwaCloak, ref value, sizeof(int));
-    }
-
-    private const int DwmwaCloak = 13;
-
-    [System.Runtime.InteropServices.LibraryImport("dwmapi.dll")]
-    private static partial int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
-
-    [System.Runtime.InteropServices.LibraryImport("dwmapi.dll")]
-    private static partial int DwmFlush();
 
     private static Point ClientPoint(LPARAM lParam)
     {

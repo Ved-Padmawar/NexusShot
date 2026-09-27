@@ -54,8 +54,7 @@ public sealed partial class EditorDocument
             CounterValue = ActiveTool == EditorTool.Counter ? NextCounter : 0,
             CounterRun = _counterRun,
             Fill = ShapeFill,
-            FontSize = TextFontSize,
-            Style = TextStyle,
+            Format = new TextFormat(TextStyle, TextFontSize),
         };
         if (_draft.IsStrokeTool) _draft.Points.Add(point);
         if (ActiveTool != EditorTool.Eraser)
@@ -372,7 +371,7 @@ public sealed partial class EditorDocument
     private void NormalizeTextBounds(Annotation annotation)
     {
         var bounds = annotation.Bounds;
-        var fontSize = Math.Max(12, annotation.FontSize);
+        var fontSize = Math.Max(12, TextRuns.Largest(annotation.Format, annotation.Runs));
         var width = Math.Max(bounds.Width, fontSize * 9);
         var height = Math.Max(bounds.Height, fontSize * 1.8);
 

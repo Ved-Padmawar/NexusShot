@@ -221,7 +221,7 @@ public class RegressionAuditTests
         double Value()
         {
             var annotation = Assert.Single(d.Annotations);
-            return tool == EditorTool.Text ? annotation.FontSize : annotation.StrokeThickness;
+            return tool == EditorTool.Text ? annotation.Format.Size : annotation.StrokeThickness;
         }
     }
 

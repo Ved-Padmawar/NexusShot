@@ -21,6 +21,18 @@ public class InlineEditingTests
     }
 
     [Fact]
+    public void CtrlShiftZRedoesInsideTheBoxAndOnlyAnEmptyHistoryGoesToTheDocument()
+    {
+        var (_, controller, _) = Open("a");
+        controller.HandleChar('b');
+        Assert.Equal(TextKeyResult.Handled, controller.HandleKey(VIRTUAL_KEY.VK_Z, control: true, shift: false));
+        Assert.Equal(TextKeyResult.Handled, controller.HandleKey(VIRTUAL_KEY.VK_Z, control: true, shift: true));
+        Assert.Equal("b", controller.Editor!.Text);
+
+        Assert.Equal(TextKeyResult.Redo, controller.HandleKey(VIRTUAL_KEY.VK_Z, control: true, shift: true));
+    }
+
+    [Fact]
     public void ClearingTextThenKeepingItsBoxDoesNotResurrectOldText()
     {
         var (document, controller, annotation) = Open("old text");
@@ -149,10 +161,42 @@ public class InlineEditingTests
         Assert.Equal(TextStyle.Bold, editor.ActiveStyle);
         controller.End(commit: true);
 
-        Assert.Equal([new TextRun(5, TextStyle.None), new TextRun(4, TextStyle.Bold), new TextRun(5, TextStyle.None)],
+        Assert.Equal([new TextRun(5, new TextFormat(TextStyle.None, 20)), new TextRun(4, new TextFormat(TextStyle.Bold, 20)), new TextRun(5, new TextFormat(TextStyle.None, 20))],
             annotation.Runs);
         document.Undo();
         Assert.Empty(Assert.Single(document.Annotations).Runs);
+    }
+
+    [Fact]
+    public void ResizingASelectionSizesOnlyThatRangeAndTheBoxGrowsToFitIt()
+    {
+        var (_, controller, annotation) = Open("small big");
+        var editor = controller.Editor!;
+        editor.MoveTo(6);
+        editor.MoveTo(9, extend: true);
+
+        editor.Resize(60);
+        Assert.Equal(60, editor.ActiveSize);
+        controller.End(commit: true);
+
+        Assert.Equal(20, annotation.Format.Size);
+        Assert.Equal([new TextRun(6, new TextFormat(TextStyle.None, 20)), new TextRun(3, new TextFormat(TextStyle.None, 60))],
+            annotation.Runs);
+        Assert.True(annotation.Bounds.Height >= 60 * 1.8);
+    }
+
+    [Fact]
+    public void ASliderDragOfResizesIsOneUndoStepInsideTheBox()
+    {
+        var editor = Editor("abc");
+        editor.Resize(30);
+        editor.Resize(40);
+        editor.Resize(50);
+
+        editor.Undo();
+
+        Assert.Equal(20, editor.ActiveSize);
+        Assert.False(editor.CanUndo);
     }
 
     [Fact]
@@ -167,7 +211,7 @@ public class InlineEditingTests
 
         Assert.Equal("abc", editor.Text);
         Assert.Equal(TextStyle.None, editor.ActiveStyle);
-        Assert.False(editor.Style.HasFlag(TextStyle.Underline));
+        Assert.False(editor.Format.Style.HasFlag(TextStyle.Underline));
     }
 
     [Fact]
@@ -181,7 +225,7 @@ public class InlineEditingTests
         editor.MoveTo(2);
         editor.Insert("cd");
 
-        Assert.Equal([new TextRun(1, TextStyle.None), new TextRun(3, TextStyle.Italic)], editor.Runs);
+        Assert.Equal([new TextRun(1, new TextFormat(TextStyle.None, 20)), new TextRun(3, new TextFormat(TextStyle.Italic, 20))], editor.Runs);
     }
 
     [Fact]
@@ -191,10 +235,10 @@ public class InlineEditingTests
         using var renderer = new Render.AnnotationRenderer(screen.Resources);
         var (_, controller, annotation) = Open("a long first line\nab\na long third line");
         var editor = controller.Editor!;
-        int Caret(int index) => (int)renderer.CaretBounds(annotation, editor.Text, editor.Style, editor.Runs, index).X;
+        int Caret(int index) => (int)renderer.CaretBounds(annotation, editor.Text, editor.Format, editor.Runs, index).X;
         void Line(int direction) => editor.MoveLine(direction, extend: false,
-            index => renderer.CaretBounds(annotation, editor.Text, editor.Style, editor.Runs, index),
-            point => renderer.HitTestCaret(annotation, editor.Text, editor.Style, editor.Runs, point));
+            index => renderer.CaretBounds(annotation, editor.Text, editor.Format, editor.Runs, index),
+            point => renderer.HitTestCaret(annotation, editor.Text, editor.Format, editor.Runs, point));
 
         editor.MoveTo(9);                       // "a long fi|rst line"
         Line(1);
@@ -216,8 +260,8 @@ public class InlineEditingTests
         var (_, controller, annotation) = Open("one\ntwo");
         var editor = controller.Editor!;
         void Line(int direction, bool extend = false) => editor.MoveLine(direction, extend,
-            index => renderer.CaretBounds(annotation, editor.Text, editor.Style, editor.Runs, index),
-            point => renderer.HitTestCaret(annotation, editor.Text, editor.Style, editor.Runs, point));
+            index => renderer.CaretBounds(annotation, editor.Text, editor.Format, editor.Runs, index),
+            point => renderer.HitTestCaret(annotation, editor.Text, editor.Format, editor.Runs, point));
 
         editor.MoveTo(2);
         Line(-1);

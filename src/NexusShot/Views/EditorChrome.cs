@@ -53,6 +53,10 @@ public sealed class EditorChrome(Ui ui) : IDisposable
     /// <summary>A Bold, Italic or Underline click: the window knows whether it formats a selection
     /// inside an open box or the whole box.</summary>
     public TextStyle? StyleToggled { get; private set; }
+
+    /// <summary>A size from the slider or number box, and whether it is a slider tick mid-drag: the
+    /// window knows whether it sizes a selection inside an open box, or the tool and selection.</summary>
+    public (double Value, bool Adjusting)? SizeSet { get; private set; }
     public Command Requested { get; private set; }
 
     /// <summary>Text for the clipboard - the picker's copy button.</summary>
@@ -75,12 +79,13 @@ public sealed class EditorChrome(Ui ui) : IDisposable
     public sealed record Frame(
         EditorDocument Document, AppSettings Settings, double Width, double Height, double CaptionButtonsWidth,
         string Title, double Zoom, Rect ImageOnScreen, double ImageScale, Point ImageOrigin,
-        string? Toast, bool Busy, TextStyle TextStyle);
+        string? Toast, bool Busy, TextStyle TextStyle, double Size);
 
     public void Draw(Frame frame)
     {
         ToolPicked = null;
         StyleToggled = null;
+        SizeSet = null;
         Requested = Command.None;
         CopyRequested = null;
         _covered.Clear();
@@ -280,7 +285,7 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         // Measure first: the pill animates toward this width, and the groups lay out inside it.
         var groups = new List<(double Width, Action<Rect> Draw)>();
         if (hasColor) groups.Add((ColorGroupWidth(), rect => DrawColorGroup(rect, document)));
-        if (hasSize) groups.Add((SizeLabelWidth(document) + S(10 + 112 + 10 + 44), rect => DrawSizeGroup(rect, document)));
+        if (hasSize) groups.Add((SizeLabelWidth(document.SizingTool) + S(10 + 112 + 10 + 44), rect => DrawSizeGroup(rect, document.SizingTool, frame.Size)));
         if (hasFill) groups.Add((S(30 * 3 + 4), rect => DrawFillGroup(rect, document)));
         if (isText) groups.Add((S(30 * 3 + 4), rect => DrawTextGroup(rect, frame.TextStyle)));
         if (isCounter) groups.Add((CounterGroupWidth(document), rect => DrawCounterGroup(rect, document)));
@@ -369,31 +374,31 @@ public sealed class EditorChrome(Ui ui) : IDisposable
 
     /// <summary>The size control: a slider for feel, a number box for precision. The label and the
     /// range follow what the tool actually sizes - a brush's footprint, a font, or a stroke.</summary>
-    private void DrawSizeGroup(Rect row, EditorDocument document)
+    private void DrawSizeGroup(Rect row, EditorTool tool, double size)
     {
-        var (label, min, max) = SizeRange(document.SizingTool);
-        var labelWidth = SizeLabelWidth(document);
+        var (label, min, max) = SizeRange(tool);
+        var labelWidth = SizeLabelWidth(tool);
         ui.Text(label.ToUpperInvariant(), new Rect(row.X, row.Y, labelWidth, row.Height), ui.Theme.TextTertiary, S(11), Weight.Bold);
 
-        var value = document.ActiveThickness;
+        var value = size;
         var slider = new Rect(row.X + labelWidth + S(10), row.Y, S(112), row.Height);
         var sliderId = Ui.Id("editor.size");
         if (ui.Slider(sliderId, slider, min, max, ref value))
-            document.SetStrokeThickness(Math.Round(value), isAdjusting: true);
+            SizeSet = (Math.Round(value), true);
         ui.Tip(sliderId, slider, $"{label} {min}–{max}");
 
         var box = new Rect(slider.Right + S(10), row.Center.Y - S(14), S(44), S(28));
-        var field = ui.Field(Ui.Id("editor.size.box"), box, Math.Round(document.ActiveThickness).ToString(),
+        var field = ui.Field(Ui.Id("editor.size.box"), box, Math.Round(size).ToString(),
             char.IsAsciiDigit, 3, align: TextAlign.Center);
         if (field.Changed && int.TryParse(field.Text, out var typed) && typed >= min && typed <= max)
-            document.SetStrokeThickness(typed);
+            SizeSet = (typed, false);
         if (field.Step != 0)
-            document.SetStrokeThickness(Math.Clamp(Math.Round(document.ActiveThickness) + field.Step, min, max));
+            SizeSet = (Math.Clamp(Math.Round(size) + field.Step, min, max), false);
     }
 
     /// <summary>The label measured, not assumed: "WIDTH" in bold capitals is wider than "SIZE".</summary>
-    private double SizeLabelWidth(EditorDocument document) =>
-        Math.Ceiling(ui.MeasureText(SizeRange(document.SizingTool).Label.ToUpperInvariant(), S(11), Weight.Bold)) + 1;
+    private double SizeLabelWidth(EditorTool tool) =>
+        Math.Ceiling(ui.MeasureText(SizeRange(tool).Label.ToUpperInvariant(), S(11), Weight.Bold)) + 1;
 
     /// <summary>What the size control edits and its range, per tool.</summary>
     public static (string Label, int Min, int Max) SizeRange(EditorTool tool) => tool switch
@@ -477,7 +482,7 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         var bottom = frame.ImageOrigin.Y + (crop.Y + crop.Height) * frame.ImageScale;
         var centre = frame.ImageOrigin.X + (crop.X + crop.Width / 2) * frame.ImageScale;
         var y = Math.Min(bottom + S(14), frame.Height - S(60));
-        var pill = new Rect(Math.Clamp(centre - width / 2, S(8), frame.Width - width - S(8)), y, width, S(36));
+        var pill = new Rect(Math.Clamp(centre - width / 2, S(8), Math.Max(S(8), frame.Width - width - S(8))), y, width, S(36));
         ui.Pill(pill);
         _covered.Add(pill);
 

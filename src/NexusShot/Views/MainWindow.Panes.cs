@@ -165,9 +165,9 @@ public sealed partial class MainWindow
             "Select all", ButtonStyle.Outline, Icons.SelectAll, small: true, enabled: !shown.All(_selection.Contains)))
             _selection.SelectAll(shown);
 
-        if (ui.Button(Ui.Id("library.select.delete"), Place(ui.ButtonWidth("Delete", Icons.Delete, small: true)), "Delete",
-            ButtonStyle.Destructive, Icons.Delete, small: true, enabled: _selection.Count > 0))
-            AskDelete(_history.Where(item => _selection.Contains(item.FilePath)).ToList());
+        if (ui.Button(Ui.Id("library.select.delete"), Place(ui.ButtonWidth("Delete", Icons.Delete, keycap: "Del", small: true)),
+            "Delete", ButtonStyle.Destructive, Icons.Delete, keycap: "Del", small: true, enabled: _selection.Count > 0))
+            AskDeleteSelected();
 
         if (ui.Button(Ui.Id("library.select.cancel"), Place(ui.ButtonWidth("Cancel", keycap: "Esc", small: true)), "Cancel",
             ButtonStyle.Outline, keycap: "Esc", small: true))

@@ -53,19 +53,19 @@ public static class Exporter
     /// what is on screen, but must not silently discard the uncropped original.
     /// </summary>
     public static void Save(
-        EditorDocument document, string sourcePath, string path, Rect? cropOverride = null)
+        EditorDocument document, DecodedImage source, string path, Rect? cropOverride = null)
     {
         // The app uses one media worker; headless callers may not. All access to the
         // single-threaded factory and shared device must be serialized, not just creation.
         lock (_deviceLock)
         {
-            SaveCore(document, sourcePath, path, cropOverride);
+            SaveCore(document, source, path, cropOverride);
             _release.Change(KeepAlive, Timeout.InfiniteTimeSpan);
         }
     }
 
     private static void SaveCore(
-        EditorDocument document, string sourcePath, string path, Rect? cropOverride)
+        EditorDocument document, DecodedImage source, string path, Rect? cropOverride)
     {
         var crop = cropOverride
             ?? document.CropBounds
@@ -77,8 +77,8 @@ public static class Exporter
         using var context = device.CreateDeviceContext();
 
         // D2D bitmaps are device resources: one realized on the editor's window target cannot be
-        // drawn by this one. Decode against the target that will draw it.
-        using var image = ImageSurface.Load(sourcePath, context);
+        // drawn by this one. Upload against the target that will draw it.
+        using var image = ImageSurface.Upload(source, context);
 
         using var surface = context.CreateBitmap<ID2D1Bitmap1>(
             new D2D_SIZE_U { width = width, height = height },

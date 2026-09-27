@@ -44,7 +44,7 @@ public sealed partial class EditorWindow : CaptionWindow
 
     private bool _dragging;
 
-    /// <summary>The grip under the pointer, if any. Drives the cursor shape.</summary>
+    /// <summary>The resize axis of the grip under the pointer, if any. Drives the cursor shape.</summary>
     private ResizeHandle? _hoverHandle;
 
     /// <summary>The inline text box: its lifecycle, keys and write-back.</summary>
@@ -63,7 +63,7 @@ public sealed partial class EditorWindow : CaptionWindow
         _settings = settings;
         _settingsChanged = settingsChanged;
         _text = new TextBoxController(_document);
-        _files = new EditorFiles(_document);
+        _files = new EditorFiles(_document, ReadPixels);
         _files.OpenedAt(path);
 
         // The open box lives in this window's controller, so a write has to ask rather than do it.
@@ -170,6 +170,14 @@ public sealed partial class EditorWindow : CaptionWindow
         }
         _document.SetImageSize(_image.Width, _image.Height);
         _effects = new PixelEffectSource(_image, _resources);
+    }
+
+    /// <summary>The image on screen, for an export. Only called while one is loaded.</summary>
+    private DecodedImage ReadPixels()
+    {
+        using var target = RenderTarget!.AsRenderTarget();
+        using var context = target.AsDeviceContext()!;
+        return _image!.Read(context);
     }
 
     // ============================  VIEW TRANSFORM  ============================
@@ -286,7 +294,7 @@ public sealed partial class EditorWindow : CaptionWindow
         if (_text.Editor is { } editing)
         {
             _renderer.DrawTextEditor(
-                target, editing.Annotation, editing.Text, editing.Style, editing.Runs,
+                target, editing.Annotation, editing.Text, editing.Format, editing.Runs,
                 editing.Caret, editing.SelectionStart, editing.SelectionEnd, editing.CaretVisible,
                 AdornerScale);
         }
@@ -298,7 +306,7 @@ public sealed partial class EditorWindow : CaptionWindow
         _chrome.Draw(new EditorChrome.Frame(
             _document, _settings, client.Width, client.Height, CaptionButtonsWidth,
             Path.GetFileNameWithoutExtension(_files.FileName), _scale, imageRect, _scale,
-            new Point(_offsetX, _offsetY), toast, _fileBusy, ActiveTextStyle));
+            new Point(_offsetX, _offsetY), toast, _fileBusy, ActiveTextStyle, ActiveSize));
         DrawCaptionButtons(_ui, client.Width);
         _ui.EndFrame();
 
@@ -320,6 +328,7 @@ public sealed partial class EditorWindow : CaptionWindow
 
         if (_chrome.ToolPicked is { } tool) SelectTool(tool);
         if (_chrome.StyleToggled is { } style) ToggleTextStyle(style);
+        if (_chrome.SizeSet is var (size, adjusting)) SetSize(size, adjusting);
 
         switch (_chrome.Requested)
         {

@@ -1,4 +1,5 @@
 using NexusShot.Core;
+using NexusShot.Render;
 using NexusShot.Views;
 
 namespace NexusShot.Tests;
@@ -13,7 +14,7 @@ public class EditorFilesTests
     [Fact]
     public void TheDestinationIsTheFileTheEditorWasOpenedOn()
     {
-        var files = new EditorFiles(new EditorDocument());
+        var files = new EditorFiles(new EditorDocument(), NoPixels);
         files.OpenedAt(@"C:\shots\capture.png");
 
         Assert.Equal(@"C:\shots\capture.png", files.Path);
@@ -26,7 +27,7 @@ public class EditorFilesTests
         // Save As moves the editor onto the copy, and the chrome reads the filename from here. A
         // second copy of this string on the window is what let the caption and the destination
         // disagree after a Save As.
-        var files = new EditorFiles(new EditorDocument());
+        var files = new EditorFiles(new EditorDocument(), NoPixels);
         files.OpenedAt(@"C:\shots\capture.png");
 
         files.OpenedAt(@"D:\archive\capture_edited.png");
@@ -44,7 +45,7 @@ public class EditorFilesTests
         document.SetImageSize(800, 600);
         document.BeginCropSession();
 
-        var files = new EditorFiles(document);
+        var files = new EditorFiles(document, NoPixels);
         files.OpenedAt(@"C:\shots\capture.png");
 
         var result = files.PrepareSaveAs((_, _) => null);
@@ -57,7 +58,7 @@ public class EditorFilesTests
     [Fact]
     public void SaveAsOffersTheOriginalsNameAndFolderAsTheStartingPoint()
     {
-        var files = new EditorFiles(new EditorDocument());
+        var files = new EditorFiles(new EditorDocument(), NoPixels);
         files.OpenedAt(@"C:\shots\capture.png");
 
         string? offeredName = null;
@@ -71,4 +72,6 @@ public class EditorFilesTests
         Assert.Equal("capture_edited.png", offeredName);
         Assert.Equal(@"C:\shots", offeredFolder);
     }
+
+    private static DecodedImage NoPixels() => DecodedImage.Allocate(1, 1);
 }

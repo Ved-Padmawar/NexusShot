@@ -42,7 +42,7 @@ public static partial class ToolCursors
         ResizeHandle.TopRight or ResizeHandle.BottomLeft => IDC_SIZENESW,
         ResizeHandle.Top or ResizeHandle.Bottom => IDC_SIZENS,
         ResizeHandle.Left or ResizeHandle.Right => IDC_SIZEWE,
-        _ => IDC_SIZEALL,
+        _ => throw new ArgumentOutOfRangeException(nameof(handle), handle, "Not a box handle."),
     });
 
     private static IntPtr Standard(int id)

@@ -49,9 +49,9 @@ public class WorkflowRegressionTests : IDisposable
         var document = NewDocument();
         var shape = Draw(document, EditorTool.Rectangle, new(10, 10), new(80, 80));
         document.BeginCropSession();
-        var files = new EditorFiles(document);
+        var files = new EditorFiles(document, () => DecodedImage.Allocate(100, 100));
         files.OpenedAt(Path.Combine(_directory, "source.png"));
-        var request = files.PrepareSave();
+        using var request = files.PrepareSave();
         shape.Text = "changed after snapshot";
         Assert.NotSame(shape, request.Document.Annotations[0]);
         Assert.NotEqual(shape.Text, request.Document.Annotations[0].Text);
@@ -64,7 +64,7 @@ public class WorkflowRegressionTests : IDisposable
     [Fact]
     public void CancellingSaveAsDoesNotEvenCommitInlineText()
     {
-        var files = new EditorFiles(NewDocument());
+        var files = new EditorFiles(NewDocument(), () => DecodedImage.Allocate(100, 100));
         files.OpenedAt(Path.Combine(_directory, "source.png"));
         var committed = false;
         files.Committing += () => committed = true;
@@ -81,9 +81,9 @@ public class WorkflowRegressionTests : IDisposable
         document.SetImageSize(100, 100);
         Draw(document, EditorTool.Rectangle, new(10, 10), new(80, 80));
         document.BeginCropSession();
-        var files = new EditorFiles(document);
+        var files = new EditorFiles(document, () => ImageSurface.Decode(source));
         files.OpenedAt(source);
-        var request = files.PrepareSave();
+        using var request = files.PrepareSave();
         using (var locked = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
             var failure = await Record.ExceptionAsync(() => MediaWorker.Run(() => { request.Save(); return true; }));
@@ -103,10 +103,10 @@ public class WorkflowRegressionTests : IDisposable
         var document = NewDocument();
         document.SetImageSize(100, 100);
         Draw(document, EditorTool.Rectangle, new(10, 10), new(80, 80));
-        var files = new EditorFiles(document);
+        var files = new EditorFiles(document, () => ImageSurface.Decode(source));
         files.OpenedAt(source);
         var destination = Path.Combine(_directory, "edited.png");
-        var request = files.PrepareSaveAs((_, _) => destination)!;
+        using var request = files.PrepareSaveAs((_, _) => destination)!;
         await MediaWorker.Run(() => { request.Save(); return true; });
         Assert.True(document.HasUnsavedChanges);
         Assert.Equal(source, files.Path);
@@ -115,6 +115,54 @@ public class WorkflowRegressionTests : IDisposable
         Assert.Equal(destination, files.Path);
         Assert.True(File.Exists(source));
         Assert.True(File.Exists(destination));
+    }
+
+    [Fact]
+    public async Task SaveStillWorksAfterTheOpenFileIsDeleted()
+    {
+        // Regression: the export re-read the source file, so an image moved or deleted while open
+        // could no longer be saved at all. It now flattens the pixels on screen.
+        var source = await MakeImage(100, 100);
+        using var onScreen = ImageSurface.Decode(source);
+        var document = NewDocument();
+        document.SetImageSize(100, 100);
+        Draw(document, EditorTool.Rectangle, new(10, 10), new(80, 80));
+        var files = new EditorFiles(document, () => DecodedImage.CopyFrom(onScreen.Span, 100, 100));
+        files.OpenedAt(source);
+        File.Delete(source);
+
+        using var request = files.PrepareSave();
+        await MediaWorker.Run(() => { request.Save(); return true; });
+
+        using var written = ImageSurface.Decode(source);
+        Assert.Equal((100, 100), (written.Width, written.Height));
+    }
+
+    [Fact]
+    public void AnUnreadableImageIsReportedOnceAndRetriedOnlyWhenItChanges()
+    {
+        // Regression: every capture's rescan retried a broken file and logged it again.
+        var broken = Path.Combine(_directory, "broken.png");
+        File.WriteAllBytes(broken, [0x89, 0x50, 0x4E, 0x47, 1, 2, 3]);
+
+        var (path, version) = Assert.Single(HistoryScanner.Scan(_directory, [], new Dictionary<string, FileVersion>()).Unreadable);
+        var versions = new Dictionary<string, FileVersion>(StringComparer.OrdinalIgnoreCase) { [path] = version };
+        Assert.Empty(HistoryScanner.Scan(_directory, [], versions).Unreadable);
+
+        File.AppendAllText(broken, "rewritten");
+        Assert.Single(HistoryScanner.Scan(_directory, [], versions).Unreadable);
+    }
+
+    [Fact]
+    public void ARememberedUnreadableImageThatIsDeletedIsReportedMissing()
+    {
+        var broken = Path.Combine(_directory, "broken.png");
+        File.WriteAllBytes(broken, [0x89, 0x50, 0x4E, 0x47, 1, 2, 3]);
+        var versions = new Dictionary<string, FileVersion>(StringComparer.OrdinalIgnoreCase) { [broken] = FileVersion.Read(broken) };
+
+        File.Delete(broken);
+
+        Assert.Contains(broken, HistoryScanner.Scan(_directory, [], versions).Missing);
     }
 
     [Fact]

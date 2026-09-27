@@ -9,31 +9,35 @@ public class TextRunsTests
 {
     private const TextStyle Bold = TextStyle.Bold;
 
+    private static readonly TextFormat Plain = new(TextStyle.None, 20);
+
+    private static TextFormat F(TextStyle style, double size = 20) => new(style, size);
+
     [Fact]
     public void BoldingTheMiddleSplitsTheTextIntoThreeRuns()
     {
-        var (style, runs) = TextRuns.Apply(TextStyle.None, [], 11, 4, 7, Bold, on: true);
+        var (format, runs) = TextRuns.Apply(Plain, [], 11, 4, 7, Bold, on: true);
 
-        Assert.Equal(TextStyle.None, style);
-        Assert.Equal([new TextRun(4, TextStyle.None), new TextRun(3, Bold), new TextRun(4, TextStyle.None)], runs);
+        Assert.Equal(Plain, format);
+        Assert.Equal([new TextRun(4, Plain), new TextRun(3, F(Bold)), new TextRun(4, Plain)], runs);
     }
 
     [Fact]
     public void UndoingTheOnlyDifferenceCollapsesBackToNoRuns()
     {
-        var (style, runs) = TextRuns.Apply(TextStyle.None, [], 11, 4, 7, Bold, on: true);
-        (style, runs) = TextRuns.Apply(style, runs, 11, 4, 7, Bold, on: false);
+        var (format, runs) = TextRuns.Apply(Plain, [], 11, 4, 7, Bold, on: true);
+        (format, runs) = TextRuns.Apply(format, runs, 11, 4, 7, Bold, on: false);
 
-        Assert.Equal((TextStyle.None, 0), (style, runs.Length));
+        Assert.Equal((Plain, 0), (format, runs.Length));
     }
 
     [Fact]
     public void FormattingEverythingChangesTheBaseSoAnEmptiedBoxKeepsIt()
     {
-        var (style, runs) = TextRuns.Apply(TextStyle.Italic, [], 5, 0, 5, Bold, on: true);
-        (style, runs) = TextRuns.Splice(style, runs, 5, 0, 5, 0);
+        var (format, runs) = TextRuns.Apply(F(TextStyle.Italic), [], 5, 0, 5, Bold, on: true);
+        (format, runs) = TextRuns.Splice(format, runs, 5, 0, 5, 0);
 
-        Assert.Equal(TextStyle.Italic | Bold, style);
+        Assert.Equal(F(TextStyle.Italic | Bold), format);
         Assert.Empty(runs);
     }
 
@@ -41,34 +45,59 @@ public class TextRunsTests
     public void TypingContinuesThePreviousCharacterAndAtTheStartTheNextOne()
     {
         // "ab" with only "b" bold.
-        TextRun[] runs = [new(1, TextStyle.None), new(1, Bold)];
+        TextRun[] runs = [new(1, Plain), new(1, F(Bold))];
 
-        var (_, afterB) = TextRuns.Splice(TextStyle.None, runs, 2, 2, 0, 3);
-        Assert.Equal([new TextRun(1, TextStyle.None), new TextRun(4, Bold)], afterB);
+        var (_, afterB) = TextRuns.Splice(Plain, runs, 2, 2, 0, 3);
+        Assert.Equal([new TextRun(1, Plain), new TextRun(4, F(Bold))], afterB);
 
-        var (_, beforeA) = TextRuns.Splice(TextStyle.None, runs, 2, 0, 0, 2);
-        Assert.Equal([new TextRun(3, TextStyle.None), new TextRun(1, Bold)], beforeA);
+        var (_, beforeA) = TextRuns.Splice(Plain, runs, 2, 0, 0, 2);
+        Assert.Equal([new TextRun(3, Plain), new TextRun(1, F(Bold))], beforeA);
     }
 
     [Fact]
-    public void TypingOverASelectionTakesTheSelectionsStyle()
+    public void TypingOverASelectionTakesTheSelectionsFormat()
     {
         // "abcd" with "bc" bold; "bc" replaced by five characters.
-        TextRun[] runs = [new(1, TextStyle.None), new(2, Bold), new(1, TextStyle.None)];
+        TextRun[] runs = [new(1, Plain), new(2, F(Bold)), new(1, Plain)];
 
-        var (_, replaced) = TextRuns.Splice(TextStyle.None, runs, 4, 1, 2, 5);
+        var (_, replaced) = TextRuns.Splice(Plain, runs, 4, 1, 2, 5);
 
-        Assert.Equal([new TextRun(1, TextStyle.None), new TextRun(5, Bold), new TextRun(1, TextStyle.None)], replaced);
+        Assert.Equal([new TextRun(1, Plain), new TextRun(5, F(Bold)), new TextRun(1, Plain)], replaced);
     }
 
     [Fact]
     public void CommonReportsOnlyTheStylesTheWholeRangeShares()
     {
-        TextRun[] runs = [new(2, Bold | TextStyle.Italic), new(2, Bold)];
+        TextRun[] runs = [new(2, F(Bold | TextStyle.Italic)), new(2, F(Bold))];
 
-        Assert.Equal(Bold | TextStyle.Italic, TextRuns.Common(TextStyle.None, runs, 4, 0, 2));
-        Assert.Equal(Bold, TextRuns.Common(TextStyle.None, runs, 4, 0, 4));
-        Assert.Equal(Bold, TextRuns.Common(TextStyle.None, runs, 4, 3, 3));   // typing at 3 continues "Bold"
+        Assert.Equal(Bold | TextStyle.Italic, TextRuns.Common(Plain, runs, 4, 0, 2));
+        Assert.Equal(Bold, TextRuns.Common(Plain, runs, 4, 0, 4));
+        Assert.Equal(Bold, TextRuns.Common(Plain, runs, 4, 3, 3));   // typing at 3 continues "Bold"
+    }
+
+    [Fact]
+    public void ResizingARangeKeepsItsStyleAndLeavesTheRestAlone()
+    {
+        // "one two" with "one" bold; "two" enlarged.
+        TextRun[] runs = [new(3, F(Bold)), new(4, Plain)];
+
+        var (format, resized) = TextRuns.Resize(Plain, runs, 7, 4, 7, 40);
+
+        Assert.Equal(Plain, format);
+        Assert.Equal([new TextRun(3, F(Bold)), new TextRun(1, Plain), new TextRun(3, F(TextStyle.None, 40))], resized);
+        Assert.Equal(40, TextRuns.SizeAt(format, resized, 7, 4, 7));
+        Assert.Equal(40, TextRuns.Largest(format, resized));
+    }
+
+    [Fact]
+    public void ResizingEverythingCollapsesMixedSizesIntoTheBase()
+    {
+        TextRun[] runs = [new(2, F(TextStyle.None, 40)), new(2, Plain)];
+
+        var (format, resized) = TextRuns.Resize(Plain, runs, 4, 0, 4, 30);
+
+        Assert.Equal(F(TextStyle.None, 30), format);
+        Assert.Empty(resized);
     }
 
     [Fact]
@@ -76,7 +105,7 @@ public class TextRunsTests
     {
         var document = NewDocument();
         var text = Draw(document, EditorTool.Text, new Point(100, 100), new Point(400, 200));
-        document.SetTextContent(text, "abcd", text.Bounds, (TextStyle.None, [new(2, Bold), new(2, TextStyle.None)]));
+        document.SetTextContent(text, "abcd", text.Bounds, (text.Format, [new(2, text.Format with { Style = Bold }), new(2, text.Format)]));
 
         document.SetTextContent(text, "abcdef", text.Bounds);
 
