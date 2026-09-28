@@ -27,14 +27,16 @@
 
 **📸 Capture** — full virtual desktop, active window, and drag-selection region, with correct
 multi-monitor and per-monitor-DPI coordinates. The region picker draws a **frozen snapshot** of the
-screen, dimmed, with a crosshair and a live pixel-dimension readout. The saved image is cropped from
-that same snapshot rather than re-grabbed afterwards, so an open menu or dropdown survives into the
-shot and what you select is exactly what you get. Captures are copied to the clipboard and saved
-automatically; both can be turned off in Settings. A **timed capture** counts down first, so a menu
-or tooltip can be opened for the shot.
+screen with a magnifier and a live pixel-dimension readout, and a bar of modes at the top: **Region**
+(drag an area or click a window), **Freeform** (lasso any shape), **Window**, **Screen** and **Text**.
+The saved image is cropped from that same snapshot rather than re-grabbed afterwards, so an open menu
+survives into the shot. The active-window hotkey captures the window's own pixels, so overlapping
+windows never appear in it. Every capture is saved to the save folder and copied to the clipboard
+(copying can be turned off). A **timed capture** counts down first, so a menu or tooltip can be
+opened for the shot.
 
-**🔤 Capture text** — select a region and its text goes straight to the clipboard, using the OCR built
-into Windows (offline). Cards and the editor can copy an image's text too.
+**🔤 Capture text** — pick an area or a window and its text goes straight to the clipboard, using the
+OCR built into Windows (offline). Cards and the editor can copy an image's text too.
 
 **🃏 Quick Access cards** — after each capture a thumbnail card appears in the corner you choose
 (bottom-left by default) and stacks from there. It never steals focus. Hovering shows Pin, Close, Edit and Save as in the corners and
@@ -45,18 +47,23 @@ path into a text field. Auto-dismiss is configurable and pauses while hovered, p
 the screen; click Restore to bring one back.
 
 **🎨 Editor** — rectangle, ellipse, line, arrow, pen, brush, eraser, text, numbered counter,
-highlight, blur, pixelate, spotlight, and crop. Annotations stay selectable and editable after they
+highlight, blur, pixelate, redact, spotlight, and crop. **Find sensitive text** covers emails, card
+and phone numbers, IP addresses and keys with solid blocks. Annotations stay selectable and editable after they
 are drawn: boxes have eight resize grips, lines and arrows have endpoint grips, and text is edited
 in place, wrapping inside its box, with bold, italic and underline on any part of it. Crop is a handle-draggable frame applied on `Enter` and discarded
-with `Esc`. Blur and pixelate run on the GPU. Shapes can be outlined, tinted or filled. The colour picker
-works in HEX, RGB, HSL or HSB, with opacity, an eyedropper, and recent and saved colours. Zoom with
-`Ctrl`+wheel. Closing with unsaved edits asks first.
+with `Esc`. Blur and pixelate run on the GPU. Shapes can be outlined, tinted or filled, and lines and outlines
+dashed; duplicate, nudge and reorder a selection. The colour picker works in HEX, RGB, HSL or HSB,
+with opacity, an eyedropper, and recent and saved colours. Zoom with `Ctrl`+wheel; pan with the middle
+button or `Space`+drag. Save keeps the edits and their undo, so a save can be undone. Closing with
+unsaved edits asks first.
 
 **🗂 Library** — every capture in the save folder, in a grid grouped by day and kept in sync with
-File Explorer, with search. Hover a capture to delete, show in folder, copy, share (Windows share
-sheet) or open it in the editor; double-click to edit. **Select** (or `Ctrl`+click) picks several to
-delete at once. Scrolling is GPU-composited and smooth on touchpads. Drop an image on it, or use
-**Open with** in Explorer, to edit any PNG, JPEG or BMP. Settings live here too: capture format,
+File Explorer. Search matches file names and the **text inside captures**, read in the background.
+Star favourites and filter by them or by time. Hover a capture to delete (to the Recycle Bin), star,
+show in folder, copy, share (Windows share sheet) or open it in the editor; double-click to edit.
+**Select** (or `Ctrl`+click) picks several to delete at once. Scrolling is GPU-composited and smooth
+on touchpads. Drop an image on it, paste one with `Ctrl+V`, or use **Open with** in Explorer, to edit
+any PNG, JPEG or BMP. Settings live here too: capture format, file names, how long to keep captures,
 after-capture action, card corner, OCR language, theme and accent, hotkeys, and more. Errors and
 results arrive as Windows notifications.
 
@@ -66,17 +73,22 @@ discarding open edits, before it installs and restarts. Nothing restarts on its 
 
 **⌨️ Global hotkeys** — `Ctrl+Shift+S` region, `Ctrl+Shift+F` full screen, `Ctrl+Shift+W` active
 window, `Ctrl+Shift+O` capture text, `Ctrl+Shift+H` restore closed cards, `Ctrl+Shift+N` open the
-Library; timed capture is unbound by default. All can be rebound (including to a single key such as
-`F9`) or unbound in Settings. A binding another app already owns fails on its own, the rest still
-register, and the Library says which one clashed.
+Library; timed capture is unbound by default. All can be rebound or unbound in Settings. A single key
+works only for keys that type nothing (`F1`–`F24`, `PrtScn`, `Pause`); any other needs `Ctrl`, `Alt`
+or `Win`, and two actions cannot share one. A binding another app already owns fails on its own, the
+rest still register, and the Library says which one clashed.
+
+**🖥 Command line** — `NexusShot.exe --capture region|window|screen|text` starts a capture in the
+running instance, for scripts and other tools' shortcuts.
 
 ### Keyboard shortcuts
 
 | Context | Shortcuts |
 | --- | --- |
-| **Library** | `Ctrl+,` settings · `Esc` closes the open prompt or list, then Settings, then selection mode, then the window |
-| **Editor tools** | `V` select · `R` rectangle · `E` ellipse · `L` line · `A` arrow · `D` pen · `M` brush · `X` eraser · `T` text · `N` counter · `H` highlight · `B` blur · `P` pixelate · `S` spotlight · `C` crop |
-| **Editor** | `Ctrl+S` save · `Ctrl+C` copy · `Ctrl+Z` / `Ctrl+Y` undo / redo · `Ctrl+B` / `I` / `U` text style · `Ctrl+0` 100% · `Ctrl+9` fit · `Del` delete selection · `Enter` apply crop · `Esc` cancel |
+| **Library** | `Ctrl+,` settings · `Ctrl+V` open the clipboard's image · `Esc` closes the open prompt or list, then Settings, then selection mode, then the window |
+| **Region picker** | `Tab` next mode · `Shift` square · `Space` move the selection · arrows nudge the pointer · `Enter` last area · `Esc` / right-click cancel |
+| **Editor tools** | `V` select · `R` rectangle · `E` ellipse · `L` line · `A` arrow · `D` pen · `M` brush · `X` eraser · `T` text · `N` counter · `H` highlight · `B` blur · `P` pixelate · `K` redact · `S` spotlight · `C` crop |
+| **Editor** | `Ctrl+S` save · `Ctrl+C` copy · `Ctrl+Z` / `Ctrl+Y` undo / redo · `Ctrl+D` duplicate · `Ctrl+]` / `Ctrl+[` forward / backward (`Shift`: front / back) · arrows nudge · `Ctrl+B` / `I` / `U` text style · `Ctrl+0` 100% · `Ctrl+9` fit · `Del` delete selection · `Enter` apply crop · `Esc` cancel |
 | **Hotkey recorder** | `Backspace` unbind · `Delete` restore default · `Esc` cancel |
 
 ---
@@ -208,8 +220,10 @@ over essentially unchanged, because it never depended on the framework.
   `D2DResources` builds stroke styles and geometry from the factory that owns its target.
 - **Text is drawn, not a Win32 `EDIT`.** A child HWND over a Direct2D surface has no defined paint
   order and flickered. The trade-off: full IME composition and UI Automation are not implemented.
-- **Clipboard.** Images go on as `PNG`, `CF_DIBV5` and `CF_DIB`, all by value — delay-rendered
-  data would vanish when the copying window closed and never reach Clipboard History (`Win`+`V`).
+- **Clipboard.** Images go on as `CF_DIBV5` and `CF_DIB`, plus `PNG` for PNG files, all by value —
+  delay-rendered data would vanish when the copying window closed and never reach Clipboard History.
+- **Window capture.** The active window comes from Windows.Graphics.Capture, falling back to a screen
+  copy on Windows builds before 1903 or when capture is blocked.
 - **Drag-out.** Cards drag the shell's own data object (every format Explorer offers) plus
   `CF_UNICODETEXT`, so a drop onto a text field pastes the path.
 - **Idle memory.** Small windows render in software, the export device is released after use, and

@@ -49,6 +49,37 @@ public class SensitiveTextTests
     public void PhoneNumbersAddressesAndKeysAreCovered(string text) => Assert.NotEmpty(Find(text));
 
     [Fact]
+    public void EveryKeyInAnEnvFileIsCoveredHoweverRecognitionSplitIt()
+    {
+        var areas = Find(
+            "# OPENAI_API_KEY=sk-proj-Ab12Cd34Ef56Gh78",
+            "OPENAI_API_KEY=sk-proj-Ab12 Cd34Ef 56Gh78Ij90",
+            "AZURE_OPENAI_API_KEY= 3f9a 1c0b7e 2d4f",
+            "AZURE_OPENAI_ENDPOINT=https://example.openai.azure.com");
+
+        Assert.Equal([0.0, 40.0, 80.0], areas.Select(area => area.Y));
+    }
+
+    [Fact]
+    public void AnAssignmentKeepsItsNameVisible()
+    {
+        // "API_KEY=" is 8 of the word's 20 characters, 10 pixels each.
+        var area = Assert.Single(Find("API_KEY=abcdefghijkl"));
+        Assert.Equal(new Rect(80, 0, 120, 20), area);
+    }
+
+    [Theory]
+    [InlineData("\"apiKey\": \"a1b2c3d4\"")]
+    [InlineData("password: hunter22")]
+    [InlineData("clientSecret = x7Y8z9W0")]
+    public void ConfigValuesNamedAsSecretsAreCovered(string text) => Assert.NotEmpty(Find(text));
+
+    [Theory]
+    [InlineData("Keyboard: US International")]
+    [InlineData("Press the key: Enter")]
+    public void ProseThatMentionsAKeyIsLeftAlone(string text) => Assert.Empty(Find(text));
+
+    [Fact]
     public void EachLineIsSearchedOnItsOwn()
     {
         var areas = Find("mail a@b.com", "nothing here", "ip 10.0.0.1");

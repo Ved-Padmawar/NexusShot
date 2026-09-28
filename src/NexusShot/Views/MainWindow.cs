@@ -99,6 +99,8 @@ public sealed partial class MainWindow : CaptionWindow
     public event Action<CaptureMode>? CaptureRequested;
     public event Action? CaptureTextRequested;
 
+    public event Action<string>? CaptureDeleted;
+
     /// <summary>Ctrl+V over the Library: open what is on the clipboard.</summary>
     public event Action? PasteRequested;
     public event Action? TimedCaptureRequested;
@@ -297,7 +299,8 @@ public sealed partial class MainWindow : CaptionWindow
         _ui.BeginFrame(resources, _hoverPaused ? new Point(-1, -1) : _pointer, _pointerDown,
             new D2D_SIZE_F((float)width, (float)height));
 
-        _ui.Inert = ModalOpen;
+        // An open menu hangs over the grid; the tiles under it must not answer the pointer.
+        _ui.Inert = ModalOpen || DropdownOpen;
         if (_history.Count > 0) DrawGrid(_ui, resources, layers, GridBounds(width, height));
         else
         {

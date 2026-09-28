@@ -427,6 +427,11 @@ public sealed partial class EditorDocument
         Notify();
     }
 
+    /// <summary>Whether the selection shares pixels with another annotation: the only time its place
+    /// in the paint order shows.</summary>
+    public bool SelectionOverlaps => Selected is { } shape
+        && _annotations.Any(other => !ReferenceEquals(other, shape) && !other.Bounds.Intersect(shape.Bounds).IsEmpty);
+
     /// <summary>Moves the selection up or down the paint order, which is the list order.</summary>
     public void Reorder(LayerMove move)
     {

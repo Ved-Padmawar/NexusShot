@@ -29,6 +29,29 @@ public static partial class Monitors
         return WorkAreaOf(monitor);
     }
 
+    /// <summary>Every monitor's full bounds, taskbar included: what the region picker's Screen mode
+    /// takes.</summary>
+    public static unsafe List<RectInt> All()
+    {
+        var found = new List<RectInt>();
+        var state = GCHandle.Alloc(found);
+        try { EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, &Collect, GCHandle.ToIntPtr(state)); }
+        finally { state.Free(); }
+        return found;
+    }
+
+    [UnmanagedCallersOnly]
+    private static unsafe int Collect(IntPtr monitor, IntPtr dc, RECT* bounds, IntPtr state)
+    {
+        ((List<RectInt>)GCHandle.FromIntPtr(state).Target!).Add(
+            new RectInt(bounds->Left, bounds->Top, bounds->Right - bounds->Left, bounds->Bottom - bounds->Top));
+        return 1;
+    }
+
+    [LibraryImport("user32.dll")]
+    private static unsafe partial int EnumDisplayMonitors(IntPtr dc, IntPtr clip,
+        delegate* unmanaged<IntPtr, IntPtr, RECT*, IntPtr, int> callback, IntPtr state);
+
     private static RectInt WorkAreaOf(IntPtr monitor)
     {
         var info = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };

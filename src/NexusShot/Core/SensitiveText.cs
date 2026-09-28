@@ -34,22 +34,34 @@ public static partial class SensitiveText
             foreach (Match match in Pattern().Matches(line.ToString()))
             {
                 if (!IsSensitive(match)) continue;
-                Rect? cover = null;
-                for (var i = 0; i < words.Count; i++)
-                {
-                    var end = starts[i] + words[i].Text.Length;
-                    if (end <= match.Index || starts[i] >= match.Index + match.Length) continue;
-                    var bounds = words[i].Bounds;
-                    cover = cover is { } soFar
-                        ? Rect.FromEdges(Math.Min(soFar.X, bounds.X), Math.Min(soFar.Y, bounds.Y),
-                            Math.Max(soFar.Right, bounds.Right), Math.Max(soFar.Bottom, bounds.Bottom))
-                        : bounds;
-                }
-                if (cover is { } area)
+                Capture secret = match.Groups["value"] is { Success: true } value ? value : match;
+                if (Cover(words, starts, secret.Index, secret.Index + secret.Length) is { } area)
                     areas.Add(new Rect(area.X - padding, area.Y - padding, area.Width + padding * 2, area.Height + padding * 2));
             }
         }
         return areas;
+    }
+
+    /// <summary>The area of characters [<paramref name="start"/>, <paramref name="end"/>) of the line.
+    /// Within a word the position is estimated from its share of the word's width, so an
+    /// <c>API_KEY=value</c> read as one word keeps its name visible.</summary>
+    private static Rect? Cover(IReadOnlyList<TextWord> words, int[] starts, int start, int end)
+    {
+        Rect? cover = null;
+        for (var i = 0; i < words.Count; i++)
+        {
+            var length = words[i].Text.Length;
+            var from = Math.Max(start, starts[i]) - starts[i];
+            var to = Math.Min(end, starts[i] + length) - starts[i];
+            if (to <= from) continue;
+            var bounds = words[i].Bounds;
+            var part = new Rect(bounds.X + bounds.Width * from / length, bounds.Y, bounds.Width * (to - from) / length, bounds.Height);
+            cover = cover is { } soFar
+                ? Rect.FromEdges(Math.Min(soFar.X, part.X), Math.Min(soFar.Y, part.Y),
+                    Math.Max(soFar.Right, part.Right), Math.Max(soFar.Bottom, part.Bottom))
+                : part;
+        }
+        return cover;
     }
 
     private static bool IsSensitive(Match match)
@@ -78,14 +90,22 @@ public static partial class SensitiveText
         return sum % 10 == 0;
     }
 
-    /// <summary>Alternatives in priority order: a card number is tried before the phone number it
-    /// would also look like.</summary>
+    /// <summary>
+    /// Alternatives in priority order. A value named as a key, secret, token or password is covered to
+    /// the end of the line, since recognition often splits a random key into short words. The name must
+    /// look like an identifier (API_KEY, apiKey), so prose such as "Keyboard:" is left alone.
+    /// </summary>
     [GeneratedRegex("""
-        (?<email>[\w.+-]+@[\w-]+(?:\.[\w-]+)+)
+        (?<assignment>
+            (?:\b[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PWD|CREDENTIALS?)[A-Z0-9_]*
+              |\b[a-z][A-Za-z0-9]*(?:Key|Secret|Token|Password|Credentials?)[A-Za-z0-9]*
+              |(?i:\b(?:password|passwd|secret|api[ _-]?key|access[ _-]?token|client[ _-]?secret)))
+            ["']?\s*[:=]\s*(?<value>\S.{3,}))
+        |(?<email>[\w.+-]+@[\w-]+(?:\.[\w-]+)+)
         |(?<ip>\b(?:\d{1,3}\.){3}\d{1,3}\b)
         |(?<card>\b\d(?:[ -]?\d){12,18}\b)
         |(?<phone>(?<!\w)\+?\(?\d[\d ()-]{7,}\d\b)
-        |(?<key>\b[A-Za-z0-9_-]{24,}\b)
+        |(?<key>\b[A-Za-z0-9_-]{20,}\b)
         """, RegexOptions.IgnorePatternWhitespace | RegexOptions.CultureInvariant)]
     private static partial Regex Pattern();
 }

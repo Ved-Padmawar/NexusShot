@@ -86,7 +86,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
     }
 
     /// <summary>A band across the screen, refitted as the restore list shrinks.</summary>
-    private void Relayout()
+    public void Relayout()
     {
         var work = Monitors.WorkAreaUnderCursor();
         _scale = Monitors.DpiScaleUnderCursor(Handle);
@@ -144,6 +144,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         _resources ??= new D2DResources(target);
         _ui ??= new Ui(_resources);
         _ui.Theme = SystemTheme.Resolve(AppTheme.Dark, _stack.Settings.Accent);
+        _ui.Scale = _scale;
         var ui = _ui;
         var theme = ui.Theme;
 

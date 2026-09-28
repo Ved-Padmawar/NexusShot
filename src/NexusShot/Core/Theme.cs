@@ -53,6 +53,10 @@ public sealed record Theme
 
     public required Rgba Danger { get; init; }
 
+    /// <summary>A favourite's star: gold in every accent, so a starred capture reads as starred rather
+    /// than as one more accent-coloured control.</summary>
+    public required Rgba Favorite { get; init; }
+
     /// <summary>What dims the window behind a modal sheet.</summary>
     public required Rgba Scrim { get; init; }
     /// <summary>The colour of drop shadows. Stronger in dark: a shadow has to read against a surface
@@ -112,6 +116,7 @@ public sealed record Theme
         AccentSoft = default, AccentText = default, AccentLine = default,
 
         Danger = Hex("#FF5A4E"),
+        Favorite = Hex("#FFC53D"),
         Scrim = Hex("#040406", 158),
         Shadow = Hex("#000000", 140),
     };
@@ -141,6 +146,7 @@ public sealed record Theme
         AccentSoft = default, AccentText = default, AccentLine = default,
 
         Danger = Hex("#E0362B"),
+        Favorite = Hex("#E0A100"),
         Scrim = Hex("#E6E6E4", 153),
         Shadow = Hex("#141428", 46),
     };

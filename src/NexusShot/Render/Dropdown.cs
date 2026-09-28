@@ -67,11 +67,10 @@ public sealed class Dropdown
         if (_openId == 0) return;
 
         var s = ui.Scale;
-        var rowHeight = 30 * s;
-        var padding = 4 * s;
+        var rowHeight = 32 * s;
         var gap = 6 * s;
 
-        var height = _options.Count * rowHeight + padding * 2;
+        var height = _options.Count * rowHeight;
         var width = Math.Max(_anchor.Width,
             _options.Max(option => ui.MeasureText(option, Metrics.FontMd * s)) + 52 * s);
 
@@ -91,29 +90,28 @@ public sealed class Dropdown
         var radius = (float)(Metrics.RadiusMd * s);
         ui.FloatShadow(menu, radius);
         ui.FillRounded(menu, radius, ui.Theme.SurfaceRaised);
-        ui.StrokeRounded(menu, radius, ui.Theme.StrokeDefault);
 
+        // Rows run edge to edge, clipped to the menu's rounded corners.
+        int? chosen = null;
+        ui.PushRoundedLayer(menu, radius);
         for (var i = 0; i < _options.Count; i++)
         {
-            var row = new Rect(menu.X + padding, menu.Y + padding + i * rowHeight, menu.Width - padding * 2, rowHeight);
-
+            var row = new Rect(menu.X, menu.Y + i * rowHeight, menu.Width, rowHeight);
             var id = Ui.Id(_openId, i);
-            if (ui.Interact(id, row))
-            {
-                var commit = _commit;
-                var chosen = i;
-                _openId = 0;
-                if (chosen != _selected) commit?.Invoke(chosen);
-                return;
-            }
+            if (ui.Interact(id, row)) chosen = i;
 
-            if (ui.IsHot(id)) ui.FillRounded(row, (float)(Metrics.RadiusSm * s), ui.Theme.SurfaceHover);
-            ui.Text(_options[i], new Rect(row.X + 10 * s, row.Y, row.Width - 30 * s, row.Height),
+            if (ui.IsHot(id)) ui.FillRect(row, ui.Theme.SurfaceHover);
+            ui.Text(_options[i], new Rect(row.X + 14 * s, row.Y, row.Width - 44 * s, row.Height),
                 ui.Theme.TextPrimary, Metrics.FontMd * s);
-
-            // A dot, not a filled row: a filled row reads as the hovered one.
             if (i == _selected)
-                ui.FillCircle(new Point(row.Right - 13 * s, row.Center.Y), (float)(3 * s), ui.Theme.Accent);
+                ui.Icon(Icons.Tick, new Rect(row.Right - 30 * s, row.Y, 20 * s, row.Height), ui.Theme.AccentText, 16 * s);
         }
+        ui.PopLayer();
+        ui.StrokeRounded(menu, radius, ui.Theme.StrokeDefault);
+
+        if (chosen is not { } pick) return;
+        var commit = _commit;
+        _openId = 0;
+        if (pick != _selected) commit?.Invoke(pick);
     }
 }

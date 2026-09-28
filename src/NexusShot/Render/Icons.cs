@@ -81,6 +81,7 @@ public static class Icons
 
     // Capture.
     public static readonly Icon CaptureRegion = new("M4 8.5V4h4.5M15.5 4H20v4.5M20 15.5V20h-4.5M8.5 20H4v-4.5M12 9v6M9 12h6");
+    public static readonly Icon CaptureFreeform = new("M3.5 9.5a8.5 5 0 1 1 5 4.6M8.5 14.1c-1.6.6-2.4 1.7-2 2.9.5 1.4 2.3 1.9 3.9 1.2");
     public static readonly Icon CaptureWindow = new(Rect(3, 4.5, 18, 15, 2.2) + "M3 9h18M6 6.8h.01M8.5 6.8h.01");
     public static readonly Icon CaptureScreen = new(Rect(3, 4, 18, 12.5, 2) + "M8.5 20.5h7M12 16.5v4");
     public static readonly Icon Timer = new(Circle(12, 13.5, 7.5) + "M12 9.5v4l2.5 2M9.5 2.5h5");

@@ -106,6 +106,9 @@ public sealed class AppSettings
     public bool CheckForUpdates { get; set; } = true;
     public bool IncludeCursor { get; set; }
 
+    /// <summary>The magnifier beside the pointer in the region picker.</summary>
+    public bool ShowMagnifier { get; set; } = true;
+
     /// <summary>The written format of new captures.</summary>
     public ImageFormat CaptureFormat { get; set; } = ImageFormat.Png;
 

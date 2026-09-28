@@ -106,6 +106,18 @@ public sealed class CapturePipeline : IDisposable
         _strip.Open();
     }
 
+    /// <summary>A capture deleted in the Library or in Explorer leaves no card up and nothing to
+    /// restore.</summary>
+    public void ForgetCapture(string path)
+    {
+        if (QuickAccess.Forget(path) is { } card && _previews.Remove(card, out var preview))
+        {
+            preview.Dismiss();
+            ReflowPreviews();
+        }
+        _strip?.Relayout();
+    }
+
     /// <summary>False when the file is gone, which also drops it from the restore list.</summary>
     public bool Restore(ScreenshotHistoryItem item)
     {

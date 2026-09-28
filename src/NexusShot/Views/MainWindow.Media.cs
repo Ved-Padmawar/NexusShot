@@ -214,6 +214,7 @@ public sealed partial class MainWindow
         _history.Remove(item);
         _selection.Forget(item.FilePath);
         DropCache(item.FilePath);
+        CaptureDeleted?.Invoke(item.FilePath);
         return true;
     }
 

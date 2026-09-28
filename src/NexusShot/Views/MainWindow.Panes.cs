@@ -138,7 +138,8 @@ public sealed partial class MainWindow
 
         var favorites = new Rect(period.X - S(8) - S(32), row.Center.Y - S(16), S(32), S(32));
         if (ui.IconButton(Ui.Id("library.favorites"), favorites, _filter.FavoritesOnly ? Icons.StarFilled : Icons.Star,
-            _filter.FavoritesOnly ? "Show all captures" : "Show favorites only", on: _filter.FavoritesOnly))
+            _filter.FavoritesOnly ? "Show all captures" : "Show favorites only",
+            tint: _filter.FavoritesOnly ? ui.Theme.Favorite : null))
             Filter(_filter with { FavoritesOnly = !_filter.FavoritesOnly });
 
         if (ShowsUpdateButton)
@@ -420,21 +421,21 @@ public sealed partial class MainWindow
         {
             var badge = new Rect(image.X + S(8), image.Y + S(8), S(24), S(24));
             ui.FillRounded(badge, (float)S(12), Rgba.Black.WithAlpha((byte)(150 * (1 - look.Shown))));
-            ui.Icon(Icons.StarFilled, badge, theme.Accent.WithAlpha((byte)(255 * (1 - look.Shown))), S(14));
+            ui.Icon(Icons.StarFilled, badge, theme.Favorite.WithAlpha((byte)(255 * (1 - look.Shown))), S(14));
         }
 
         var overlayClicked = false;
         if (look.Shown > 0.01)
         {
-            (Icon Icon, string Tip, Action Run, bool Danger)[] actions =
+            (Icon Icon, string Tip, Action Run, bool Danger, Rgba? Tint)[] actions =
             [
-                (Icons.Delete, "Delete", () => AskDelete([item]), true),
+                (Icons.Delete, "Delete", () => AskDelete([item]), true, null),
                 (item.Favorite ? Icons.StarFilled : Icons.Star, item.Favorite ? "Remove from favorites" : "Add to favorites",
-                    () => ToggleFavorite(item), false),
-                (Icons.Folder, "Show in folder", () => Reveal(item.FilePath), false),
-                (look.Copied ? Icons.Tick : Icons.Copy, look.Copied ? "Copied" : "Copy", () => Post(() => CopyToClipboard(item)), false),
-                (Icons.Share, "Share", () => Post(() => Share(item)), false),
-                (Icons.Edit, "Open in editor", () => Post(() => EditRequested?.Invoke(item)), false),
+                    () => ToggleFavorite(item), false, item.Favorite ? theme.Favorite : null),
+                (Icons.Folder, "Show in folder", () => Reveal(item.FilePath), false, null),
+                (look.Copied ? Icons.Tick : Icons.Copy, look.Copied ? "Copied" : "Copy", () => Post(() => CopyToClipboard(item)), false, null),
+                (Icons.Share, "Share", () => Post(() => Share(item)), false, null),
+                (Icons.Edit, "Open in editor", () => Post(() => EditRequested?.Invoke(item)), false, null),
             ];
             var size = S(28);
             var x = image.Right - S(8) - actions.Length * size - (actions.Length - 1) * S(4);
@@ -443,7 +444,7 @@ public sealed partial class MainWindow
             {
                 var button = new Rect(x + i * (size + S(4)), y, size, size);
                 if (ui.OverlayButton(Ui.Id(id, 10 + i), button, actions[i].Icon, S(15), actions[i].Tip,
-                    on: look.Copied && actions[i].Icon == Icons.Tick, destructive: actions[i].Danger))
+                    on: look.Copied && actions[i].Icon == Icons.Tick, destructive: actions[i].Danger, tint: actions[i].Tint))
                 {
                     actions[i].Run();
                     overlayClicked = true;

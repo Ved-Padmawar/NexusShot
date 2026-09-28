@@ -62,6 +62,18 @@ public class EditorPowerToolTests
     }
 
     [Fact]
+    public void PaintOrderIsOfferedOnlyWhenTheSelectionOverlapsSomething()
+    {
+        var document = NewDocument();
+        Draw(document, EditorTool.Rectangle, new Point(10, 10), new Point(50, 50));
+        Draw(document, EditorTool.Rectangle, new Point(300, 300), new Point(350, 350));
+        Assert.False(document.SelectionOverlaps);
+
+        Draw(document, EditorTool.Ellipse, new Point(30, 30), new Point(80, 80));
+        Assert.True(document.SelectionOverlaps);
+    }
+
+    [Fact]
     public void DashingAppliesToTheSelectionAndToWhatIsDrawnNext()
     {
         var document = NewDocument();

@@ -7,7 +7,10 @@ public class RegionPickerTests
 {
     private static readonly Size Desktop = new(1920, 1080);
 
-    private static RegionPicker NewPicker(Rect? last = null, params Rect[] windows) => new(Desktop, windows, last);
+    private static readonly Rect[] Screens = [new(0, 0, 1920, 1080)];
+
+    private static RegionPicker NewPicker(Rect? last = null, params Rect[] windows) =>
+        new(Desktop, windows, Screens, last, PickerMode.Region);
 
     [Fact]
     public void ADragSelectsWholePixels()
@@ -30,7 +33,7 @@ public class RegionPickerTests
         var picker = NewPicker(null, front, behind);
 
         picker.Move(new Point(1850, 100));
-        Assert.Equal(new Rect(1800, 50, 120, 300), picker.HoveredWindow);
+        Assert.Equal(new Rect(1800, 50, 120, 300), picker.Target);
 
         picker.Press(new Point(1850, 100));
         Assert.Equal(new Rect(1800, 50, 120, 300), picker.Release(new Point(1850, 100))!.Region);
@@ -80,7 +83,7 @@ public class RegionPickerTests
     public void ALassoCarriesItsOutlineRelativeToItsBounds()
     {
         var picker = NewPicker();
-        picker.ToggleShape();
+        picker.SetMode(PickerMode.Freeform);
         picker.Press(new Point(100, 100));
         picker.Move(new Point(200, 100));
         picker.Move(new Point(200, 200));
@@ -89,18 +92,84 @@ public class RegionPickerTests
 
         Assert.Equal(new Rect(100, 100, 100, 100), result!.Region);
         Assert.Equal([new Point(0, 0), new Point(100, 0), new Point(100, 100), new Point(0, 100)], result.Outline);
-        Assert.Null(picker.HoveredWindow);
+        Assert.Null(picker.Target);
     }
 
     [Fact]
-    public void TheShapeCannotChangeMidDrag()
+    public void TheModeCannotChangeMidDrag()
     {
         var picker = NewPicker();
         picker.Press(new Point(100, 100));
-        picker.ToggleShape();
+        picker.NextMode();
 
-        Assert.Equal(PickerShape.Rectangle, picker.Shape);
+        Assert.Equal(PickerMode.Region, picker.Mode);
         Assert.Null(picker.Release(new Point(300, 200))!.Outline);
+    }
+
+    [Fact]
+    public void WindowModeTakesOnlyWhatIsClicked()
+    {
+        var window = new Rect(200, 200, 400, 300);
+        var picker = new RegionPicker(Desktop, [window], Screens, null, PickerMode.Window);
+
+        picker.Press(new Point(250, 250));
+        picker.Move(new Point(500, 450));
+
+        Assert.Null(picker.Selection);
+        Assert.Equal(window, picker.Release(new Point(500, 450))!.Region);
+    }
+
+    [Fact]
+    public void ScreenModeTakesTheMonitorUnderThePointer()
+    {
+        Rect[] screens = [new(0, 0, 960, 1080), new(960, 0, 960, 1080)];
+        var picker = new RegionPicker(Desktop, [new Rect(0, 0, 1920, 1080)], screens, null, PickerMode.Screen);
+
+        picker.Press(new Point(1500, 500));
+
+        Assert.Equal(screens[1], picker.Release(new Point(1500, 500))!.Region);
+    }
+
+    [Fact]
+    public void TextModeReadsADraggedAreaOrAClickedWindow()
+    {
+        var window = new Rect(200, 200, 400, 300);
+        var picker = new RegionPicker(Desktop, [window], Screens, null, PickerMode.Text);
+
+        picker.Press(new Point(10, 10));
+        var area = picker.Release(new Point(110, 60))!;
+        Assert.True(area.Text);
+        Assert.Equal(new Rect(10, 10, 100, 50), area.Region);
+
+        picker.SetTextScope(TextScope.Window);
+        picker.Press(new Point(300, 300));
+        Assert.Equal(window, picker.Release(new Point(380, 390))!.Region);
+    }
+
+    [Fact]
+    public void RepeatingTheLastAreaInTextModeReadsIt()
+    {
+        var picker = new RegionPicker(Desktop, [], Screens, new Rect(10, 20, 30, 40), PickerMode.Text);
+
+        var result = picker.RepeatLast()!;
+
+        Assert.True(result.Text);
+        Assert.Equal(new Rect(10, 20, 30, 40), result.Region);
+    }
+
+    [Fact]
+    public void TabCyclesThroughEveryModeAndBack()
+    {
+        var picker = NewPicker();
+        var seen = new List<PickerMode>();
+        for (var i = 0; i < 5; i++)
+        {
+            seen.Add(picker.Mode);
+            picker.NextMode();
+        }
+
+        Assert.Equal(Enum.GetValues<PickerMode>(), seen);
+        Assert.Equal(PickerMode.Region, picker.Mode);
     }
 
     [Fact]

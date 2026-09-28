@@ -224,6 +224,8 @@ public sealed partial class MainWindow
                     step => _settings.TimedCaptureSeconds = Math.Clamp(_settings.TimedCaptureSeconds + step, 1, 30))),
             Row("Include cursor", null, ToggleWidth,
                 rect => Toggle(ui, "settings.cursor", rect, _settings.IncludeCursor, value => _settings.IncludeCursor = value)),
+            Row("Show magnifier", "Beside the pointer while choosing what to capture", ToggleWidth,
+                rect => Toggle(ui, "settings.magnifier", rect, _settings.ShowMagnifier, value => _settings.ShowMagnifier = value)),
             Row("Find text in captures", "Reads each capture in the background, so search finds it by its words", ToggleWidth,
                 rect => Toggle(ui, "settings.findtext", rect, _settings.FindTextInCaptures,
                     value => _settings.FindTextInCaptures = value)),

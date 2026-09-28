@@ -15,7 +15,6 @@ public static class Loupe
     public static unsafe void Draw(Ui ui, IComObject<ID2D1RenderTarget> target, ImageSurface snapshot,
         Point pointer, Size desktop, string caption, Rgba? swatch = null)
     {
-        var theme = ui.Theme;
         var s = ui.Scale;
         var cell = Cell * s;
         var size = Pixels * cell;
@@ -43,17 +42,20 @@ public static class Loupe
         ui.StrokeRounded(centre.Deflate(-1 * s), 0, Rgba.Black.WithAlpha(160), (float)(3 * s));
         ui.StrokeRounded(centre, 0, Rgba.White, (float)(1.5 * s));
 
-        var pill = new Rect(loupe.X, loupe.Bottom + 6 * s, loupe.Width, label - 6 * s);
-        ui.FillRounded(pill, (float)(pill.Height / 2), theme.SurfaceRaised);
-        ui.StrokeRounded(pill, (float)(pill.Height / 2), theme.StrokeDefault);
-        var text = new Rect(pill.X + 10 * s, pill.Y, pill.Width - 20 * s, pill.Height);
+        // Bare text, centred under the loupe; the shadow keeps it legible over any capture.
+        var font = 13 * s;
+        var width = Math.Ceiling(ui.MeasureText(caption, font, Weight.Bold, Face.Mono)) + 1;
+        var well = swatch is null ? 0 : 20 * s;
+        var line = new Rect(loupe.Center.X - (well + width) / 2, loupe.Bottom + 6 * s, well + width, label - 6 * s);
         if (swatch is { } color)
         {
-            var well = new Rect(pill.X + 6 * s, pill.Center.Y - 7 * s, 14 * s, 14 * s);
-            ui.FillRounded(well, (float)(3 * s), color);
-            ui.StrokeRounded(well, (float)(3 * s), theme.StrokeStrong);
-            text = new Rect(well.Right + 6 * s, pill.Y, pill.Width - 26 * s, pill.Height);
+            var chip = new Rect(line.X, line.Center.Y - 7 * s, 14 * s, 14 * s);
+            ui.FillRounded(chip, (float)(3 * s), color);
+            ui.StrokeRounded(chip, (float)(3 * s), Rgba.White.WithAlpha(200));
         }
-        ui.Text(caption, text, theme.TextPrimary, 12 * s, Weight.Semibold, face: Face.Mono);
+        var text = new Rect(line.X + well, line.Y, width, line.Height);
+        ui.Text(caption, new Rect(text.X + s, text.Y + s, text.Width, text.Height), Rgba.Black.WithAlpha(200), font,
+            Weight.Bold, face: Face.Mono);
+        ui.Text(caption, text, Rgba.White, font, Weight.Bold, face: Face.Mono);
     }
 }

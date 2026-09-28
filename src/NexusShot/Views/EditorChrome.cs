@@ -166,7 +166,7 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         }
 
         var copyClose = Take(ui.ButtonWidth("Copy & close", Icons.Copy, small: true), S(28));
-        if (ui.Button(Ui.Id("editor.copyclose"), copyClose, "Copy & close", ButtonStyle.Primary,
+        if (ui.Button(Ui.Id("editor.copyclose"), copyClose, "Copy & close", ButtonStyle.Tinted,
             Icons.Copy, small: true, enabled: enabled)) Requested = Command.CopyAndClose;
 
         var save = Take(ui.ButtonWidth("Save", Icons.Save, small: true), S(28));
@@ -294,11 +294,8 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         if (isText) groups.Add((S(30 * 3 + 4), rect => DrawTextGroup(rect, frame.TextStyle)));
         if (isCounter) groups.Add((CounterGroupWidth(document), rect => DrawCounterGroup(rect, document)));
         if (isRedact && selected is null) groups.Add((FindSensitiveWidth(), DrawFindSensitive));
-        if (selected is not null)
-        {
-            groups.Add((S(30 * 2 + 2), rect => DrawLayerGroup(rect, document)));
-            groups.Add((S(28), rect => DrawDeleteButton(rect, document)));
-        }
+        if (document.SelectionOverlaps) groups.Add((S(30 * 2 + 2), rect => DrawLayerGroup(rect, document)));
+        if (selected is not null) groups.Add((S(28), rect => DrawDeleteButton(rect, document)));
         if (groups.Count == 0)
         {
             var hint = tool == EditorTool.Spotlight ? "Drag to spotlight an area · Shift for square" : "Drag to highlight";
@@ -463,10 +460,10 @@ public sealed class EditorChrome(Ui ui) : IDisposable
     {
         var shift = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0;
         if (ui.IconButton(Ui.Id("editor.forward"), new Rect(row.X, row.Center.Y - S(14), S(30), S(28)), Icons.BringForward,
-            "Bring forward · Shift: to front", "Ctrl ]", iconSize: 15))
+            "Bring in front of what it overlaps · Shift: to the very front", "Ctrl ]", iconSize: 15))
             document.Reorder(shift ? LayerMove.Front : LayerMove.Forward);
         if (ui.IconButton(Ui.Id("editor.backward"), new Rect(row.X + S(32), row.Center.Y - S(14), S(30), S(28)), Icons.SendBackward,
-            "Send backward · Shift: to back", "Ctrl [", iconSize: 15))
+            "Send behind what it overlaps · Shift: to the very back", "Ctrl [", iconSize: 15))
             document.Reorder(shift ? LayerMove.Back : LayerMove.Backward);
     }
 

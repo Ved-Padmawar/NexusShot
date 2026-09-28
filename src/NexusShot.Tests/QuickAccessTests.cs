@@ -81,6 +81,19 @@ public class QuickAccessTests
     }
 
     [Fact]
+    public void ADeletedCapturesOpenCardGoesWithoutEnteringTheRestoreList()
+    {
+        var stack = new QuickAccess(new AppSettings());
+        var card = stack.Show(Capture("a"));
+
+        Assert.Same(card, stack.Forget(card.Item.FilePath));
+
+        Assert.Empty(stack.Open);
+        stack.Close(card);
+        Assert.Empty(stack.RecentlyClosed);
+    }
+
+    [Fact]
     public void CountdownClosesTheCardWhenItRunsOut()
     {
         var stack = new QuickAccess(new AppSettings { PreviewDismissSeconds = 2 });

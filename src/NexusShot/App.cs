@@ -40,6 +40,7 @@ public sealed class App : IDisposable
         _main.CaptureRequested += Capture;
         _main.CaptureTextRequested += CaptureText;
         _main.PasteRequested += Paste;
+        _main.CaptureDeleted += _pipeline.ForgetCapture;
         _main.TimedCaptureRequested += TimedCapture;
         _main.HotkeysChanged += ApplyHotkeys;
         _main.InstallRequested += InstallUpdate;
@@ -269,29 +270,40 @@ public sealed class App : IDisposable
     /// or another monitor layout, is rarely the one wanted.</summary>
     private RectInt? _lastRegion;
 
-    private DecodedImage? PickRegion(bool includeCursor)
-    {
-        if (RegionOverlay.Pick(includeCursor, Theme, _lastRegion) is not { } picked) return null;
-        _lastRegion = picked.Region;
-        return picked.Pixels;
-    }
+    private void Capture(CaptureMode mode) => Capture(mode, PickerMode.Region);
 
-    private void Capture(CaptureMode mode)
+    /// <summary>Picks something to read. The picker can still be switched to take an image instead.</summary>
+    private void CaptureText() => Capture(CaptureMode.Region, PickerMode.Text);
+
+    /// <summary>The picker, for a region capture, opens in <paramref name="picker"/>'s mode; its result
+    /// is filed, or read when the picker ended in Text.</summary>
+    private void Capture(CaptureMode mode, PickerMode picker)
     {
         if (_captureRunning) return;
         _captureRunning = true;
         try
         {
-            // Sampled before focus changes, the app's name included; only encoding/filing is deferred.
-            var cursor = _settings.IncludeCursor;
+            // Sampled before focus changes; a pointer drawn into a text capture would only hide letters.
+            var cursor = _settings.IncludeCursor && picker != PickerMode.Text;
             var app = _settings.NameAfterApp ? ForegroundApp.Name() : null;
-            var pixels = mode switch
+            DecodedImage pixels;
+            if (mode == CaptureMode.FullScreen) pixels = ScreenCapture.CaptureFullScreen(cursor);
+            else if (mode == CaptureMode.ActiveWindow) pixels = ScreenCapture.CaptureActiveWindow(cursor);
+            else
             {
-                CaptureMode.FullScreen => ScreenCapture.CaptureFullScreen(cursor),
-                CaptureMode.ActiveWindow => ScreenCapture.CaptureActiveWindow(cursor),
-                _ => PickRegion(cursor),
-            };
-            if (pixels is null) { _captureRunning = false; return; }
+                if (RegionOverlay.Pick(cursor, Theme, _lastRegion, picker, _settings.ShowMagnifier) is not { } picked)
+                {
+                    _captureRunning = false;
+                    return;
+                }
+                _lastRegion = picked.Region;
+                if (picked.Text)
+                {
+                    _ = FinishCaptureText(picked.Pixels, _settings.OcrLanguage);
+                    return;
+                }
+                pixels = picked.Pixels;
+            }
             if (_settings.ShutterSound) Shutter.Play();
 
             // "Copy only" means the clipboard is the whole result, whatever the auto-copy setting says.
@@ -332,24 +344,6 @@ public sealed class App : IDisposable
 
     /// <summary>Picks a region and copies the text in it. Nothing is saved and no card appears: the
     /// text is the result, and a notification says how much there was.</summary>
-    private void CaptureText()
-    {
-        if (_captureRunning) return;
-        _captureRunning = true;
-        try
-        {
-            var pixels = PickRegion(includeCursor: false);
-            if (pixels is null) { _captureRunning = false; return; }
-            _ = FinishCaptureText(pixels, _settings.OcrLanguage);
-        }
-        catch (Exception exception)
-        {
-            _captureRunning = false;
-            Log.Error("capture_text.failed", exception);
-            UserFeedback.Error(_main.Handle, "Could not capture the screen. Please retry.");
-        }
-    }
-
     private async Task FinishCaptureText(DecodedImage pixels, string? language)
     {
         var lines = 0;
@@ -523,7 +517,11 @@ public sealed class App : IDisposable
             if (_disposed) return;
             var stale = !string.Equals(folder, _settings.ScreenshotFolder, StringComparison.OrdinalIgnoreCase);
             var result = _sync.Complete(_history, scan, stale, File.Exists, FileVersion.Read);
-            foreach (var path in result.Removed) _main.ForgetMissingCapture(path);
+            foreach (var path in result.Removed)
+            {
+                _main.ForgetMissingCapture(path);
+                _pipeline.ForgetCapture(path);
+            }
             foreach (var item in result.Refreshed)
             {
                 _main.DropCache(item.FilePath);
@@ -576,6 +574,7 @@ public sealed class App : IDisposable
         _main.CaptureRequested -= Capture;
         _main.CaptureTextRequested -= CaptureText;
         _main.PasteRequested -= Paste;
+        _main.CaptureDeleted -= _pipeline.ForgetCapture;
         _main.TimedCaptureRequested -= TimedCapture;
         _main.HotkeysChanged -= ApplyHotkeys;
         _main.RecordingChanged -= SuspendHotkeys;
