@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
@@ -57,8 +56,7 @@ public sealed partial class CountdownBadge : D2DRenderWindow
             work.X + (work.Width - size) / 2, work.Y + (int)Math.Round(24 * _scale), size, size,
             SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
-        var corner = DWMWCP_ROUND;
-        DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
+        WindowInterop.SetDwmAttribute(Handle, WindowInterop.DWMWA_WINDOW_CORNER_PREFERENCE, WindowInterop.DWMWCP_ROUND);
 
         WindowInterop.SetTimer(Handle, TickTimerId, 1000, IntPtr.Zero);
     }
@@ -102,7 +100,7 @@ public sealed partial class CountdownBadge : D2DRenderWindow
             // A destroyed window can still be in the next composed frame, so hide and flush first.
             WindowInterop.SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_HIDEWINDOW);
-            DwmFlush();
+            WindowInterop.DwmFlush();
 
             Close();
             return new LRESULT { Value = 0 };
@@ -130,13 +128,4 @@ public sealed partial class CountdownBadge : D2DRenderWindow
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
     private const uint SWP_HIDEWINDOW = 0x0080;
-
-    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
-    private const int DWMWCP_ROUND = 2;
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmFlush();
 }

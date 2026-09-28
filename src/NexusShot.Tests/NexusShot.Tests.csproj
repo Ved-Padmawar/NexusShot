@@ -3,7 +3,7 @@
   <PropertyGroup>
     <!-- Matches the app's target so the Core types under test compile against the same platform
          surface. AOT is deliberately off: the test host is a normal managed process. -->
-    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
 
     <Nullable>enable</Nullable>

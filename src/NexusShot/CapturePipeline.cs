@@ -18,12 +18,7 @@ public sealed class CapturePipeline : IDisposable
     private readonly List<ScreenshotHistoryItem> _history;
     private readonly MainWindow _main;
 
-    /// <summary>Editors, keyed by the file they are editing, so a second Edit on the same capture
-    /// raises the window that is already open rather than opening another.</summary>
-    private readonly Dictionary<string, EditorWindow> _editors = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>By reference: DirectN windows compare by handle, which is zero once destroyed, so a
-    /// handle-keyed set could never remove a closed editor.</summary>
-    private readonly HashSet<EditorWindow> _openEditors = new(ReferenceEqualityComparer.Instance);
+    private readonly EditorRegistry<EditorWindow> _editors = new(editor => editor.PendingSavePath);
 
     /// <summary>The window per open card; the cards themselves belong to <see cref="QuickAccess"/>.</summary>
     private readonly Dictionary<QuickAccessCard, FloatingPreview> _previews = [];
@@ -43,6 +38,14 @@ public sealed class CapturePipeline : IDisposable
 
         _main.EditRequested += Edit;
         _main.OpenRequested += Open;
+    }
+
+    /// <summary>A pasted image, filed like a capture, goes straight to the editor: pasting it was the
+    /// user asking to work on it.</summary>
+    public void LandInEditor(ScreenshotHistoryItem item)
+    {
+        _main.AddCapture(item);
+        Edit(item);
     }
 
     /// <summary>A filed capture joins the library, then goes where the user asked: a card, straight
@@ -118,14 +121,14 @@ public sealed class CapturePipeline : IDisposable
 
     /// <summary>Open editors with changes not yet saved. Commits any open text box first, since
     /// typed text counts.</summary>
-    public int UnsavedEditors => _openEditors.Count(editor => editor.HasUnsavedChanges());
+    public int UnsavedEditors => _editors.All.Count(editor => editor.HasUnsavedChanges());
 
     /// <summary>Closes every editor without asking: each saves first when <paramref name="save"/> is
     /// set, or drops its changes. A save that fails stops here, leaving that editor open with its
     /// error, and <paramref name="completed"/> does not run.</summary>
     public void CloseEditors(bool save, Action completed)
     {
-        foreach (var editor in _openEditors.ToArray())
+        foreach (var editor in _editors.All.ToArray())
         {
             if (save && editor.HasUnsavedChanges())
             {
@@ -139,7 +142,7 @@ public sealed class CapturePipeline : IDisposable
 
     public void CloseEditors(Action completed)
     {
-        foreach (var editor in _openEditors.ToArray())
+        foreach (var editor in _editors.All.ToArray())
         {
             if (!editor.RequestClose(() => CloseEditors(completed))) return;
             editor.Dispose();
@@ -205,33 +208,24 @@ public sealed class CapturePipeline : IDisposable
 
     private void Edit(ScreenshotHistoryItem item)
     {
-        var pending = _openEditors.FirstOrDefault(editor =>
-            string.Equals(editor.PendingSavePath, item.FilePath, StringComparison.OrdinalIgnoreCase));
-        if (pending is not null)
-        {
-            pending.Reveal();
-            return;
-        }
-        if (_editors.TryGetValue(item.FilePath, out var existing))
+        if (_editors.Owner(item.FilePath) is { } existing)
         {
             existing.Reveal();
             return;
         }
 
         var editor = new EditorWindow(item.FilePath, _settings, () => _storage.SaveSettings(_settings));
-        editor.CanSaveTo = path => !_openEditors.Any(other => !ReferenceEquals(other, editor)
-            && (string.Equals(other.FilePath, path, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(other.PendingSavePath, path, StringComparison.OrdinalIgnoreCase)));
-        _openEditors.Add(editor);
+        editor.CanSaveTo = path => _editors.CanSaveTo(editor, path);
         var editorPath = item.FilePath;
-        _editors[editorPath] = editor;
+        _editors.Add(editorPath, editor);
+
+        // One new card per editing session; later saves only refresh a card still up.
+        var carded = false;
 
         editor.Closed += () =>
         {
-            _openEditors.Remove(editor);
             // The editor releases its own device resources on destroy; this just drops our handle.
-            if (_editors.TryGetValue(editorPath, out var owner) && ReferenceEquals(owner, editor))
-                _editors.Remove(editorPath);
+            _editors.Remove(editor, editorPath);
 
             // The capture may have just been re-saved, so its cached bitmap is the old pixels.
             _main.DropCache(editorPath);
@@ -254,22 +248,24 @@ public sealed class CapturePipeline : IDisposable
             _main.DropCache(path);
             _main.Invalidate();
 
-            ShowPreview(entry ?? new ScreenshotHistoryItem
+            var saved = entry ?? new ScreenshotHistoryItem
             {
                 FilePath = path,
                 CapturedAt = DateTimeOffset.Now,
                 Width = width,
                 Height = height,
-            });
+            };
+            if (carded) RefreshExistingPreview(saved);
+            else ShowPreview(saved);
+            carded = true;
         };
 
         // Save As writes a new file; it belongs in the history, and gets a card of its own.
         editor.SavedAs += path =>
         {
-            if (_editors.TryGetValue(editorPath, out var owner) && ReferenceEquals(owner, editor))
-                _editors.Remove(editorPath);
+            _editors.Move(editor, editorPath, path);
             editorPath = path;
-            _editors[path] = editor;
+            carded = true;
             _main.DropCache(path);
             var (width, height) = ImageSurface.ReadSize(path);
             var existing = _history.FirstOrDefault(entry => string.Equals(entry.FilePath, path, StringComparison.OrdinalIgnoreCase));
@@ -305,15 +301,14 @@ public sealed class CapturePipeline : IDisposable
     /// opened with.</summary>
     public void RethemeEditors()
     {
-        foreach (var editor in _openEditors) editor.Retheme();
+        foreach (var editor in _editors.All) editor.Retheme();
     }
 
     public void Dispose()
     {
         _main.EditRequested -= Edit;
         _main.OpenRequested -= Open;
-        foreach (var editor in _openEditors.ToArray()) editor.Dispose();
-        _openEditors.Clear();
+        foreach (var editor in _editors.All.ToArray()) editor.Dispose();
         _editors.Clear();
 
         foreach (var preview in _previews.Values.ToArray()) preview.Dispose();

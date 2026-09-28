@@ -14,7 +14,7 @@ namespace NexusShot.Views;
 /// </summary>
 public abstract partial class CaptionWindow : D2DRenderWindow
 {
-    protected CaptionWindow(string title) : base(title) { }
+    protected CaptionWindow(string title, string? className = null) : base(title, className: className) { }
 
     protected override void CreateRenderTarget()
     {
@@ -163,7 +163,7 @@ public abstract partial class CaptionWindow : D2DRenderWindow
             SetCloaked(true);
             Show();
             RenderCore();
-            DwmFlush();
+            WindowInterop.DwmFlush();
         }
         SetCloaked(false);
         Show();
@@ -175,17 +175,8 @@ public abstract partial class CaptionWindow : D2DRenderWindow
 
     protected void SetCloaked(bool cloaked)
     {
-        var value = cloaked ? 1 : 0;
-        DwmSetWindowAttribute(Handle, DwmwaCloak, ref value, sizeof(int));
+        WindowInterop.SetDwmAttribute(Handle, WindowInterop.DWMWA_CLOAK, cloaked ? 1 : 0);
     }
-
-    private const int DwmwaCloak = 13;
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmFlush();
 
     /// <summary>Whether this window is the foreground one. An inactive window's caption glyphs dim,
     /// as the system's do.</summary>

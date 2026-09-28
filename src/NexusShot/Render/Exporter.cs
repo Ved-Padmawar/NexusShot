@@ -59,10 +59,22 @@ public static class Exporter
         // single-threaded factory and shared device must be serialized, not just creation.
         lock (_deviceLock)
         {
-            SaveCore(document, source, path, cropOverride);
+            try { SaveCore(document, source, path, cropOverride); }
+            catch (Exception exception) when (IsDeviceLost(exception.HResult))
+            {
+                // A driver reset kills the cached device; a fresh one recovers.
+                ReleaseDevice();
+                SaveCore(document, source, path, cropOverride);
+            }
             _release.Change(KeepAlive, Timeout.InfiniteTimeSpan);
         }
     }
+
+    private static bool IsDeviceLost(int hresult) => hresult is
+        unchecked((int)0x8899000C)      // D2DERR_RECREATE_TARGET
+        or unchecked((int)0x887A0005)   // DXGI_ERROR_DEVICE_REMOVED
+        or unchecked((int)0x887A0006)   // DXGI_ERROR_DEVICE_HUNG
+        or unchecked((int)0x887A0007);  // DXGI_ERROR_DEVICE_RESET
 
     private static void SaveCore(
         EditorDocument document, DecodedImage source, string path, Rect? cropOverride)

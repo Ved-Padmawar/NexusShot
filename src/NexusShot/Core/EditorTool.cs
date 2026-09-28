@@ -15,10 +15,14 @@ public enum EditorTool
     Highlight,
     Blur,
     Pixelate,
+    Redact,
     Counter,
     Spotlight,
     Crop,
 }
+
+/// <summary>A step through the paint order: one place, or all the way.</summary>
+public enum LayerMove { Forward, Backward, Front, Back }
 
 /// <summary>A grab point on the selected annotation: box corners and edges, or line endpoints.</summary>
 public enum ResizeHandle
@@ -51,6 +55,7 @@ public static class ToolShortcuts
         EditorTool.Highlight => 'H',
         EditorTool.Blur => 'B',
         EditorTool.Pixelate => 'P',
+        EditorTool.Redact => 'K',
         EditorTool.Spotlight => 'S',
         EditorTool.Crop => 'C',
         _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, null),

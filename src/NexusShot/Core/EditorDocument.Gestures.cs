@@ -41,7 +41,7 @@ public sealed partial class EditorDocument
         if (GrabExisting(point, handleTolerance)) return;
 
         Selected = null;
-        var history = (_undo.ToArray(), _redo.ToArray());
+        var history = (_undo.ToArray(), _redo.ToArray(), Revision);
         PushUndo();
         _creationHistory = history;
         _draft = new Annotation
@@ -49,11 +49,12 @@ public sealed partial class EditorDocument
             Tool = ActiveTool,
             Start = point,
             End = point,
-            ColorHex = ColorHex,
+            ColorHex = ActiveTool == EditorTool.Redact ? Annotation.RedactColor : ColorHex,
             StrokeThickness = ActiveThickness,
             CounterValue = ActiveTool == EditorTool.Counter ? NextCounter : 0,
             CounterRun = _counterRun,
             Fill = ShapeFill,
+            Dashed = DashedLines,
             Format = new TextFormat(TextStyle, TextFontSize),
         };
         if (_draft.IsStrokeTool) _draft.Points.Add(point);
@@ -90,7 +91,7 @@ public sealed partial class EditorDocument
                 return true;
             }
 
-            if (selected.HitTest(point))
+            if (selected.InFrame(point))
             {
                 _gesture = GestureKind.Move;
                 return true;
@@ -233,6 +234,29 @@ public sealed partial class EditorDocument
         }
 
         _draft = null;
+        Notify();
+    }
+
+    /// <summary>
+    /// Abandons the gesture as if it never began: the pointer was taken mid-drag (Alt+Tab, a UAC
+    /// prompt) and no release will come. The document returns to the state its undo entry recorded,
+    /// and the entry goes too. A crop frame keeps where it was dragged; it is not yet an edit.
+    /// </summary>
+    public void CancelGesture()
+    {
+        var gesture = _gesture;
+        _gesture = GestureKind.None;
+        _activeEraserMasks.Clear();
+        if (gesture == GestureKind.Draw && _creationHistory is { } history)
+        {
+            Restore(_undo.Peek());
+            _creationHistory = history;
+            RestoreCreationHistory();
+        }
+        else if (gesture is GestureKind.Move or GestureKind.Resize && _gestureUndoPushed)
+        {
+            Restore(_undo.Pop());
+        }
         Notify();
     }
 

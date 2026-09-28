@@ -54,7 +54,7 @@ public class HitTestTests
     }
 
     [Fact]
-    public void ARectangleIsHitInsideItsBounds()
+    public void AnOutlineRectangleIsPickedByItsOutlineButDraggedByItsFrame()
     {
         var rectangle = new Annotation
         {
@@ -63,8 +63,42 @@ public class HitTestTests
             End = new Point(300, 300),
         };
 
-        Assert.True(rectangle.HitTest(new Point(200, 200)));
+        Assert.True(rectangle.HitTest(new Point(102, 200)));
+        Assert.False(rectangle.HitTest(new Point(200, 200)));
         Assert.False(rectangle.HitTest(new Point(400, 200)));
+        Assert.True(rectangle.InFrame(new Point(200, 200)));
+    }
+
+    [Theory]
+    [InlineData(ShapeFill.Tinted)]
+    [InlineData(ShapeFill.Solid)]
+    public void AFilledRectangleIsPickedAnywhereInside(ShapeFill fill)
+    {
+        var rectangle = new Annotation
+        {
+            Tool = EditorTool.Rectangle,
+            Start = new Point(100, 100),
+            End = new Point(300, 300),
+            Fill = fill,
+        };
+
+        Assert.True(rectangle.HitTest(new Point(200, 200)));
+    }
+
+    [Fact]
+    public void AnEllipsesCornersAreNotPartOfIt()
+    {
+        var ellipse = new Annotation
+        {
+            Tool = EditorTool.Ellipse,
+            Start = new Point(100, 100),
+            End = new Point(300, 300),
+            Fill = ShapeFill.Solid,
+        };
+
+        Assert.True(ellipse.HitTest(new Point(200, 200)));
+        Assert.True(ellipse.HitTest(new Point(100, 200)));
+        Assert.False(ellipse.HitTest(new Point(110, 110)));
     }
 
     [Fact]

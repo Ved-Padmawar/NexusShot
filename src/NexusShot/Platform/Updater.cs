@@ -75,15 +75,29 @@ public static class Updater
 
         if (!Updates.IsSigned(digest, signature))
             throw new InvalidDataException("the download is not signed by NexusShot's release key");
+        await File.WriteAllTextAsync(SignaturePath(path), signature, token);
         return path;
     }
 
-    /// <summary>The caller exits straight after, so the installer can replace the running exe.</summary>
-    public static void Install(string installer) =>
+    /// <summary>
+    /// Verifies the installer again, then runs it; the caller exits straight after, so it can replace
+    /// the running exe. The prompt may have sat open for hours with the file in a user-writable
+    /// folder, so the check at download time does not vouch for what runs now.
+    /// </summary>
+    public static void Install(string installer)
+    {
+        byte[] digest;
+        using (var file = File.OpenRead(installer)) digest = SHA256.HashData(file);
+        if (!Updates.IsSigned(digest, File.ReadAllText(SignaturePath(installer))))
+            throw new InvalidDataException("the installer changed after it was verified");
+
         Process.Start(new ProcessStartInfo(installer, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1")
         {
             UseShellExecute = true,
         });
+    }
+
+    private static string SignaturePath(string installer) => installer + ".sig";
 
     /// <summary>GitHub's API refuses requests without a User-Agent.</summary>
     private static HttpClient CreateClient()

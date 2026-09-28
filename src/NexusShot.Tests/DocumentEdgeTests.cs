@@ -221,4 +221,15 @@ public class DocumentEdgeTests
     [InlineData(100, 0, 100)]
     public void ThePreviewShrinkFactorNeverDropsBelowOne(int width, int target, int factor) =>
         Assert.Equal(factor, Downsample.FactorFor(width, target));
+
+    [Theory]
+    [InlineData(800, 600, 1)]
+    [InlineData(10000, 400, 1)]
+    [InlineData(10001, 400, 2)]
+    [InlineData(400, 25000, 3)]
+    public void AnImageTooLargeToReadShrinksJustEnoughToFit(int width, int height, int factor)
+    {
+        Assert.Equal(factor, Downsample.FactorToFit(width, height, 10000));
+        Assert.True(Math.Max(width, height) / factor <= 10000);
+    }
 }

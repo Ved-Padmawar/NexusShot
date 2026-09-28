@@ -48,7 +48,7 @@ public class EditorFilesTests
         var files = new EditorFiles(document, NoPixels);
         files.OpenedAt(@"C:\shots\capture.png");
 
-        var result = files.PrepareSaveAs((_, _) => null);
+        var result = files.PrepareSaveAs((_, _, _) => null);
 
         Assert.Null(result);
         Assert.True(document.IsCropSessionActive);
@@ -63,7 +63,7 @@ public class EditorFilesTests
 
         string? offeredName = null;
         string? offeredFolder = null;
-        files.PrepareSaveAs((name, folder) =>
+        files.PrepareSaveAs((name, folder, _) =>
         {
             (offeredName, offeredFolder) = (name, folder);
             return null;
@@ -71,6 +71,24 @@ public class EditorFilesTests
 
         Assert.Equal("capture_edited.png", offeredName);
         Assert.Equal(@"C:\shots", offeredFolder);
+    }
+
+    [Fact]
+    public void SaveAsOffersTheSourcesOwnFormatFirstThenTheOthers()
+    {
+        var files = new EditorFiles(new EditorDocument(), NoPixels);
+        files.OpenedAt(@"C:\shots\photo.jpg");
+
+        string? offeredName = null;
+        IReadOnlyList<ImageFormat>? offered = null;
+        files.PrepareSaveAs((name, _, formats) =>
+        {
+            (offeredName, offered) = (name, formats);
+            return null;
+        });
+
+        Assert.Equal("photo_edited.jpg", offeredName);
+        Assert.Equal([ImageFormat.Jpeg, ImageFormat.Png, ImageFormat.Bmp], offered);
     }
 
     private static DecodedImage NoPixels() => DecodedImage.Allocate(1, 1);

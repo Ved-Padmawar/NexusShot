@@ -52,6 +52,27 @@ public sealed partial class Hotkeys(IntPtr window) : IDisposable
 
     public void Dispose() => UnregisterAll();
 
+    /// <summary>The id <see cref="ClaimEscape"/> registers under: the top of an application's range,
+    /// clear of every <see cref="HotkeyId"/>.</summary>
+    public const int EscapeId = 0xBFFF;
+
+    /// <summary>
+    /// Takes Esc system-wide until disposed, delivered to <paramref name="window"/> as WM_HOTKEY. For
+    /// a full-screen picker Windows may have refused the foreground - a timed capture opens it from a
+    /// timer, with no fresh input to earn it - so its own key messages would never arrive. If another
+    /// app holds Esc, the picker is left with its keyboard focus alone.
+    /// </summary>
+    public static EscapeClaim ClaimEscape(IntPtr window) =>
+        new(window, RegisterHotKey(window, EscapeId, MOD_NOREPEAT, (uint)VIRTUAL_KEY.VK_ESCAPE));
+
+    public readonly struct EscapeClaim(IntPtr window, bool held) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (held) UnregisterHotKey(window, EscapeId);
+        }
+    }
+
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);

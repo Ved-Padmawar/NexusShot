@@ -453,7 +453,7 @@ public sealed class ColorPicker
             ui.FillRect(slot, ui.IsHot(id) ? shade.Mix(Rgba.White, 0.08) : shade);
             if (shade == current) ui.StrokeRounded(slot.Deflate(1), 0, Rgba.White, (float)(2 * ui.Scale));
         }
-        ui.PopRoundedLayer();
+        ui.PopLayer();
         ui.StrokeRounded(strip, radius, ui.Theme.StrokeDefault);
         return picked;
     }

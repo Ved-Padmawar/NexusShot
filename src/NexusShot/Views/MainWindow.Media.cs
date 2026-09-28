@@ -169,13 +169,30 @@ public sealed partial class MainWindow
         _storage.SaveHistory(_history);
 
         var deleted = items.Count - failed;
-        if (deleted > 0) ShowToast(deleted == 1 ? "Deleted 1 capture" : $"Deleted {deleted} captures");
+        if (deleted > 0) ShowToast(deleted == 1 ? "Moved 1 capture to the Recycle Bin" : $"Moved {deleted} captures to the Recycle Bin");
         if (failed > 0)
             UserFeedback.Error(Handle, failed == 1
                 ? "Could not delete 1 image. It may be in use or outside the current screenshot folder."
                 : $"Could not delete {failed} images. They may be in use or outside the current screenshot folder.");
         Invalidate();
     }
+
+    /// <summary>Moves captures past the age the user keeps to the Recycle Bin. Quietly: this is
+    /// housekeeping they set up, not an action anyone is waiting on, and a file in use is simply
+    /// tried again next time.</summary>
+    public void SweepExpired()
+    {
+        var expired = Retention.Expired(_history, _settings.KeepCapturesDays, DateTimeOffset.Now)
+            .Where(item => IsUnder(item.FilePath, _settings.ScreenshotFolder)).ToList();
+        if (expired.Count == 0) return;
+        var removed = expired.Count(DeleteFile);
+        _storage.SaveHistory(_history);
+        Log.Info("retention.swept", $"{removed} of {expired.Count}");
+        Invalidate();
+    }
+
+    /// <summary>Replaceable, so tests delete their files outright instead of filling the Recycle Bin.</summary>
+    internal Action<string> DeleteToBin { get; set; } = RecycleBin.Delete;
 
     /// <summary>Removes the file and its row. False, with the failure logged, when the file could not
     /// go; the history is left for the caller to save once.</summary>
@@ -184,9 +201,9 @@ public sealed partial class MainWindow
         try
         {
             var full = Path.GetFullPath(item.FilePath);
-            if (!IsUnder(full, _settings.ScreenshotFolder) && !IsUnder(full, Path.GetTempPath()))
+            if (!IsUnder(full, _settings.ScreenshotFolder))
                 throw new InvalidOperationException("The image is outside the managed screenshot folder.");
-            File.Delete(full);
+            DeleteToBin(full);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
             or ArgumentException or InvalidOperationException)

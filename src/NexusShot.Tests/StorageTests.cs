@@ -53,17 +53,32 @@ public class StorageTests : IDisposable
         storage.SaveSettings(new AppSettings
         {
             ScreenshotFolder = _directory, Theme = AppTheme.Dark, PreviewDismissSeconds = 45,
-            SaveAutomatically = false, CopyToClipboardAutomatically = false,
+            CopyToClipboardAutomatically = false,
             CaptureRegionHotkey = new HotkeyBinding { Key = 0x78, Modifiers = 1 },
         });
         var read = new Storage(_directory).LoadSettings();
         Assert.Equal(_directory, read.ScreenshotFolder);
         Assert.Equal(AppTheme.Dark, read.Theme);
         Assert.Equal(45, read.PreviewDismissSeconds);
-        Assert.False(read.SaveAutomatically);
         Assert.False(read.CopyToClipboardAutomatically);
         Assert.Equal(0x78u, read.CaptureRegionHotkey.Key);
         Assert.Equal(1u, read.CaptureRegionHotkey.Modifiers);
+    }
+
+    [Fact]
+    public void FavoritesAndReadTextSurviveARestart()
+    {
+        var storage = new Storage(_directory);
+        storage.SaveHistory([new ScreenshotHistoryItem { FilePath = @"C:\s\a.png", CapturedAt = DateTimeOffset.Now, Favorite = true }]);
+        var texts = new TextIndex();
+        texts.Set(@"C:\s\a.png", new FileVersion(3, new DateTime(2026, 2, 3, 4, 5, 6, DateTimeKind.Utc)), "line one");
+        storage.SaveTextIndex(texts);
+
+        var reopened = new Storage(_directory);
+        Assert.True(Assert.Single(reopened.LoadHistory()).Favorite);
+        var read = reopened.LoadTextIndex();
+        Assert.Equal("line one", read.TextOf(@"C:\S\A.PNG"));
+        Assert.True(read.IsCurrent(@"C:\s\a.png", new FileVersion(3, new DateTime(2026, 2, 3, 4, 5, 6, DateTimeKind.Utc))));
     }
 
     public void Dispose() => Directory.Delete(_directory, recursive: true);

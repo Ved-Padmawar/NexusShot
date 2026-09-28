@@ -93,6 +93,20 @@ public sealed class DecodedImage : IDisposable
         return crop;
     }
 
+    /// <summary>Clears every pixel outside <paramref name="outline"/> to transparent, for a freeform
+    /// capture. Premultiplied, so transparent is all zeros.</summary>
+    public void KeepInside(IReadOnlyList<Core.Point> outline)
+    {
+        var pixels = Span;
+        var cleared = 0;
+        foreach (var (y, start, end) in Core.Polygon.InsideRuns(outline, Width, Height))
+        {
+            pixels[(cleared * 4)..((y * Width + start) * 4)].Clear();
+            cleared = y * Width + end;
+        }
+        pixels[(cleared * 4)..].Clear();
+    }
+
     /// <summary>The colour of one pixel, or null outside the image. Alpha is dropped: this reads a
     /// desktop snapshot, which is opaque, so the premultiplied bytes are the straight colour.</summary>
     public Core.Rgba? OpaquePixelAt(int x, int y)

@@ -13,6 +13,7 @@ public sealed class FolderWatcher : IDisposable
 {
     private readonly FileSystemWatcher _watcher;
     private readonly Timer _debounce;
+    private readonly Timer _retry;
     private readonly Action _changed;
     private volatile bool _disposed;
 
@@ -23,6 +24,7 @@ public sealed class FolderWatcher : IDisposable
         Directory.CreateDirectory(folder);
 
         _debounce = new Timer(_ => Fire(), null, Timeout.Infinite, Timeout.Infinite);
+        _retry = new Timer(_ => Rearm(), null, Timeout.Infinite, Timeout.Infinite);
 
         // Every format the app writes and opens, or a JPEG or BMP deleted in Explorer stays listed.
         _watcher = new FileSystemWatcher(folder) { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite };
@@ -47,7 +49,11 @@ public sealed class FolderWatcher : IDisposable
     /// The watcher's internal buffer overflowed, or the handle was lost: the events it dropped are
     /// gone, so the folder is rescanned rather than trusted to keep arriving.
     /// </summary>
-    private void OnError(object? sender, ErrorEventArgs e)
+    private void OnError(object? sender, ErrorEventArgs e) => Rearm();
+
+    /// <summary>Restarts the watcher and rescans. A network or removable folder can be gone for a
+    /// while, so a failed restart tries again every few seconds until the folder is back.</summary>
+    private void Rearm()
     {
         if (_disposed) return;
 
@@ -56,8 +62,11 @@ public sealed class FolderWatcher : IDisposable
             _watcher.EnableRaisingEvents = false;
             _watcher.EnableRaisingEvents = true;
         }
-        catch (Exception exception) when (exception is ObjectDisposedException or IOException)
+        catch (ObjectDisposedException) { return; }
+        catch (Exception exception) when (exception is IOException or ArgumentException)
         {
+            try { _retry.Change(5000, Timeout.Infinite); }
+            catch (ObjectDisposedException) { }
             return;
         }
 
@@ -93,5 +102,6 @@ public sealed class FolderWatcher : IDisposable
 
         _watcher.Dispose();
         _debounce.Dispose();
+        _retry.Dispose();
     }
 }

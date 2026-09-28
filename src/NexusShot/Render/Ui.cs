@@ -110,7 +110,7 @@ public sealed class Ui(D2DResources resources)
     public void EndFrame()
     {
         while (_clips.Count > 0) PopClip();
-        while (_layerMasks.Count > 0) PopRoundedLayer();
+        while (_layerMasks.Count > 0) PopLayer();
 
         if (Hot != _lastHot)
         {
@@ -263,19 +263,31 @@ public sealed class Ui(D2DResources resources)
     }
 
     /// <summary>
-    /// Clips everything drawn until <see cref="PopRoundedLayer"/> to a rounded rectangle, in the
+    /// Clips everything drawn until <see cref="PopLayer"/> to a rounded rectangle, in the
     /// target's current transform - so the editor can round the capture and everything painted on it
     /// in image space. A layer rather than per-draw geometry, because an annotation is many draws.
     /// </summary>
     public void PushRoundedLayer(Rect bounds, float radius)
     {
+        using var mask = resources.Factory.CreateRoundedRectangleGeometry(Rounded(bounds, radius));
+        PushMaskLayer(mask.Object, bounds);
+    }
+
+    /// <summary>Clips to a closed outline until <see cref="PopLayer"/>, as
+    /// <see cref="PushRoundedLayer"/> clips to a rounded rectangle.</summary>
+    public void PushPathLayer(IReadOnlyList<Point> outline, Rect bounds)
+    {
+        using var mask = resources.CreatePath(outline, closed: true);
+        PushMaskLayer(mask.Object, bounds);
+    }
+
+    private void PushMaskLayer(object mask, Rect bounds)
+    {
         using var context = _target.AsDeviceContext();
         if (context is null) return;
 
-        using var mask = resources.Factory.CreateRoundedRectangleGeometry(Rounded(bounds, radius));
-
         // An AddRef'd raw pointer, as the AOT-generated layer struct wants; released after the pop.
-        var maskPointer = ComObject.GetOrCreateComInstance(mask.Object);
+        var maskPointer = ComObject.GetOrCreateComInstance(mask);
         context.PushLayer(new D2D1_LAYER_PARAMETERS1
         {
             contentBounds = AnnotationRenderer.ToRect(bounds),
@@ -288,7 +300,7 @@ public sealed class Ui(D2DResources resources)
         _layerMasks.Push(maskPointer);
     }
 
-    public void PopRoundedLayer()
+    public void PopLayer()
     {
         if (_layerMasks.Count == 0) return;
         using var context = _target.AsDeviceContext();

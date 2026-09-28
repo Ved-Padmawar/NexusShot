@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
@@ -140,12 +139,11 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     /// otherwise, so it cannot read as a light edge against a dark capture.</summary>
     private void ApplyDwmChrome()
     {
-        var corner = DWMWCP_ROUND;
-        DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
+        WindowInterop.SetDwmAttribute(Handle, WindowInterop.DWMWA_WINDOW_CORNER_PREFERENCE, WindowInterop.DWMWCP_ROUND);
 
         var accent = Theme.Accent;
         var border = _hovered ? accent.R | accent.G << 8 | accent.B << 16 : DWMWA_COLOR_NONE;
-        DwmSetWindowAttribute(Handle, DWMWA_BORDER_COLOR, ref border, sizeof(int));
+        WindowInterop.SetDwmAttribute(Handle, WindowInterop.DWMWA_BORDER_COLOR, border);
     }
 
     protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)
@@ -220,11 +218,11 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     /// it to fade into.</summary>
     private void StartDismissAnimation()
     {
-        var style = GetWindowLongPtrW(Handle, GWL_EXSTYLE);
-        SetWindowLongPtrW(Handle, GWL_EXSTYLE, style | WS_EX_LAYERED);
+        var style = WindowInterop.GetWindowLongPtrW(Handle, GWL_EXSTYLE);
+        WindowInterop.SetWindowLongPtrW(Handle, GWL_EXSTYLE, style | WS_EX_LAYERED);
 
         // A freshly layered window has no alpha set and may stop painting; pin it opaque first.
-        SetLayeredWindowAttributes(Handle, 0, 255, LWA_ALPHA);
+        WindowInterop.SetLayeredAlpha(Handle, 255);
 
         WindowInterop.GetWindowRect(Handle, out var bounds);
         _dismissOriginX = bounds.Left;
@@ -240,7 +238,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         var progress = Math.Min(1, (Environment.TickCount64 - _dismissStarted) / durationMs);
         var eased = progress * (2 - progress);
 
-        SetLayeredWindowAttributes(Handle, 0, (byte)(255 * (1 - eased)), LWA_ALPHA);
+        WindowInterop.SetLayeredAlpha(Handle, (byte)(255 * (1 - eased)));
 
         var slide = (int)Math.Round(eased * S(8)) * CardLayout.DismissDirection(_stack.Settings.CardCorner);
         WindowInterop.SetWindowPos(Handle, HWND_TOPMOST, _dismissOriginX + slide, _dismissOriginY, 0, 0,
@@ -290,7 +288,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 if (!_hovered)
                 {
                     _hovered = true;
-                    TrackLeave();
+                    WindowInterop.TrackMouseLeave(Handle);
                     ApplyDwmChrome();
                 }
 
@@ -387,18 +385,6 @@ public sealed partial class FloatingPreview : D2DRenderWindow
             Math.Clamp((int)y, 0, decoded.Height));
     }
 
-    /// <summary>Asks for WM_MOUSELEAVE, which Windows does not send unless a window opts in.</summary>
-    private void TrackLeave()
-    {
-        var track = new TRACKMOUSEEVENT
-        {
-            cbSize = (uint)Marshal.SizeOf<TRACKMOUSEEVENT>(),
-            dwFlags = 0x00000002,   // TME_LEAVE
-            hwndTrack = Handle,
-            dwHoverTime = 0,
-        };
-        TrackMouseEvent(ref track);
-    }
 
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
@@ -426,40 +412,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
 
     private const int GWL_EXSTYLE = -20;
     private const nint WS_EX_LAYERED = 0x00080000;
-    private const uint LWA_ALPHA = 0x00000002;
-
-    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
-    private const int DWMWA_BORDER_COLOR = 34;
-    private const int DWMWCP_ROUND = 2;
 
     /// <summary>DWMWA_COLOR_NONE: suppresses the frame's border entirely.</summary>
     private const int DWMWA_COLOR_NONE = unchecked((int)0xFFFFFFFE);
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmSetWindowAttribute(
-        IntPtr window, int attribute, ref int value, int size);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct TRACKMOUSEEVENT
-    {
-        public uint cbSize;
-        public uint dwFlags;
-        public IntPtr hwndTrack;
-        public uint dwHoverTime;
-    }
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
-    private static partial nint GetWindowLongPtrW(IntPtr window, int index);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
-    private static partial nint SetWindowLongPtrW(IntPtr window, int index, nint value);
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetLayeredWindowAttributes(
-        IntPtr window, uint key, byte alpha, uint flags);
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool TrackMouseEvent(ref TRACKMOUSEEVENT track);
 }

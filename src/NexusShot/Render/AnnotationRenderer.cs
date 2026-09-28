@@ -62,6 +62,14 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
             if (_erasedStrokes.Remove(id, out var cached)) cached.Geometry.Dispose();
     }
 
+    /// <summary>A line's stroke: round-capped, dashed when asked.</summary>
+    private IComObject<ID2D1StrokeStyle> Stroke(Annotation annotation) =>
+        annotation.Dashed ? resources.DashedStroke : resources.RoundStroke;
+
+    /// <summary>An outline's stroke: D2D's default square corners unless dashed.</summary>
+    private IComObject<ID2D1StrokeStyle>? Outline(Annotation annotation) =>
+        annotation.Dashed ? resources.DashedStroke : null;
+
     public void DrawAnnotation(
         IComObject<ID2D1RenderTarget> target,
         Annotation annotation,
@@ -77,7 +85,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
                     var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, annotation.StrokeThickness);
                     if (bounds.IsEmpty) break;
                     if (FillColor(annotation) is { } fill) target.FillRectangle(ToRect(bounds), resources.Brush(fill));
-                    target.DrawRectangle(ToRect(bounds), resources.Brush(color), (float)annotation.StrokeThickness);
+                    target.DrawRectangle(ToRect(bounds), resources.Brush(color), (float)annotation.StrokeThickness, Outline(annotation));
                     break;
                 }
 
@@ -86,20 +94,20 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
                     var bounds = AdornerGeometry.InsetForStroke(annotation.Bounds, annotation.StrokeThickness);
                     if (bounds.IsEmpty) break;
                     if (FillColor(annotation) is { } fill) target.FillEllipse(ToEllipse(bounds), resources.Brush(fill));
-                    target.DrawEllipse(ToEllipse(bounds), resources.Brush(color), (float)annotation.StrokeThickness);
+                    target.DrawEllipse(ToEllipse(bounds), resources.Brush(color), (float)annotation.StrokeThickness, Outline(annotation));
                     break;
                 }
 
             case EditorTool.Line:
                 target.DrawLine(
                     ToPoint(annotation.Start), ToPoint(annotation.End),
-                    resources.Brush(color), (float)annotation.StrokeThickness, resources.RoundStroke);
+                    resources.Brush(color), (float)annotation.StrokeThickness, Stroke(annotation));
                 break;
 
             case EditorTool.Arrow:
                 target.DrawLine(
                     ToPoint(annotation.Start), ToPoint(ArrowGeometry.ShaftEnd(annotation)),
-                    resources.Brush(color), (float)annotation.StrokeThickness, resources.RoundStroke);
+                    resources.Brush(color), (float)annotation.StrokeThickness, Stroke(annotation));
                 FillPolygon(target, ArrowGeometry.Head(annotation), color);
                 break;
 
@@ -107,6 +115,11 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
                 if (annotation.Bounds.IsEmpty) break;
                 // A colour's own alpha lightens the highlighter further rather than being overridden.
                 target.FillRectangle(ToRect(annotation.Bounds), resources.Brush(color.WithAlpha((byte)(color.A * 90 / 255))));
+                break;
+
+            case EditorTool.Redact:
+                if (annotation.Bounds.IsEmpty) break;
+                target.FillRectangle(ToRect(annotation.Bounds), resources.Brush(color.WithAlpha(255)));
                 break;
 
             case EditorTool.Spotlight:

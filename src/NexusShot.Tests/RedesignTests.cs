@@ -230,12 +230,12 @@ public class RedesignTests
             Item("e.png", now.AddDays(-40)),
         ];
 
-        var groups = LibraryGroups.Build(history, "", now);
+        var groups = LibraryGroups.Build(history, new LibraryFilter(), now);
         Assert.Equal(["Today", "Yesterday", "This week", now.AddDays(-40).ToString("MMMM yyyy")],
             groups.Select(group => group.Title));
         Assert.Equal(2, groups[0].Items.Count);
 
-        var filtered = LibraryGroups.Build(history, "C.PNG", now);
+        var filtered = LibraryGroups.Build(history, new LibraryFilter("C.PNG"), now);
         Assert.Equal("c.png", Assert.Single(Assert.Single(filtered).Items).FileName);
     }
 
@@ -405,6 +405,22 @@ public class RedesignTests
         Assert.False(Updates.IsSigned(tampered, signature, publicKey));
         Assert.False(Updates.IsSigned(digest, "not a signature", publicKey));
         Assert.False(Updates.IsSigned(digest, signature));   // someone else's key, checked against ours
+    }
+
+    [Fact]
+    public void AnInstallerIsVerifiedAgainBeforeItRuns()
+    {
+        var folder = Directory.CreateTempSubdirectory("nexusshot-install-").FullName;
+        try
+        {
+            var installer = Path.Combine(folder, "NexusShot-9.9.9.exe");
+            File.WriteAllText(installer, "swapped after the download was verified");
+            File.WriteAllText(installer + ".sig", Convert.ToBase64String(new byte[64]));
+
+            var refusal = Assert.Throws<InvalidDataException>(() => NexusShot.Platform.Updater.Install(installer));
+            Assert.Contains("changed", refusal.Message);
+        }
+        finally { Directory.Delete(folder, recursive: true); }
     }
 
     [Fact]

@@ -17,28 +17,33 @@ public sealed class EditorFiles(EditorDocument document, Func<DecodedImage> pixe
     public ExportRequest PrepareSave()
     {
         Committing?.Invoke();
-        return new(document.CreateExportSnapshot(), pixels(), Path, Path);
+        return new(document.CreateExportSnapshot(), pixels(), Path, Path, document.Revision);
     }
 
-    public ExportRequest? PrepareSaveAs(Func<string, string?, string?> chooseDestination)
+    /// <summary><paramref name="chooseDestination"/> gets a suggested name, folder and the formats to
+    /// offer, the image's own first: an export re-encodes, so any of them can be written.</summary>
+    public ExportRequest? PrepareSaveAs(Func<string, string?, IReadOnlyList<ImageFormat>, string?> chooseDestination)
     {
-        var suggested = $"{System.IO.Path.GetFileNameWithoutExtension(Path)}_edited.png";
-        if (chooseDestination(suggested, System.IO.Path.GetDirectoryName(Path)) is not { } destination)
+        var format = ImageFiles.FormatOf(Path);
+        var suggested = System.IO.Path.GetFileNameWithoutExtension(Path) + "_edited" + ImageFiles.ExtensionOf(format);
+        ImageFormat[] formats = [format, .. Enum.GetValues<ImageFormat>().Where(other => other != format)];
+        if (chooseDestination(suggested, System.IO.Path.GetDirectoryName(Path), formats) is not { } destination)
             return null;
         Committing?.Invoke();
-        return new(document.CreateExportSnapshot(), pixels(), Path, System.IO.Path.GetFullPath(destination));
+        return new(document.CreateExportSnapshot(), pixels(), Path, System.IO.Path.GetFullPath(destination), document.Revision);
     }
 
     public void CompleteSave(ExportRequest request)
     {
         Path = request.Destination;
-        document.ResetAfterSave();
+        document.MarkSaved(request.Revision);
     }
 }
 
 /// <summary>Owned by one worker after preparation; contains no live view state. <paramref name="Source"/>
-/// names the image; <paramref name="Pixels"/> are what is flattened, and go with the request.</summary>
-public sealed record ExportRequest(EditorDocument Document, DecodedImage Pixels, string Source, string Destination)
+/// names the image; <paramref name="Pixels"/> are what is flattened, and go with the request.
+/// <paramref name="Revision"/> is the document state the export captured.</summary>
+public sealed record ExportRequest(EditorDocument Document, DecodedImage Pixels, string Source, string Destination, long Revision)
     : IDisposable
 {
     public void Save() => Exporter.Save(Document, Pixels, Destination);

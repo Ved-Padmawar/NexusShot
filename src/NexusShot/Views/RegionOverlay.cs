@@ -4,14 +4,17 @@ using NexusShot.Render;
 
 namespace NexusShot.Views;
 
+/// <summary>A picked region: its pixels, owned by the caller, and where it was on the desktop.</summary>
+public sealed record PickedRegion(DecodedImage Pixels, RectInt Region);
+
 /// <summary>
 /// The region picker: a full-desktop window showing a frozen snapshot of the screen, dimmed, with a
-/// bright cut-out that follows the drag.
+/// bright cut-out that follows the drag, the window under the pointer, or the lasso.
 ///
 /// It draws a *snapshot* rather than being transparent over the live desktop. That is what makes
 /// the selection stable - a live overlay has to fight the compositor and can catch its own dimming
 /// in the capture. The snapshot is taken before the window appears, so what the user selects is
-/// exactly what they get.
+/// exactly what they get. What the input means is <see cref="RegionPicker"/>'s to decide.
 /// </summary>
 public sealed partial class RegionOverlay : D2DRenderWindow
 {
@@ -30,28 +33,27 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     private const uint WmMouseMove = 0x0200;
     private const uint WmLButtonDown = 0x0201;
     private const uint WmLButtonUp = 0x0202;
+    private const uint WmRButtonDown = 0x0204;
     private const uint WmKeyDown = 0x0100;
     private const uint WmSetCursor = 0x0020;
 
+    private static readonly Rgba Dim = Rgba.Black.WithAlpha(110);
+
     private readonly RectInt _desktop;
     private readonly DecodedImage _snapshotPixels;
+    private readonly RegionPicker _picker;
 
     private D2DResources? _resources;
     private Ui? _ui;
     private ImageSurface? _snapshot;
 
-    private Point _origin;
-    private Point _cursor;
-    private bool _dragging;
-    private bool _hasSelection;
+    /// <summary>The choice in overlay pixels, or null if cancelled.</summary>
+    private PickResult? _result;
 
-    /// <summary>The chosen region in desktop coordinates, or null if cancelled.</summary>
-    public RectInt? Selection { get; private set; }
-
-    /// <summary>The app's theme, for the size badge's accent.</summary>
+    /// <summary>The app's theme, for the accents.</summary>
     private readonly Theme _theme;
 
-    public RegionOverlay(RectInt desktop, DecodedImage snapshotPixels, Theme theme)
+    private RegionOverlay(RectInt desktop, DecodedImage snapshotPixels, Theme theme, RegionPicker picker)
         : base("NexusShot region",
             (WINDOW_STYLE)WS_POPUP,
             (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
@@ -59,41 +61,54 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         _desktop = desktop;
         _snapshotPixels = snapshotPixels;
         _theme = theme;
+        _picker = picker;
     }
 
+    private static bool _isPicking;
+
     /// <summary>
-    /// Runs the picker to completion and returns owned cropped pixels, or null if
-    /// cancelled. Blocking, because a capture is a modal act: nothing else in the app can
-    /// meaningfully happen while the user is choosing what to grab.
+    /// Runs the picker to completion and returns owned pixels, or null if cancelled. Blocking, because
+    /// a capture is a modal act: nothing else in the app can meaningfully happen while the user is
+    /// choosing what to grab. <paramref name="lastRegion"/> is what Enter repeats.
     ///
     /// The result is cropped from the frozen snapshot, never re-captured from the live screen: the
     /// overlay's own activation dismisses any open menu, so a re-capture saves a changed desktop.
     /// </summary>
-    private static bool _isPicking;
+    public static PickedRegion? Pick(bool includeCursor, Theme theme, RectInt? lastRegion) =>
+        Pick(bounds => ScreenCapture.Capture(bounds, includeCursor), theme, lastRegion, ScreenCapture.VisibleWindows);
 
-    public static DecodedImage? Pick(bool includeCursor, Theme theme) =>
-        Pick(bounds => ScreenCapture.Capture(bounds, includeCursor), theme);
-
-    internal static DecodedImage? Pick(Func<RectInt, DecodedImage> capture, Theme? theme = null)
+    internal static PickedRegion? Pick(Func<RectInt, DecodedImage> capture, Theme? theme = null,
+        RectInt? lastRegion = null, Func<List<RectInt>>? windows = null)
     {
         if (_isPicking) return null;
         _isPicking = true;
         try
         {
             var desktop = ScreenCapture.VirtualDesktop;
+            Rect ToOverlay(RectInt rect) => new(rect.X - desktop.X, rect.Y - desktop.Y, rect.Width, rect.Height);
+
+            // Listed just before the snapshot, so snapping matches what is shown.
+            var snapTargets = (windows?.Invoke() ?? []).Select(ToOverlay).ToList();
             using var snapshot = capture(desktop);
-            RectInt? selection;
-            using (var overlay = new RegionOverlay(desktop, snapshot, theme ?? Theme.Dark))
+            var picker = new RegionPicker(new Size(desktop.Width, desktop.Height), snapTargets,
+                lastRegion is { } last ? ToOverlay(last) : null);
+
+            PickResult? result;
+            using (var overlay = new RegionOverlay(desktop, snapshot, theme ?? Theme.Dark, picker))
             {
+                if (WindowInterop.GetCursorPos(out var start))
+                    picker.Move(new Point(start.X - desktop.X, start.Y - desktop.Y));
                 ModalLoop.Run(overlay, desktop);
-                selection = overlay.Selection;
+                result = overlay._result;
             }
 
-            if (selection is not { } region) return null;
+            if (result is not { Region: var region }) return null;
 
-            // Return independent cropped pixels; encoding belongs to the media worker.
-            return snapshot.Crop(
-                region.X - desktop.X, region.Y - desktop.Y, region.Width, region.Height);
+            // Independent pixels; encoding belongs to the media worker.
+            var pixels = snapshot.Crop((int)region.X, (int)region.Y, (int)region.Width, (int)region.Height);
+            if (result.Outline is { } outline) pixels.KeepInside(outline);
+            return new PickedRegion(pixels,
+                new RectInt(desktop.X + (int)region.X, desktop.Y + (int)region.Y, pixels.Width, pixels.Height));
         }
         finally
         {
@@ -116,30 +131,40 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
         if (_snapshot is null || _ui is null) return;
         var ui = _ui;
-        ui.BeginFrame(target, _cursor, _dragging);
+        ui.BeginFrame(target, _picker.Pointer, _picker.IsDragging);
 
         var full = new Rect(0, 0, _desktop.Width, _desktop.Height);
+        var desktop = new Size(_desktop.Width, _desktop.Height);
 
-        // The frozen desktop, then a dim over all of it.
+        // The frozen desktop, then a dim over everything but what would be captured.
         renderTarget.DrawBitmap(
             _snapshot.Bitmap, 1f,
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
             AnnotationRenderer.ToRect(full));
 
-        var selection = CurrentSelection();
-
-        if (!_hasSelection || selection.IsEmpty)
+        if (_picker.Shape == PickerShape.Freeform && _picker.IsDragging && _picker.Selection is { } bounds)
         {
-            ui.FillRect(full, Rgba.Black.WithAlpha(110));
-            ui.EndFrame();
-            return;
+            ui.FillRect(full, Dim);
+            ui.PushPathLayer(_picker.Path, full);
+            renderTarget.DrawBitmap(_snapshot.Bitmap, 1f,
+                D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, AnnotationRenderer.ToRect(full));
+            ui.PopLayer();
+            var path = _picker.Path;
+            for (var i = 1; i < path.Count; i++) ui.Line(path[i - 1], path[i], ui.Theme.Accent, 1.5f);
+            DrawSizeBadge(ui, bounds);
         }
+        else if ((_picker.Selection ?? _picker.HoveredWindow) is { } selection)
+        {
+            foreach (var band in AdornerGeometry.DimAround(selection, full.Width, full.Height)) ui.FillRect(band, Dim);
+            ui.StrokeRounded(selection, 0, ui.Theme.Accent, _picker.IsDragging ? 1.5f : 2.5f);
+            DrawSizeBadge(ui, selection);
+        }
+        else ui.FillRect(full, Dim);
 
-        // Dim everything except the selection, so the cut-out shows the true pixels.
-        foreach (var band in AdornerGeometry.DimAround(selection, full.Width, full.Height)) ui.FillRect(band, Rgba.Black.WithAlpha(110));
-
-        ui.StrokeRounded(selection, 0, ui.Theme.Accent, 1.5f);
-        DrawSizeBadge(ui, selection);
+        var pointer = _picker.Pointer;
+        Loupe.Draw(ui, target, _snapshot, pointer, desktop,
+            $"{(int)pointer.X + _desktop.X}, {(int)pointer.Y + _desktop.Y}");
+        if (!_picker.IsDragging) DrawHints(ui);
         ui.EndFrame();
     }
 
@@ -159,7 +184,21 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         ui.Text(label, box, ui.Theme.TextOnAccent, font, Weight.Bold, TextAlign.Center, face: Face.Mono);
     }
 
-    private Rect CurrentSelection() => Rect.FromEdges(_origin.X, _origin.Y, _cursor.X, _cursor.Y);
+    /// <summary>The keys, top-centre of the screen being looked at, so the picker's extras are found
+    /// without a manual. Gone while dragging, where it would only be in the way.</summary>
+    private void DrawHints(Ui ui)
+    {
+        var screen = Monitors.WorkAreaUnderCursor();
+        var mode = _picker.Shape == PickerShape.Freeform ? "Draw around it" : "Drag, or click a window";
+        var repeat = _picker.HasLastRegion ? "   Enter last region" : "";
+        var label = $"{mode}   Shift square   Space move   Tab {(_picker.Shape == PickerShape.Freeform ? "rectangle" : "freeform")}{repeat}   Esc cancel";
+        const float font = 12;
+        var width = Math.Ceiling(ui.MeasureText(label, font, Weight.Semibold)) + 28;
+        var pill = new Rect(Math.Round(screen.X - _desktop.X + (screen.Width - width) / 2), screen.Y - _desktop.Y + 16, width, 32);
+        ui.FillRounded(pill, (float)(pill.Height / 2), ui.Theme.SurfaceRaised.WithAlpha(235));
+        ui.StrokeRounded(pill, (float)(pill.Height / 2), ui.Theme.StrokeDefault);
+        ui.Text(label, pill, ui.Theme.TextPrimary, font, Weight.Semibold, TextAlign.Center);
+    }
 
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
     {
@@ -170,44 +209,67 @@ public sealed partial class RegionOverlay : D2DRenderWindow
                 return new LRESULT { Value = 1 };
 
             case WmLButtonDown:
-                _origin = _cursor = ClientPoint(lParam);
-                _dragging = true;
-                _hasSelection = true;
+                _picker.Press(ClientPoint(lParam));
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmMouseMove:
-                _cursor = ClientPoint(lParam);
+                _picker.Move(ClientPoint(lParam), Held(VIRTUAL_KEY.VK_SHIFT), Held(VIRTUAL_KEY.VK_SPACE));
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
-            case WmLButtonUp:
-                if (_dragging)
-                {
-                    _dragging = false;
-                    _cursor = ClientPoint(lParam);
-                    Commit();
-                }
+            case WmLButtonUp when _picker.IsDragging:
+                Finish(_picker.Release(ClientPoint(lParam), Held(VIRTUAL_KEY.VK_SHIFT), Held(VIRTUAL_KEY.VK_SPACE)));
+                return new LRESULT { Value = 0 };
+
+            case WmKeyDown when (VIRTUAL_KEY)(ulong)wParam.Value == VIRTUAL_KEY.VK_ESCAPE:
+            case WmRButtonDown:
+                Finish(null);
                 return new LRESULT { Value = 0 };
 
             case WmKeyDown:
-                if ((VIRTUAL_KEY)(ulong)wParam.Value == VIRTUAL_KEY.VK_ESCAPE)
-                {
-                    Selection = null;
-                    Close();
-                }
+                OnKey((VIRTUAL_KEY)(ulong)wParam.Value);
                 return new LRESULT { Value = 0 };
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
 
-    private void Commit()
+    /// <summary>Tab switches shape, Enter repeats the last region, and the arrows move the pointer
+    /// itself a pixel at a time (Shift: ten) - so both ends of a drag can be placed exactly.</summary>
+    private void OnKey(VIRTUAL_KEY key)
     {
-        Selection = OverlayGeometry.Selection(_origin, _cursor) is { } region
-            ? new RectInt(_desktop.X + (int)region.X, _desktop.Y + (int)region.Y, (int)region.Width, (int)region.Height)
-            : null;
+        switch (key)
+        {
+            case VIRTUAL_KEY.VK_TAB:
+                _picker.ToggleShape();
+                Invalidate();
+                break;
+
+            case VIRTUAL_KEY.VK_RETURN when _picker.RepeatLast() is { } last:
+                Finish(last);
+                break;
+
+            case VIRTUAL_KEY.VK_LEFT or VIRTUAL_KEY.VK_RIGHT or VIRTUAL_KEY.VK_UP or VIRTUAL_KEY.VK_DOWN:
+                var step = Held(VIRTUAL_KEY.VK_SHIFT) ? 10 : 1;
+                var (dx, dy) = key switch
+                {
+                    VIRTUAL_KEY.VK_LEFT => (-step, 0),
+                    VIRTUAL_KEY.VK_RIGHT => (step, 0),
+                    VIRTUAL_KEY.VK_UP => (0, -step),
+                    _ => (0, step),
+                };
+                if (WindowInterop.GetCursorPos(out var at)) WindowInterop.SetCursorPos(at.X + dx, at.Y + dy);
+                break;
+        }
+    }
+
+    private void Finish(PickResult? result)
+    {
+        _result = result;
         Close();
     }
+
+    private static bool Held(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
 
     private static Point ClientPoint(LPARAM lParam)
     {

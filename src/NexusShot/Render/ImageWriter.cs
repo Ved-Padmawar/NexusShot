@@ -8,6 +8,8 @@ namespace NexusShot.Render;
 /// </summary>
 public static class ImageWriter
 {
+    private const float JpegQuality = 0.95f;
+
     /// <summary>Writes premultiplied BGRA pixels, top-down.</summary>
     public static void Write(string path, DecodedImage image, ImageFormat format = ImageFormat.Png) =>
         Write(path, image.Pointer, image.Width, image.Height, image.Stride, format);
@@ -47,6 +49,8 @@ public static class ImageWriter
         encoder.Initialize(stream, WICBitmapEncoderCacheOption.WICBitmapEncoderNoCache);
 
         using var frame = encoder.CreateNewFrame();
+        // WIC's default JPEG quality rings visibly around text, and every re-save compounds it.
+        if (format == ImageFormat.Jpeg) frame.Bag.Write([new("ImageQuality", (object)JpegQuality)]);
         frame.Initialize();
         frame.SetSize((uint)width, (uint)height);
         frame.SetPixelFormat(pixelFormat);

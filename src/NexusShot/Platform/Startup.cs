@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using NexusShot.Core;
 
 namespace NexusShot.Platform;
 
@@ -13,12 +14,6 @@ public static class Startup
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "NexusShot";
 
-    /// <summary>Marks a launch as Windows', not the user's: a login launch stays in the tray, while
-    /// one the user started shows a window.</summary>
-    public const string Flag = "--startup";
-
-    public static bool IsStartupLaunch(string[] args) =>
-        Array.Exists(args, arg => string.Equals(arg, Flag, StringComparison.OrdinalIgnoreCase));
 
     public static void Set(bool enabled)
     {
@@ -31,7 +26,7 @@ public static class Startup
             {
                 var exe = Environment.ProcessPath;
                 if (exe is null) return;
-                key.SetValue(ValueName, $"\"{exe}\" {Flag}");
+                key.SetValue(ValueName, $"\"{exe}\" {LaunchRequest.Startup}");
             }
             else
             {

@@ -35,20 +35,24 @@ public sealed partial class MainWindow
 
     private readonly Dropdown _languageBox = new();
     private readonly Dropdown _cornerBox = new();
+    private readonly Dropdown _keepBox = new();
 
     private void CloseDropdowns()
     {
         _languageBox.Close();
         _cornerBox.Close();
+        _keepBox.Close();
+        _periodBox.Close();
     }
 
-    private bool DropdownOpen => _languageBox.IsOpen || _cornerBox.IsOpen;
+    private bool DropdownOpen => _languageBox.IsOpen || _cornerBox.IsOpen || _keepBox.IsOpen || _periodBox.IsOpen;
 
     private void OpenSettings()
     {
         _settingsOpen = true;
         _pageScroll = 0;
         CloseDropdowns();
+        MeasureFolder();
         Invalidate();
     }
 
@@ -161,6 +165,7 @@ public sealed partial class MainWindow
         var client = new Rect(0, 0, width, height);
         _languageBox.DrawOpen(ui, client);
         _cornerBox.DrawOpen(ui, client);
+        _keepBox.DrawOpen(ui, client);
         ui.Inert = false;
     }
 
@@ -183,9 +188,6 @@ public sealed partial class MainWindow
             Row("Copy to clipboard automatically", "Every capture lands on the clipboard too", ToggleWidth,
                 rect => Toggle(ui, "settings.autocopy", rect, _settings.CopyToClipboardAutomatically,
                     value => _settings.CopyToClipboardAutomatically = value)),
-            Row("Save captures automatically", "Written straight into the save folder", ToggleWidth,
-                rect => Toggle(ui, "settings.autosave", rect, _settings.SaveAutomatically,
-                    value => _settings.SaveAutomatically = value)),
             Row("Shutter sound", null, ToggleWidth,
                 rect => Toggle(ui, "settings.shutter", rect, _settings.ShutterSound, value => _settings.ShutterSound = value)),
             Row("Updates", UpdateCaption(), UpdateControlWidth, rect => UpdateControl(ui, rect)),
@@ -222,7 +224,10 @@ public sealed partial class MainWindow
                     step => _settings.TimedCaptureSeconds = Math.Clamp(_settings.TimedCaptureSeconds + step, 1, 30))),
             Row("Include cursor", null, ToggleWidth,
                 rect => Toggle(ui, "settings.cursor", rect, _settings.IncludeCursor, value => _settings.IncludeCursor = value)),
-            Row("Text recognition language", "Used by Capture text and Copy text", Dropdown.Width(ui, languageNames),
+            Row("Find text in captures", "Reads each capture in the background, so search finds it by its words", ToggleWidth,
+                rect => Toggle(ui, "settings.findtext", rect, _settings.FindTextInCaptures,
+                    value => _settings.FindTextInCaptures = value)),
+            Row("Text recognition language", "Used by Capture text, Copy text and search", Dropdown.Width(ui, languageNames),
                 rect => _languageBox.Field(ui, Ui.Id("settings.ocr"), Control(rect), languageNames, chosen, index =>
                 {
                     _settings.OcrLanguage = languages[index].Tag;
@@ -299,14 +304,13 @@ public sealed partial class MainWindow
         if (!ui.IconButton(Ui.Id($"hotkey.reset.{hotkey}"), new Rect(slot.X, slot.Center.Y - S(14), S(28), S(28)),
             Icons.Undo, "Restore default", iconSize: 15)) return;
 
-        current.Modifiers = fallback.Modifiers;
-        current.Key = fallback.Key;
+        _hotkeyWarning = _settings.Bind(hotkey, fallback);
+        if (_hotkeyWarning is not null) return;
         if (_recordingHotkey == hotkey)
         {
             _recordingHotkey = null;
             RecordingChanged?.Invoke(false);
         }
-        _hotkeyWarning = null;
         SaveSettings();
         HotkeysChanged?.Invoke();
     }
@@ -314,10 +318,11 @@ public sealed partial class MainWindow
     private double OutputPage(Ui ui, double x, double y, double width)
     {
         y = Intro(ui, "Where captures are written and how they are named.", x, y, width);
-        var example = CaptureName.For(DateTime.Now) + ImageFiles.ExtensionOf(_settings.CaptureFormat);
+        var example = CaptureName.For(DateTime.Now, _settings.NameAfterApp ? "Google Chrome" : null)
+            + ImageFiles.ExtensionOf(_settings.CaptureFormat);
         return Group(ui, x, y, width,
         [
-            Row("Save folder", null, S(360), rect =>
+            Row("Save folder", _folderUsage, S(360), rect =>
             {
                 var change = ui.ButtonWidth("Change…", small: true);
                 var path = new Rect(rect.X, rect.Center.Y - S(16), rect.Width - change - S(6), S(32));
@@ -336,9 +341,45 @@ public sealed partial class MainWindow
             Row("File format", null, Segments(ui, FormatNames),
                 rect => Segmented(ui, "settings.format", rect, FormatNames, (int)_settings.CaptureFormat,
                     index => _settings.CaptureFormat = (ImageFormat)index)),
-            Row("File name", "Named by capture time, so the library can be rebuilt from the folder", S(260),
-                rect => ReadOnlyBox(ui, new Rect(rect.X, rect.Center.Y - S(16), rect.Width, S(32)), example, middle: false)),
+            Row("File name", "Named by capture time, so the library can be rebuilt from the folder", S(330),
+                rect => ReadOnlyBox(ui, new Rect(rect.X, rect.Center.Y - S(16), rect.Width, S(32)), example, middle: true)),
+            Row("Add the app's name", "The app in front when the capture was taken", ToggleWidth,
+                rect => Toggle(ui, "settings.appname", rect, _settings.NameAfterApp, value => _settings.NameAfterApp = value)),
+            Row("Keep captures", "Older ones go to the Recycle Bin; favorites always stay", Dropdown.Width(ui, KeepNames),
+                rect => _keepBox.Field(ui, Ui.Id("settings.keep"), Control(rect), KeepNames,
+                    Array.IndexOf(Retention.Choices, _settings.KeepCapturesDays), index =>
+                    {
+                        _settings.KeepCapturesDays = Retention.Choices[index];
+                        SaveSettings();
+                    })),
         ]);
+    }
+
+    private static readonly string[] KeepNames = ["Forever", "30 days", "90 days", "1 year"];
+
+    /// <summary>What the captures take on disk, for the Save folder row. Measured off the UI thread
+    /// each time Settings opens; null until it is known.</summary>
+    private string? _folderUsage;
+
+    private void MeasureFolder()
+    {
+        var files = _history.Select(item => item.FilePath).ToArray();
+        _ = Task.Run(() =>
+        {
+            long bytes = 0;
+            var count = 0;
+            foreach (var file in files)
+            {
+                try { bytes += new FileInfo(file).Length; count++; }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+            }
+            var usage = $"{(count == 1 ? "1 capture" : $"{count} captures")} · {ByteSize.Format(bytes)}";
+            Post(() =>
+            {
+                _folderUsage = usage;
+                Invalidate();
+            });
+        });
     }
 
     private double AppearancePage(Ui ui, double x, double y, double width)
@@ -526,9 +567,7 @@ public sealed partial class MainWindow
         if (ui.IconButton(Ui.Id($"hotkey.clear.{hotkey}"), clear, Icons.Close, "Clear shortcut",
             enabled: binding.Key != 0, iconSize: 13))
         {
-            binding.Modifiers = 0;
-            binding.Key = 0;
-            _hotkeyWarning = null;
+            _hotkeyWarning = _settings.Bind(hotkey, new HotkeyBinding());
             SaveSettings();
             HotkeysChanged?.Invoke();
         }

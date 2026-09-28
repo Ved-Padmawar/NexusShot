@@ -16,7 +16,7 @@ public sealed partial class EditorWindow
     internal Func<string, bool>? CanSaveTo { get; set; }
 
     /// <summary>Writes the flattened image over the original. A crop frame the user is still
-    /// dragging is applied too: the footer says "Save to apply", so Save applies it.</summary>
+    /// dragging is committed first: the footer says "Save to apply", so Save applies it.</summary>
     private void Save() => StartFileAction(FileAction.Save);
 
     /// <summary>What a file command does with the flattened image.</summary>
@@ -54,12 +54,13 @@ public sealed partial class EditorWindow
         var saveAs = action == FileAction.SaveAs;
         var copy = action is FileAction.Copy or FileAction.CopyAndClose or FileAction.CopyText or FileAction.Share;
         if (_image is null || _fileBusy) return;
+        if (action == FileAction.Save) ApplyPendingCrop();
         _fileBusy = true;
         ExportRequest? request = null;
         try
         {
             request = saveAs
-                ? _files.PrepareSaveAs((name, folder) => FilePicker.SavePng(Handle, name, folder))
+                ? _files.PrepareSaveAs(ChooseSaveAsDestination)
                 : _files.PrepareSave();
             if (request is null) { _fileBusy = false; _closeAfterSave = false; return; }
             if (!copy && CanSaveTo?.Invoke(request.Destination) == false)
@@ -85,32 +86,46 @@ public sealed partial class EditorWindow
         }
     }
 
+    /// <summary>A cancelled dialog must cost the document nothing, so the crop is applied only once
+    /// a destination is chosen.</summary>
+    private string? ChooseSaveAsDestination(string name, string? folder, IReadOnlyList<ImageFormat> formats)
+    {
+        var destination = FilePicker.SaveImage(Handle, name, folder, formats);
+        if (destination is not null) ApplyPendingCrop();
+        return destination;
+    }
+
+    /// <summary>Saving writes the crop frame being dragged, so the document commits it too and shows
+    /// what the file now holds.</summary>
+    private void ApplyPendingCrop()
+    {
+        if (!_document.IsCropSessionActive) return;
+        _document.CommitCrop();
+        SelectTool(EditorTool.Select);
+    }
+
     private async Task ExecuteFileAction(ExportRequest request, FileAction action)
     {
         var saveAs = action == FileAction.SaveAs;
         Exception? failure = null;
-        DecodedImage? savedPixels = null;
-        var saved = false;
         var lines = 0;
         string? shared = null;
         var language = _settings.OcrLanguage;
         try
         {
-            savedPixels = await MediaWorker.Run(() =>
+            await MediaWorker.Run(() =>
             {
-                if (action is FileAction.Copy or FileAction.CopyAndClose) { request.CopyToClipboard(); return null; }
-                if (action == FileAction.CopyText) { lines = request.CopyText(language); return null; }
-                if (action == FileAction.Share) { shared = request.SaveShareCopy(); return null; }
-                request.Save();
-                saved = true;
-                return ImageSurface.Decode(request.Destination);
+                if (action is FileAction.Copy or FileAction.CopyAndClose) request.CopyToClipboard();
+                else if (action == FileAction.CopyText) lines = request.CopyText(language);
+                else if (action == FileAction.Share) shared = request.SaveShareCopy();
+                else request.Save();
+                return true;
             });
         }
         catch (Exception exception) { failure = exception; }
         finally { request.Dispose(); }
         _dispatch.Post(() =>
         {
-            using var completedPixels = savedPixels;
             _fileBusy = false;
             PendingSavePath = null;
             if (failure is not null)
@@ -118,23 +133,6 @@ public sealed partial class EditorWindow
                 _closeAfterSave = false;
                 _afterCloseSave = null;
                 Log.Error("editor.file_action", failure, _files.Path);
-                if (saved)
-                {
-                    _files.CompleteSave(request);
-                    UpdateTitle();
-                    _effects?.Dispose();
-                    _effects = null;
-                    _image?.Dispose();
-                    _image = null;
-                    _loadError = "Saved successfully. Reopen the image to reload its preview.";
-                    RunFileAction(() =>
-                    {
-                        if (saveAs) SavedAs?.Invoke(_files.Path);
-                        else Saved?.Invoke(_files.Path);
-                    });
-                    Invalidate();
-                    return;
-                }
                 if (action == FileAction.CopyText && failure is InvalidOperationException)
                     UserFeedback.Error(Handle, failure.Message);
                 ShowToast("Could not complete action. Check the file or clipboard and retry.");
@@ -153,21 +151,11 @@ public sealed partial class EditorWindow
             {
                 _files.CompleteSave(request);
                 UpdateTitle();
+                ShowToast("Saved");
                 RunFileAction(() =>
                 {
                     if (saveAs) SavedAs?.Invoke(_files.Path);
                     else Saved?.Invoke(_files.Path);
-                    try { ReloadImage(savedPixels!); }
-                    catch
-                    {
-                        _effects?.Dispose();
-                        _effects = null;
-                        _image?.Dispose();
-                        _image = null;
-                        _loadError = "Saved successfully. Reopen the image to reload its preview.";
-                        throw;
-                    }
-                    ShowToast("Saved");
                 });
             }
             Invalidate();
@@ -179,7 +167,46 @@ public sealed partial class EditorWindow
                 Close();
                 continuation?.Invoke();
             }
-        }, () => savedPixels?.Dispose());
+        });
+    }
+
+    /// <summary>Reads the image under the annotations - they are what does the covering - and redacts
+    /// what looks secret, as one undo step. Editing waits, as it does for a save.</summary>
+    private void FindSensitiveText()
+    {
+        if (_image is null || _fileBusy) return;
+        var pixels = ReadPixels();
+        _fileBusy = true;
+        ShowToast("Reading text…");
+        _ = FindSensitiveTextAsync(pixels, _settings.OcrLanguage);
+    }
+
+    private async Task FindSensitiveTextAsync(DecodedImage pixels, string? language)
+    {
+        List<Rect>? areas = null;
+        Exception? failure = null;
+        try { areas = await MediaWorker.Run(() => SensitiveText.Find(TextRecognition.Words(pixels, language))); }
+        catch (Exception exception) { failure = exception; }
+        finally { pixels.Dispose(); }
+        _dispatch.Post(() =>
+        {
+            _fileBusy = false;
+            if (areas is null)
+            {
+                Log.Error("editor.find_sensitive", failure!, _files.Path);
+                if (failure is InvalidOperationException) UserFeedback.Error(Handle, failure.Message);
+                else ShowToast("Could not read the text in this image");
+                return;
+            }
+            _document.AddRedactions(areas);
+            ShowToast(areas.Count switch
+            {
+                0 => "Nothing sensitive found",
+                1 => "Covered 1 item · check for anything missed",
+                _ => $"Covered {areas.Count} items · check for anything missed",
+            });
+            Invalidate();
+        });
     }
 
     internal bool HasUnsavedChanges()
@@ -219,24 +246,4 @@ public sealed partial class EditorWindow
 
     private string? _toast;
     private DateTime _toastUntil;
-
-    /// <summary>Uploads the saved pixels decoded by the worker, then swaps GPU resources.</summary>
-    private void ReloadImage(DecodedImage pixels)
-    {
-        if (_resources is null || RenderTarget is null) return;
-        using var target = RenderTarget.AsRenderTarget();
-        using var context = target.AsDeviceContext();
-        if (context is null) return;
-
-        var image = ImageSurface.Upload(pixels, context);
-        PixelEffectSource effects;
-        try { effects = new PixelEffectSource(image, _resources); }
-        catch { image.Dispose(); throw; }
-        _effects?.Dispose();
-        _image?.Dispose();
-        _image = image;
-        _effects = effects;
-        _document.SetImageSize(_image.Width, _image.Height);
-        Invalidate();
-    }
 }

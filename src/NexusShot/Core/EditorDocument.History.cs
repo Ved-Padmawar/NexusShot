@@ -32,6 +32,7 @@ public sealed partial class EditorDocument
         EndAdjustment();
         _createdUndoOwner = null;
         _undo.Push(Snapshot());
+        Revision = _nextRevision++;
         if (_undo.Count > MaxUndo)
         {
             // Take keeps the newest (stack order); Reverse re-pushes them oldest-first.
@@ -49,10 +50,11 @@ public sealed partial class EditorDocument
         foreach (var snapshot in history.Undo.Reverse()) _undo.Push(snapshot);
         _redo.Clear();
         foreach (var snapshot in history.Redo.Reverse()) _redo.Push(snapshot);
+        Revision = history.Revision;
         _creationHistory = null;
     }
 
-    private DocumentSnapshot Snapshot() => new(_annotations.Select(a => a.Clone()).ToList(), CropBounds, PendingCrop);
+    private DocumentSnapshot Snapshot() => new(_annotations.Select(a => a.Clone()).ToList(), CropBounds, PendingCrop, Revision);
 
     private void Restore(DocumentSnapshot snapshot)
     {
@@ -62,6 +64,7 @@ public sealed partial class EditorDocument
         ReplaceAnnotations(snapshot.Annotations);
         CropBounds = snapshot.CropBounds;
         PendingCrop = snapshot.PendingCrop;
+        Revision = snapshot.Revision;
 
         // Restored annotations are clones: reselect by id, and drop the editor holding the old instance.
         EditingText = null;

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using NexusShot.Core;
 
 namespace NexusShot.Platform;
 
@@ -13,13 +14,16 @@ public static partial class SingleInstance
 {
     private const string MutexName = @"Local\NexusShot.SingleInstance";
 
-    /// <summary>The main window's title, which is also how a second launch finds it.</summary>
+    /// <summary>The main window's title and class, which together are how a second launch finds it.
+    /// The title alone also matches Explorer open on the save folder, which is named NexusShot too.</summary>
     public const string MainWindowTitle = "NexusShot";
+    public const string MainWindowClass = "NexusShot.Library";
 
     public const uint WM_COPYDATA = 0x004A;
 
-    /// <summary>Marks our WM_COPYDATA, so another sender's data is never read as a path.</summary>
+    /// <summary>Mark our WM_COPYDATA, so another sender's data is never read as a request.</summary>
     private const nint OpenFileTag = 0x4E53_4F46;
+    private const nint CaptureTag = 0x4E53_4341;
 
     /// <summary>Broadcast by a second instance; the running one shows its window.</summary>
     public static readonly uint WM_SHOW_EXISTING = RegisterWindowMessageW("NexusShot.ShowExisting");
@@ -28,10 +32,10 @@ public static partial class SingleInstance
 
     /// <summary>
     /// True when this process is the one that gets to run. False means another instance already has
-    /// it, and has been handed <paramref name="file"/> to open, or asked to come to the front - the
-    /// caller should exit.
+    /// it, and has been handed <paramref name="request"/>'s file or capture, or asked to come to the
+    /// front - the caller should exit.
     /// </summary>
-    public static bool Claim(string? file)
+    public static bool Claim(LaunchRequest request)
     {
         // Ownership comes from the wait, not the constructor: an instance that was killed leaves the
         // mutex abandoned but still named, so construction reports created: false and only the wait
@@ -48,36 +52,59 @@ public static partial class SingleInstance
         _mutex.Dispose();
         _mutex = null;
 
-        if ((file is null || !SendFile(file)) && WM_SHOW_EXISTING != 0)
+        var handed = request switch
+        {
+            { File: { } file } => Send(OpenFileTag, file),
+            { Capture: { } capture } => Send(CaptureTag, capture.ToString()),
+            _ => false,
+        };
+        if (!handed && WM_SHOW_EXISTING != 0)
             PostMessageW(HWND_BROADCAST, WM_SHOW_EXISTING, IntPtr.Zero, IntPtr.Zero);
 
         return false;
     }
 
-    /// <summary>Hands a path to the running instance's main window.</summary>
-    private static unsafe bool SendFile(string file)
+    /// <summary>
+    /// Hands a request to the running instance's main window. A launch that races the first one's
+    /// startup finds no window yet, so it waits briefly for one rather than dropping the file. The
+    /// send times out, so a hung first instance cannot hang Explorer's "Open with" along with it.
+    /// </summary>
+    private static unsafe bool Send(nint tag, string text)
     {
-        var window = FindWindowW(null, MainWindowTitle);
+        var window = IntPtr.Zero;
+        for (var attempt = 0; attempt < 30 && window == IntPtr.Zero; attempt++)
+        {
+            if (attempt > 0) Thread.Sleep(100);
+            window = FindWindowW(MainWindowClass, MainWindowTitle);
+        }
         if (window == IntPtr.Zero) return false;
 
         // Pass on our foreground right, or the editor opens behind Explorer.
         GetWindowThreadProcessId(window, out var process);
         AllowSetForegroundWindow(process);
 
-        fixed (char* text = file)
+        fixed (char* characters = text)
         {
-            var data = new COPYDATASTRUCT { dwData = OpenFileTag, cbData = (uint)(file.Length * 2), lpData = (IntPtr)text };
-            SendMessageW(window, WM_COPYDATA, IntPtr.Zero, (IntPtr)(&data));
-            return true;
+            var data = new COPYDATASTRUCT { dwData = tag, cbData = (uint)(text.Length * 2), lpData = (IntPtr)characters };
+            return SendMessageTimeoutW(window, WM_COPYDATA, IntPtr.Zero, (IntPtr)(&data),
+                SMTO_ABORTIFHUNG, 5000, out _) != IntPtr.Zero;
         }
     }
 
-    /// <summary>The path from a WM_COPYDATA another launch sent, or null if it is not one.</summary>
-    public static unsafe string? ReadForwardedFile(long lParam)
+    private const uint SMTO_ABORTIFHUNG = 0x0002;
+
+    /// <summary>The request in a WM_COPYDATA another launch sent, or null if it is not one.</summary>
+    public static unsafe LaunchRequest? ReadForwarded(long lParam)
     {
         var data = (COPYDATASTRUCT*)lParam;
-        if (data == null || data->dwData != OpenFileTag || data->lpData == IntPtr.Zero) return null;
-        return new string((char*)data->lpData, 0, (int)(data->cbData / 2));
+        if (data == null || data->lpData == IntPtr.Zero) return null;
+        var text = new string((char*)data->lpData, 0, (int)(data->cbData / 2));
+        return data->dwData switch
+        {
+            OpenFileTag => new LaunchRequest(File: text),
+            CaptureTag when Enum.TryParse<CaptureCommand>(text, out var capture) => new LaunchRequest(Capture: capture),
+            _ => null,
+        };
     }
 
     /// <summary>Releases ownership before disposing. Disposing alone leaves the mutex abandoned, and
@@ -110,8 +137,9 @@ public static partial class SingleInstance
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool PostMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
-    [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
-    private static partial IntPtr SendMessageW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
+    private static partial IntPtr SendMessageTimeoutW(IntPtr window, uint message, IntPtr wParam, IntPtr lParam,
+        uint flags, uint timeoutMs, out IntPtr result);
 
     [LibraryImport("user32.dll", EntryPoint = "FindWindowW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial IntPtr FindWindowW(string? className, string title);

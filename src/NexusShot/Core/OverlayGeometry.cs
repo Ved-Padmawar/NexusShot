@@ -7,15 +7,6 @@ namespace NexusShot.Core;
 /// </summary>
 public static class OverlayGeometry
 {
-    /// <summary>The region a drag selects, in whole pixels, or null when it is under two pixels on
-    /// either axis: a click without a drag is a cancel, not a zero-pixel capture.</summary>
-    public static Rect? Selection(Point origin, Point release)
-    {
-        var drag = Rect.FromEdges(origin.X, origin.Y, release.X, release.Y);
-        if (drag.Width < 2 || drag.Height < 2) return null;
-        return new Rect(Math.Round(drag.X), Math.Round(drag.Y), Math.Round(drag.Width), Math.Round(drag.Height));
-    }
-
     /// <summary>The size badge's top-left: <paramref name="gap"/> below the selection, above it when
     /// there is no room below, and slid sideways to stay on the desktop.</summary>
     public static Point SizeBadge(Rect selection, Size badge, Size desktop, double gap)

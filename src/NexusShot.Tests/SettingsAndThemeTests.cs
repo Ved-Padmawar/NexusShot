@@ -107,6 +107,56 @@ public class SettingsAndThemeTests : IDisposable
         Assert.All(bound, binding => Assert.Single(bound, other => other.IsSameGesture(binding)));
     }
 
+    [Theory]
+    [InlineData(0u, 0x41u, false)]                                              // A
+    [InlineData(HotkeyBinding.Shift, 0x41u, false)]                             // Shift+A types "A"
+    [InlineData(0u, 0x0Du, false)]                                              // Enter
+    [InlineData(HotkeyBinding.Alt, 0x41u, true)]
+    [InlineData(HotkeyBinding.Win | HotkeyBinding.Shift, 0x41u, true)]
+    [InlineData(0u, 0x78u, true)]                                               // F9
+    [InlineData(0u, 0x2Cu, true)]                                               // PrtScn
+    [InlineData(0u, 0u, true)]                                                  // unbound
+    public void OnlyKeysThatTypeNothingMayStandAlone(uint modifiers, uint key, bool usable) =>
+        Assert.Equal(usable, new HotkeyBinding { Modifiers = modifiers, Key = key }.IsUsable);
+
+    [Fact]
+    public void BindRefusesAGestureAnotherActionUsesAndChangesNothing()
+    {
+        var settings = new AppSettings();
+        var region = settings.Hotkey(HotkeyId.CaptureRegion).Clone();
+
+        var refusal = settings.Bind(HotkeyId.CaptureText, region);
+
+        Assert.Equal("Capture region already uses that shortcut.", refusal);
+        Assert.Equal((uint)'O', settings.Hotkey(HotkeyId.CaptureText).Key);
+        Assert.Null(settings.Bind(HotkeyId.CaptureText, new HotkeyBinding { Modifiers = HotkeyBinding.Alt, Key = 'T' }));
+        Assert.Equal((uint)'T', settings.Hotkey(HotkeyId.CaptureText).Key);
+    }
+
+    [Fact]
+    public void BindRefusesABareTypingKey()
+    {
+        var settings = new AppSettings();
+
+        Assert.NotNull(settings.Bind(HotkeyId.CaptureRegion, new HotkeyBinding { Key = 'S' }));
+        Assert.Equal(HotkeyBinding.Control | HotkeyBinding.Shift, settings.Hotkey(HotkeyId.CaptureRegion).Modifiers);
+    }
+
+    [Fact]
+    public void LoadingUnbindsDuplicatesAfterTheFirstAndBareTypingKeys()
+    {
+        var settings = Load("""
+            {"CaptureRegionHotkey":{"Modifiers":1,"Key":65},
+             "CaptureFullScreenHotkey":{"Modifiers":1,"Key":65},
+             "OpenMainWindowHotkey":{"Modifiers":0,"Key":66}}
+            """);
+
+        Assert.Equal(65u, settings.Hotkey(HotkeyId.CaptureRegion).Key);
+        Assert.Equal(0u, settings.Hotkey(HotkeyId.CaptureFullScreen).Key);
+        Assert.Equal(0u, settings.Hotkey(HotkeyId.OpenMainWindow).Key);
+        Assert.Equal((uint)'W', settings.Hotkey(HotkeyId.CaptureActiveWindow).Key);
+    }
+
     // ---- theme ----
 
     /// <summary>The WCAG contrast ratio of two opaque colours.</summary>

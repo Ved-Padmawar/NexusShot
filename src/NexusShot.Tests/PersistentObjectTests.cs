@@ -92,7 +92,8 @@ public class PersistentObjectTests
         Assert.Null(document.Selected);
         Assert.Single(document.Annotations);
 
-        Drag(document, new Point(200, 200), new Point(230, 250));
+        // Picked by its outline; unfilled, its middle belongs to whatever is under it.
+        Drag(document, new Point(101, 200), new Point(131, 250));
 
         Assert.Same(rectangle, document.Selected);
         Assert.Single(document.Annotations);

@@ -1,8 +1,32 @@
 namespace NexusShot.Core;
 
+/// <summary>How far back the Library looks. Rolling windows, as the day groups are.</summary>
+public enum LibraryPeriod { All, Today, Week, Month }
+
+/// <summary>What the Library shows. The query matches a capture's name, or the text read out of it
+/// once it has been; <paramref name="FavoritesOnly"/> and <paramref name="Period"/> narrow further.</summary>
+public sealed record LibraryFilter(string Query = "", bool FavoritesOnly = false, LibraryPeriod Period = LibraryPeriod.All)
+{
+    public bool Shows(ScreenshotHistoryItem item, DateTime now, Func<string, string?>? textOf = null)
+    {
+        if (FavoritesOnly && !item.Favorite) return false;
+        var days = (now.Date - item.CapturedAt.LocalDateTime.Date).TotalDays;
+        var inPeriod = Period switch
+        {
+            LibraryPeriod.Today => days <= 0,
+            LibraryPeriod.Week => days < 7,
+            LibraryPeriod.Month => days < 30,
+            _ => true,
+        };
+        return inPeriod && (Query.Length == 0
+            || item.FileName.Contains(Query, StringComparison.OrdinalIgnoreCase)
+            || textOf?.Invoke(item.FilePath)?.Contains(Query, StringComparison.OrdinalIgnoreCase) == true);
+    }
+}
+
 /// <summary>
-/// The library's sections: captures filtered by a search and grouped by when they were taken.
-/// Newest first within a group, and groups in time order, because the history already is.
+/// The library's sections: captures filtered and grouped by when they were taken. Newest first
+/// within a group, and groups in time order, because the history already is.
 /// </summary>
 public static class LibraryGroups
 {
@@ -10,7 +34,8 @@ public static class LibraryGroups
 
     /// <summary>Today, Yesterday, This week, then one group per month. The week is the last seven
     /// days rather than the calendar week, so "This week" never means one day on a Monday.</summary>
-    public static List<Group> Build(IReadOnlyList<ScreenshotHistoryItem> history, string query, DateTime now)
+    public static List<Group> Build(IReadOnlyList<ScreenshotHistoryItem> history, LibraryFilter filter, DateTime now,
+        Func<string, string?>? textOf = null)
     {
         var groups = new List<Group>();
         List<ScreenshotHistoryItem>? current = null;
@@ -18,8 +43,7 @@ public static class LibraryGroups
 
         foreach (var item in history)
         {
-            if (query.Length > 0 && !item.FileName.Contains(query, StringComparison.OrdinalIgnoreCase))
-                continue;
+            if (!filter.Shows(item, now, textOf)) continue;
 
             var itemTitle = Title(item.CapturedAt.LocalDateTime, now);
             if (itemTitle != title)

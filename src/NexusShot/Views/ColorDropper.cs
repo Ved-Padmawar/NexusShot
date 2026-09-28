@@ -32,11 +32,6 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
     private const uint WmKeyDown = 0x0100;
     private const uint WmSetCursor = 0x0020;
 
-    /// <summary>How many snapshot pixels the loupe shows across, and how big each is drawn. Odd, so
-    /// one pixel is the centre.</summary>
-    private const int LoupePixels = 11;
-    private const int LoupeCell = 11;
-
     private readonly RectInt _desktop;
     private readonly DecodedImage _pixels;
     private readonly Theme _theme;
@@ -102,53 +97,9 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
         target.Object.DrawBitmap(_snapshot.Bitmap.Object, (nint)(&full), 1f,
             D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, 0);
 
-        if (_pixels.OpaquePixelAt((int)_cursor.X, (int)_cursor.Y) is { } color) DrawLoupe(ui, target, color);
+        if (_pixels.OpaquePixelAt((int)_cursor.X, (int)_cursor.Y) is { } color)
+            Loupe.Draw(ui, target, _snapshot, _cursor, new Size(_desktop.Width, _desktop.Height), color.ToHex(), color);
         ui.EndFrame();
-    }
-
-    /// <summary>The magnifier: the pixels around the pointer, drawn large and unsmoothed, with the
-    /// centre one ringed and its hex beneath. It sits below-right of the pointer and flips at the
-    /// screen edges, so it never covers what is being aimed at.</summary>
-    private void DrawLoupe(Ui ui, IComObject<ID2D1RenderTarget> target, Rgba color)
-    {
-        var s = ui.Scale;
-        var cell = LoupeCell * s;
-        var size = LoupePixels * cell;
-        var label = 30 * s;
-
-        var origin = OverlayGeometry.Loupe(
-            _cursor, new Size(size, size + label), 24 * s, new Size(_desktop.Width, _desktop.Height));
-        var loupe = new Rect(origin.X, origin.Y, size, size);
-        var radius = (float)(Metrics.RadiusLg * s);
-        ui.Shadow(loupe, radius, 22 * s, 10 * s, Rgba.Black.WithAlpha(120));
-
-        // Nearest-neighbour, so each screen pixel lands as a crisp square rather than a blur.
-        var half = LoupePixels / 2;
-        var source = new D2D_RECT_F(
-            (float)Math.Floor(_cursor.X) - half, (float)Math.Floor(_cursor.Y) - half,
-            (float)Math.Floor(_cursor.X) + half + 1, (float)Math.Floor(_cursor.Y) + half + 1);
-        var destination = AnnotationRenderer.ToRect(loupe);
-        ui.PushRoundedLayer(loupe, radius);
-        ui.FillRect(loupe, Rgba.Black);
-        target.Object.DrawBitmap(_snapshot!.Bitmap.Object, (nint)(&destination), 1f,
-            D2D1_BITMAP_INTERPOLATION_MODE.D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, (nint)(&source));
-        ui.PopRoundedLayer();
-        ui.StrokeRounded(loupe, radius, Rgba.White.WithAlpha(200), (float)(2 * s));
-
-        var centre = new Rect(loupe.X + half * cell, loupe.Y + half * cell, cell, cell);
-        ui.StrokeRounded(centre.Deflate(-1 * s), 0, Rgba.Black.WithAlpha(160), (float)(3 * s));
-        ui.StrokeRounded(centre, 0, Rgba.White, (float)(1.5 * s));
-
-        var hex = color.ToHex();
-        var font = 12 * s;
-        var pill = new Rect(loupe.X, loupe.Bottom + 6 * s, loupe.Width, label - 6 * s);
-        ui.FillRounded(pill, (float)(pill.Height / 2), _theme.SurfaceRaised);
-        ui.StrokeRounded(pill, (float)(pill.Height / 2), _theme.StrokeDefault);
-        var well = new Rect(pill.X + 6 * s, pill.Center.Y - 7 * s, 14 * s, 14 * s);
-        ui.FillRounded(well, (float)(3 * s), color);
-        ui.StrokeRounded(well, (float)(3 * s), _theme.StrokeStrong);
-        ui.Text(hex, new Rect(well.Right + 6 * s, pill.Y, pill.Width - 26 * s, pill.Height), _theme.TextPrimary, font,
-            Weight.Semibold, face: Face.Mono);
     }
 
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
