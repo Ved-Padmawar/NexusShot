@@ -39,6 +39,36 @@ public class EditorPowerToolTests
     }
 
     [Fact]
+    public void ANudgeAfterASaveIsAnUnsavedChange()
+    {
+        var document = NewDocument();
+        Draw(document, EditorTool.Rectangle, new Point(100, 100), new Point(200, 150));
+        document.NudgeSelected(1, 0);
+        document.CreateExportSnapshot();
+        document.MarkSaved(document.Revision);
+        Assert.False(document.HasUnsavedChanges);
+
+        document.NudgeSelected(1, 0);
+
+        Assert.True(document.HasUnsavedChanges);
+    }
+
+    [Fact]
+    public void ANudgeWhileASaveFinishesIsAnUnsavedChange()
+    {
+        var document = NewDocument();
+        Draw(document, EditorTool.Rectangle, new Point(100, 100), new Point(200, 150));
+        document.NudgeSelected(1, 0);
+        document.CreateExportSnapshot();
+        var exported = document.Revision;
+
+        document.NudgeSelected(1, 0);
+        document.MarkSaved(exported);
+
+        Assert.True(document.HasUnsavedChanges);
+    }
+
+    [Fact]
     public void ReorderingMovesThroughThePaintOrder()
     {
         var document = NewDocument();

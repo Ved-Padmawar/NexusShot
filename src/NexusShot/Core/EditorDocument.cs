@@ -166,9 +166,11 @@ public sealed partial class EditorDocument
         || (PendingCrop is { } crop && crop != (CropBounds ?? new Rect(0, 0, ImageWidth, ImageHeight)));
 
     /// <summary>A worker owns this independent copy. No UI selection, events or undo history
-    /// crosses the thread boundary.</summary>
+    /// crosses the thread boundary. Ends any adjustment, so an edit made after the snapshot - a key
+    /// nudge has no mouse-up to end it - gets its own revision and cannot pass as already saved.</summary>
     public EditorDocument CreateExportSnapshot()
     {
+        EndAdjustment();
         var copy = new EditorDocument();
         copy.SetImageSize(ImageWidth, ImageHeight);
         copy.ReplaceAnnotations(_annotations.Select(annotation => annotation.Clone()).ToArray());
