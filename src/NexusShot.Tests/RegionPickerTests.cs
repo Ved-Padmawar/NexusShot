@@ -80,6 +80,29 @@ public class RegionPickerTests
     }
 
     [Fact]
+    public void ASquaredDragPastTheDesktopEdgeIsClippedToIt()
+    {
+        var picker = NewPicker();
+        picker.Press(new Point(50, 50));
+
+        var result = picker.Release(new Point(300, 40), square: true);
+
+        Assert.Equal(new Rect(50, 0, 250, 50), result!.Region);
+    }
+
+    [Fact]
+    public void AMovedDragPastTheDesktopEdgeIsClippedToIt()
+    {
+        var picker = NewPicker();
+        picker.Press(new Point(100, 100));
+        picker.Move(new Point(200, 180));
+
+        var result = picker.Release(new Point(50, 130), moveWhole: true);
+
+        Assert.Equal(new Rect(0, 50, 50, 80), result!.Region);
+    }
+
+    [Fact]
     public void ALassoCarriesItsOutlineRelativeToItsBounds()
     {
         var picker = NewPicker();

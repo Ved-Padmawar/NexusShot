@@ -45,9 +45,10 @@ public static partial class ScreenCapture
         if (window == IntPtr.Zero || FrameBounds(window) is not { } bounds)
             throw new InvalidOperationException("Could not determine the active window.");
 
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362) && WindowCapture.IsSupported)
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362))
         {
-            try { return WindowCapture.Capture(window, includeCursor); }
+            // IsSupported talks to the capture service, so it can throw like the capture itself.
+            try { if (WindowCapture.IsSupported) return WindowCapture.Capture(window, includeCursor); }
             catch (Exception exception) when (exception is COMException or TimeoutException
                 or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
             { Log.Error("capture.window_fallback", exception); }

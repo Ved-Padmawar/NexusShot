@@ -113,7 +113,7 @@ public sealed class RegionPicker(
             return new PickResult(box, [.. _path.Select(p => new Point(p.X - box.X, p.Y - box.Y))]);
         }
 
-        if (selection is { } drag && Whole(drag) is { } region) return new PickResult(region, Text: text);
+        if (selection is { } drag && Whole(drag.Intersect(new Rect(0, 0, desktop.Width, desktop.Height))) is { } region) return new PickResult(region, Text: text);
         return TargetAt(point) is { } target ? new PickResult(target, Text: text) : null;
     }
 
