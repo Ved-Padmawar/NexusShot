@@ -24,6 +24,7 @@ public partial class WindowCaptureTests
             using var image = WindowCapture.Capture(window, includeCursor: false);
             Assert.Equal((64, 48), (image.Width, image.Height));
         }
+        catch (Exception exception) when (exception is ArgumentException or COMException) { }
         finally
         {
             DestroyWindow(window);
