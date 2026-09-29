@@ -35,7 +35,7 @@ public sealed class App : IDisposable
         _texts = _storage.LoadTextIndex();
 
         _main = new MainWindow(_storage, _settings, _history) { Texts = _texts };
-        _indexer = new TextIndexer(() => _settings.OcrLanguage, (path, version, text) => _main.Post(() => Indexed(path, version, text)));
+        _indexer = new TextIndexer(() => _settings.OcrLanguage, (path, version, language, text) => _main.Post(() => Indexed(path, version, language, text)));
         _pipeline = new CapturePipeline(_storage, _settings, _history, _main);
         _main.CaptureRequested += Capture;
         _main.CaptureTextRequested += CaptureText;
@@ -548,7 +548,7 @@ public sealed class App : IDisposable
         {
             try
             {
-                if (!_texts.IsCurrent(item.FilePath, FileVersion.Read(item.FilePath))) _indexer.Enqueue(item.FilePath);
+                if (!_texts.IsCurrent(item.FilePath, FileVersion.Read(item.FilePath), _settings.OcrLanguage)) _indexer.Enqueue(item.FilePath);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
         }
@@ -557,10 +557,11 @@ public sealed class App : IDisposable
     /// <summary>Saved at most every few seconds while a backlog is read, and at exit.</summary>
     private DateTime _textsSaved;
 
-    private void Indexed(string path, FileVersion version, string text)
+    private void Indexed(string path, FileVersion version, string? language, string text)
     {
-        if (_disposed) return;
-        _texts.Set(path, version, text);
+        // A read begun before the language changed is dropped; the change already queued it again.
+        if (_disposed || language != _settings.OcrLanguage) return;
+        _texts.Set(path, version, language, text);
         if (text.Length > 0) _main.Invalidate();
         if (DateTime.UtcNow - _textsSaved < TimeSpan.FromSeconds(10)) return;
         _textsSaved = DateTime.UtcNow;

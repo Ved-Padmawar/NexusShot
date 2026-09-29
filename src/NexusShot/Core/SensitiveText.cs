@@ -42,20 +42,17 @@ public static partial class SensitiveText
         return areas;
     }
 
-    /// <summary>The area of characters [<paramref name="start"/>, <paramref name="end"/>) of the line.
-    /// Within a word the position is estimated from its share of the word's width, so an
-    /// <c>API_KEY=value</c> read as one word keeps its name visible.</summary>
+    /// <summary>The area of every word that overlaps characters [<paramref name="start"/>,
+    /// <paramref name="end"/>) of the line. Whole words: OCR gives no per-character bounds, and a
+    /// share of the word's width lands inside the secret in a proportional font, leaving its first
+    /// characters readable. An <c>API_KEY=value</c> read as one word is covered name and all.</summary>
     private static Rect? Cover(IReadOnlyList<TextWord> words, int[] starts, int start, int end)
     {
         Rect? cover = null;
         for (var i = 0; i < words.Count; i++)
         {
-            var length = words[i].Text.Length;
-            var from = Math.Max(start, starts[i]) - starts[i];
-            var to = Math.Min(end, starts[i] + length) - starts[i];
-            if (to <= from) continue;
-            var bounds = words[i].Bounds;
-            var part = new Rect(bounds.X + bounds.Width * from / length, bounds.Y, bounds.Width * (to - from) / length, bounds.Height);
+            if (Math.Min(end, starts[i] + words[i].Text.Length) <= Math.Max(start, starts[i])) continue;
+            var part = words[i].Bounds;
             cover = cover is { } soFar
                 ? Rect.FromEdges(Math.Min(soFar.X, part.X), Math.Min(soFar.Y, part.Y),
                     Math.Max(soFar.Right, part.Right), Math.Max(soFar.Bottom, part.Bottom))

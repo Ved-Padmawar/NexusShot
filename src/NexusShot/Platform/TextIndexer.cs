@@ -7,16 +7,17 @@ namespace NexusShot.Platform;
 /// <summary>
 /// Reads the text in captures for the Library search: one at a time, on its own thread below normal
 /// priority, so neither the UI nor the media worker a copy or save waits on is held up by a backlog
-/// of hundreds. Results go to <c>read</c> on this thread; the caller moves them to its own.
+/// of hundreds. Results go to <c>read</c> on this thread, with the language they were read in; the
+/// caller moves them to its own.
 /// </summary>
 internal sealed class TextIndexer : IDisposable
 {
     private readonly BlockingCollection<string> _queue = [];
     private readonly HashSet<string> _waiting = new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<string?> _language;
-    private readonly Action<string, FileVersion, string> _read;
+    private readonly Action<string, FileVersion, string?, string> _read;
 
-    public TextIndexer(Func<string?> language, Action<string, FileVersion, string> read)
+    public TextIndexer(Func<string?> language, Action<string, FileVersion, string?, string> read)
     {
         _language = language;
         _read = read;
@@ -58,7 +59,7 @@ internal sealed class TextIndexer : IDisposable
                 Log.Error("text_index.read", exception, path);
                 text = "";
             }
-            _read(path, version, text);
+            _read(path, version, language, text);
         }
     }
 

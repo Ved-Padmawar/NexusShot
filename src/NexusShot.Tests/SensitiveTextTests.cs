@@ -61,11 +61,19 @@ public class SensitiveTextTests
     }
 
     [Fact]
-    public void AnAssignmentKeepsItsNameVisible()
+    public void AnAssignmentReadAsOneWordIsCoveredWhole()
     {
-        // "API_KEY=" is 8 of the word's 20 characters, 10 pixels each.
         var area = Assert.Single(Find("API_KEY=abcdefghijkl"));
-        Assert.Equal(new Rect(80, 0, 120, 20), area);
+        Assert.Equal(new Rect(0, 0, 200, 20), area);
+    }
+
+    [Fact]
+    public void ACoveredWordKeepsItsOwnWidthWhateverItsCharactersMeasure()
+    {
+        // Wide capitals then narrow letters: an even share of the width would start inside the secret.
+        var word = new TextWord("API_KEY=illiiilliill", new Rect(5, 0, 137, 20));
+        var area = Assert.Single(SensitiveText.Find([[word]], padding: 0));
+        Assert.Equal(word.Bounds, area);
     }
 
     [Theory]

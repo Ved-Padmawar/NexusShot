@@ -58,14 +58,26 @@ public class LibraryFilterTests
     }
 
     [Fact]
+    public void AnIndexEntryIsStaleOnceTheRecognitionLanguageChanges()
+    {
+        var index = new TextIndex();
+        var version = new FileVersion(10, new DateTime(2026, 1, 1));
+        index.Set(@"C:\shots\a.png", version, "en-US", "");
+
+        Assert.True(index.IsCurrent(@"C:\shots\a.png", version, "EN-us"));
+        Assert.False(index.IsCurrent(@"C:\shots\a.png", version, "de-DE"));
+        Assert.False(index.IsCurrent(@"C:\shots\a.png", version, null));
+    }
+
+    [Fact]
     public void AnIndexEntryIsStaleOnceTheFileChanges()
     {
         var index = new TextIndex();
         var first = new FileVersion(10, new DateTime(2026, 1, 1));
-        index.Set(@"C:\shots\a.png", first, "hello");
+        index.Set(@"C:\shots\a.png", first, null, "hello");
 
-        Assert.True(index.IsCurrent(@"C:\SHOTS\A.PNG", first));
-        Assert.False(index.IsCurrent(@"C:\shots\a.png", first with { Length = 11 }));
+        Assert.True(index.IsCurrent(@"C:\SHOTS\A.PNG", first, null));
+        Assert.False(index.IsCurrent(@"C:\shots\a.png", first with { Length = 11 }, null));
         Assert.Equal("hello", index.TextOf(@"C:\shots\a.png"));
 
         var generation = index.Generation;
