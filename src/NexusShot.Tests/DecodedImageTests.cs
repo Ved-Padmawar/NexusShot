@@ -151,4 +151,18 @@ public class DecodedImageTests
 
         Assert.True(back.Span.SequenceEqual(pixels.Span));
     }
+
+    [Fact]
+    public void AFreeformCaptureKeepsOnlyThePixelsInsideItsOutline()
+    {
+        using var image = DecodedImage.Allocate(4, 4);
+        image.Span.Fill(255);
+
+        // The left half, as a lasso.
+        image.KeepInside([new Core.Point(0, 0), new Core.Point(2, 0), new Core.Point(2, 4), new Core.Point(0, 4)]);
+
+        for (var y = 0; y < 4; y++)
+        for (var x = 0; x < 4; x++)
+            Assert.Equal(x < 2 ? 255 : 0, image.Span[(y * 4 + x) * 4 + 3]);
+    }
 }

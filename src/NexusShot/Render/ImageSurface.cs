@@ -44,7 +44,9 @@ public sealed class ImageSurface : IDisposable
     {
         using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
         using var frame = decoder.GetFrame(0);
-        frame.Object.GetSize(out var sourceWidth, out var sourceHeight).ThrowOnError();
+        using var rotator = Rotator(frame);
+        IWICBitmapSource source = rotator is null ? frame.Object : rotator.Object;
+        source.GetSize(out var sourceWidth, out var sourceHeight).ThrowOnError();
 
         var toWidth = maxWidth / (double)sourceWidth;
         var toHeight = maxHeight / (double)sourceHeight;
@@ -57,7 +59,7 @@ public sealed class ImageSurface : IDisposable
 
         using var scaler = WicImagingFactory.CreateBitmapScaler();
         scaler.Object.Initialize(
-            frame.Object, (uint)width, (uint)height,
+            source, (uint)width, (uint)height,
             WICBitmapInterpolationMode.WICBitmapInterpolationModeFant).ThrowOnError();
 
         using var converter = WicImagingFactory.CreateFormatConverter();
@@ -107,13 +109,13 @@ public sealed class ImageSurface : IDisposable
         return Upload(pixels, context);
     }
 
-    /// <summary>The image's dimensions, without decoding it. WIC reads the header only.</summary>
+    /// <summary>The image's dimensions as shown, without decoding it. WIC reads the header only.</summary>
     public static (int Width, int Height) ReadSize(string path)
     {
         using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
         using var frame = decoder.GetFrame(0);
         frame.Object.GetSize(out var width, out var height).ThrowOnError();
-        return ((int)width, (int)height);
+        return Orientation(frame) >= 5 ? ((int)height, (int)width) : ((int)width, (int)height);
     }
 
     /// <summary>
@@ -123,11 +125,24 @@ public sealed class ImageSurface : IDisposable
     public static DecodedImage Decode(string path)
     {
         using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
+        return Decode(decoder);
+    }
+
+    /// <summary>For bytes that never touch disk: a pasted image.</summary>
+    public static DecodedImage Decode(Stream stream)
+    {
+        using var decoder = WicImagingFactory.CreateDecoderFromStream(stream);
+        return Decode(decoder);
+    }
+
+    private static DecodedImage Decode(IComObject<IWICBitmapDecoder> decoder)
+    {
         using var frame = decoder.GetFrame(0);
+        using var rotator = Rotator(frame);
         using var converter = WicImagingFactory.CreateFormatConverter();
 
         converter.Object.Initialize(
-            frame.Object,
+            rotator is null ? frame.Object : rotator.Object,
             Constants.GUID_WICPixelFormat32bppPBGRA,
             WICBitmapDitherType.WICBitmapDitherTypeNone,
             null!,
@@ -139,6 +154,46 @@ public sealed class ImageSurface : IDisposable
             throw new InvalidOperationException("Image too large to decode.");
 
         return CopyPixels(converter.Object, (int)width, (int)height);
+    }
+
+    /// <summary>
+    /// Turns a frame upright, or null when it already is. A camera stores its pixels sensor-side up
+    /// with an EXIF orientation saying how to turn them; every read here applies it, so size,
+    /// thumbnail and editor agree, and a save writes the pixels upright.
+    /// </summary>
+    private static IComObject<IWICBitmapFlipRotator>? Rotator(IComObject<IWICBitmapFrameDecode> frame)
+    {
+        // EXIF 5 and 7 mirror across a diagonal: WIC rotates first, then flips.
+        var transform = Orientation(frame) switch
+        {
+            2 => WICBitmapTransformOptions.WICBitmapTransformFlipHorizontal,
+            3 => WICBitmapTransformOptions.WICBitmapTransformRotate180,
+            4 => WICBitmapTransformOptions.WICBitmapTransformFlipVertical,
+            5 => WICBitmapTransformOptions.WICBitmapTransformRotate90 | WICBitmapTransformOptions.WICBitmapTransformFlipHorizontal,
+            6 => WICBitmapTransformOptions.WICBitmapTransformRotate90,
+            7 => WICBitmapTransformOptions.WICBitmapTransformRotate270 | WICBitmapTransformOptions.WICBitmapTransformFlipHorizontal,
+            8 => WICBitmapTransformOptions.WICBitmapTransformRotate270,
+            _ => WICBitmapTransformOptions.WICBitmapTransformRotate0,
+        };
+        if (transform == WICBitmapTransformOptions.WICBitmapTransformRotate0) return null;
+
+        var rotator = WicImagingFactory.CreateBitmapFlipRotator();
+        try { rotator.Object.Initialize(frame.Object, transform).ThrowOnError(); }
+        catch { rotator.Dispose(); throw; }
+        return rotator;
+    }
+
+    /// <summary>The EXIF orientation, 1 (upright) when the format or file carries none.</summary>
+    private static unsafe ushort Orientation(IComObject<IWICBitmapFrameDecode> frame)
+    {
+        using var reader = frame.GetMetadataQueryReader();
+        if (reader is null) return 1;
+        var value = new PROPVARIANT();
+        fixed (char* name = "System.Photo.Orientation")
+        {
+            if (reader.Object.GetMetadataByName(new PWSTR(name), ref value).IsError) return 1;
+        }
+        return value.Anonymous.Anonymous.vt == VARENUM.VT_UI2 ? value.Anonymous.Anonymous.Anonymous.uiVal : (ushort)1;
     }
 
     /// <summary>Drains a WIC source straight into unmanaged memory, so the pixels never reach the

@@ -54,7 +54,7 @@ public class LibraryTests
     public void AnEmptySearchResultHasNoGroups()
     {
         List<ScreenshotHistoryItem> history = [new() { FilePath = @"C:\s\a.png", CapturedAt = Now }];
-        Assert.Empty(LibraryGroups.Build(history, "zzz", Now));
+        Assert.Empty(LibraryGroups.Build(history, new LibraryFilter("zzz"), Now));
     }
 
     [Fact]

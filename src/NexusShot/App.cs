@@ -23,6 +23,8 @@ public sealed class App : IDisposable
     private readonly Hotkeys _hotkeys;
     private readonly CapturePipeline _pipeline;
     private FolderWatcher? _watcher;
+    private readonly TextIndex _texts;
+    private readonly TextIndexer _indexer;
 
     public App()
     {
@@ -30,11 +32,15 @@ public sealed class App : IDisposable
         _history = _storage.LoadHistory();
 
         _history.RemoveAll(item => !File.Exists(item.FilePath));
+        _texts = _storage.LoadTextIndex();
 
-        _main = new MainWindow(_storage, _settings, _history);
+        _main = new MainWindow(_storage, _settings, _history) { Texts = _texts };
+        _indexer = new TextIndexer(() => _settings.OcrLanguage, (path, version, language, text) => _main.Post(() => Indexed(path, version, language, text)));
         _pipeline = new CapturePipeline(_storage, _settings, _history, _main);
         _main.CaptureRequested += Capture;
         _main.CaptureTextRequested += CaptureText;
+        _main.PasteRequested += Paste;
+        _main.CaptureDeleted += _pipeline.ForgetCapture;
         _main.TimedCaptureRequested += TimedCapture;
         _main.HotkeysChanged += ApplyHotkeys;
         _main.InstallRequested += InstallUpdate;
@@ -59,6 +65,7 @@ public sealed class App : IDisposable
 
         // Rewrites a Run entry from an older build, which had no --startup flag.
         if (_settings.StartWithWindows) Startup.Set(true);
+        SessionLifetime.RegisterCrashRestart();
 
         Log.Info("app.started", $"{_history.Count} captures");
 
@@ -67,12 +74,12 @@ public sealed class App : IDisposable
     }
 
     /// <summary>A login launch starts in the tray with no window; the hotkeys are live either way.</summary>
-    public void Run(bool showWindow = true)
+    /// <summary>Starts with what the launch asked for: the Library, a file in the editor, a capture,
+    /// or - at sign-in - nothing but the tray.</summary>
+    public void Run(LaunchRequest request)
     {
-        if (showWindow)
-        {
-            _main.Reveal();
-        }
+        if (request.ShowsLibrary) _main.Reveal();
+        else _main.Post(() => Handle(request));
 
         _main.ScheduleUpdateChecks();
 
@@ -80,12 +87,36 @@ public sealed class App : IDisposable
         application.Run();
     }
 
-    /// <summary>Returns true when the message was ours.</summary>
+    /// <summary>Returns true when the message was ours; a handled message answers 0.</summary>
     private bool OnMessage(uint message, long wParam, long lParam)
     {
+        // Unsaved edits hold a shutdown: saving would overwrite files the user never chose to save.
+        if (message == SessionLifetime.WM_QUERYENDSESSION)
+        {
+            var unsaved = _pipeline.UnsavedEditors;
+            if (unsaved == 0) return false;
+            SessionLifetime.BlockEnd(_main.Handle, unsaved == 1 ? "An open editor has unsaved changes." : $"{unsaved} open editors have unsaved changes.");
+            return true;
+        }
+
+        // No Exit runs when the session ends, so write out what it would.
+        if (message == SessionLifetime.WM_ENDSESSION)
+        {
+            SessionLifetime.AllowEnd(_main.Handle);
+            if (wParam != 0)
+            {
+                _storage.SaveHistory(_history);
+                _storage.SaveSettings(_settings);
+                _storage.SaveTextIndex(_texts);
+                Log.Info("app.session_end");
+            }
+            return false;
+        }
+
         if (message == Platform.SingleInstance.WM_COPYDATA)
         {
-            if (Platform.SingleInstance.ReadForwardedFile(lParam) is { } file) Open([file]);
+            // Read now, while the sender's buffer lives; handled after returning, which frees the sender.
+            if (Platform.SingleInstance.ReadForwarded(lParam) is { } request) _main.Post(() => Handle(request));
             return true;
         }
 
@@ -168,6 +199,59 @@ public sealed class App : IDisposable
     /// <summary>Opens images in the editor: from Explorer, or handed over by a second launch.</summary>
     public void Open(IReadOnlyList<string> paths) => _pipeline.Open(paths);
 
+    /// <summary>Copied image files open as they are; a copied image is filed in the save folder like
+    /// a capture, so it has a name and a place in the Library, and opens in the editor.</summary>
+    private void Paste()
+    {
+        ClipboardReader.Pasted? pasted;
+        try { pasted = ClipboardReader.Read(); }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException
+            or System.Runtime.InteropServices.ExternalException)
+        {
+            Log.Error("paste.read", exception);
+            UserFeedback.Error(_main.Handle, "Could not read the clipboard. Please retry.");
+            return;
+        }
+
+        if (pasted is null)
+        {
+            UserFeedback.Info(_main.Handle, "There is no image on the clipboard to open.");
+            return;
+        }
+        if (pasted.Image is not { } pixels)
+        {
+            Open(pasted.Files);
+            return;
+        }
+        _ = FilePasted(pixels, _settings.ScreenshotFolder, _settings.CaptureFormat);
+    }
+
+    private async Task FilePasted(DecodedImage pixels, string folder, ImageFormat format)
+    {
+        ScreenshotHistoryItem? item = null;
+        try { item = await MediaWorker.Run(() => CaptureStore.Save(pixels, folder, format)); }
+        catch (Exception exception) { Log.Error("paste.save", exception); }
+        finally { pixels.Dispose(); }
+        _main.Post(() =>
+        {
+            if (_disposed) return;
+            if (item is null) UserFeedback.Error(_main.Handle, "Could not save the pasted image. Check the save folder and available disk space.");
+            else _pipeline.LandInEditor(item);
+        });
+    }
+
+    private void Handle(LaunchRequest request)
+    {
+        if (request.File is { } file) Open([file]);
+        switch (request.Capture)
+        {
+            case CaptureCommand.Region: Capture(CaptureMode.Region); break;
+            case CaptureCommand.Window: Capture(CaptureMode.ActiveWindow); break;
+            case CaptureCommand.Screen: Capture(CaptureMode.FullScreen); break;
+            case CaptureCommand.Text: CaptureText(); break;
+        }
+    }
+
     private void ShowMain()
     {
         _main.Reveal();
@@ -182,27 +266,50 @@ public sealed class App : IDisposable
     private bool _captureRunning;
     private bool _disposed;
 
-    private void Capture(CaptureMode mode)
+    /// <summary>What Enter repeats in the next pick. This session only: a region from another day,
+    /// or another monitor layout, is rarely the one wanted.</summary>
+    private RectInt? _lastRegion;
+
+    private void Capture(CaptureMode mode) => Capture(mode, PickerMode.Region);
+
+    /// <summary>Picks something to read. The picker can still be switched to take an image instead.</summary>
+    private void CaptureText() => Capture(CaptureMode.Region, PickerMode.Text);
+
+    /// <summary>The picker, for a region capture, opens in <paramref name="picker"/>'s mode; its result
+    /// is filed, or read when the picker ended in Text.</summary>
+    private void Capture(CaptureMode mode, PickerMode picker)
     {
         if (_captureRunning) return;
         _captureRunning = true;
         try
         {
-            // The desktop must be sampled before focus changes; only encoding/filing is deferred.
-            var cursor = _settings.IncludeCursor;
-            var pixels = mode switch
+            // Sampled before focus changes; a pointer drawn into a text capture would only hide letters.
+            var cursor = _settings.IncludeCursor && picker != PickerMode.Text;
+            var app = _settings.NameAfterApp ? ForegroundApp.Name() : null;
+            DecodedImage pixels;
+            if (mode == CaptureMode.FullScreen) pixels = ScreenCapture.CaptureFullScreen(cursor);
+            else if (mode == CaptureMode.ActiveWindow) pixels = ScreenCapture.CaptureActiveWindow(cursor);
+            else
             {
-                CaptureMode.FullScreen => ScreenCapture.CaptureFullScreen(cursor),
-                CaptureMode.ActiveWindow => ScreenCapture.CaptureActiveWindow(cursor),
-                _ => RegionOverlay.Pick(cursor, Theme),
-            };
-            if (pixels is null) { _captureRunning = false; return; }
+                if (RegionOverlay.Pick(cursor, Theme, _lastRegion, picker, _settings.ShowMagnifier) is not { } picked)
+                {
+                    _captureRunning = false;
+                    return;
+                }
+                _lastRegion = picked.Region;
+                if (picked.Text)
+                {
+                    _ = FinishCaptureText(picked.Pixels, _settings.OcrLanguage);
+                    return;
+                }
+                pixels = picked.Pixels;
+            }
             if (_settings.ShutterSound) Shutter.Play();
 
             // "Copy only" means the clipboard is the whole result, whatever the auto-copy setting says.
-            _ = FinishCapture(pixels, _settings.ScreenshotFolder, _settings.SaveAutomatically,
+            _ = FinishCapture(pixels, _settings.ScreenshotFolder,
                 _settings.CopyToClipboardAutomatically || _settings.AfterCapture == AfterCapture.CopyOnly,
-                _settings.CaptureFormat);
+                _settings.CaptureFormat, app);
         }
         catch (Exception exception)
         {
@@ -237,24 +344,6 @@ public sealed class App : IDisposable
 
     /// <summary>Picks a region and copies the text in it. Nothing is saved and no card appears: the
     /// text is the result, and a notification says how much there was.</summary>
-    private void CaptureText()
-    {
-        if (_captureRunning) return;
-        _captureRunning = true;
-        try
-        {
-            var pixels = RegionOverlay.Pick(includeCursor: false, Theme);
-            if (pixels is null) { _captureRunning = false; return; }
-            _ = FinishCaptureText(pixels, _settings.OcrLanguage);
-        }
-        catch (Exception exception)
-        {
-            _captureRunning = false;
-            Log.Error("capture_text.failed", exception);
-            UserFeedback.Error(_main.Handle, "Could not capture the screen. Please retry.");
-        }
-    }
-
     private async Task FinishCaptureText(DecodedImage pixels, string? language)
     {
         var lines = 0;
@@ -279,7 +368,7 @@ public sealed class App : IDisposable
         });
     }
 
-    private async Task FinishCapture(DecodedImage pixels, string folder, bool autoSave, bool autoCopy, ImageFormat format)
+    private async Task FinishCapture(DecodedImage pixels, string folder, bool autoCopy, ImageFormat format, string? app)
     {
         ScreenshotHistoryItem? item = null;
         Exception? failure = null;
@@ -288,7 +377,7 @@ public sealed class App : IDisposable
         {
             item = await MediaWorker.Run(() =>
             {
-                var saved = CaptureStore.Save(pixels, folder, autoSave, format);
+                var saved = CaptureStore.Save(pixels, folder, format, app);
                 if (autoCopy)
                 {
                     try { ClipboardImage.Copy(pixels, saved.FilePath); }
@@ -342,10 +431,11 @@ public sealed class App : IDisposable
         {
             Updater.Install(installer);
         }
-        catch (System.ComponentModel.Win32Exception exception)
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+            or IOException or UnauthorizedAccessException or InvalidDataException)
         {
             Log.Error("update.install", exception, installer);
-            _main.UpdateFailed("the installer could not be started");
+            _main.UpdateFailed(exception is InvalidDataException ? exception.Message : "the installer could not be started");
             return;
         }
         FinishExit();
@@ -355,6 +445,7 @@ public sealed class App : IDisposable
     {
         _storage.SaveHistory(_history);
         _storage.SaveSettings(_settings);
+        _storage.SaveTextIndex(_texts);
         Log.Info("app.exit");
         Functions.PostQuitMessage(0);
     }
@@ -377,6 +468,8 @@ public sealed class App : IDisposable
 
     private void OnSettingsChanged()
     {
+        _main.SweepExpired();
+        ReadNewText();
         if (string.Equals(_watchedFolder, _settings.ScreenshotFolder, StringComparison.OrdinalIgnoreCase)) return;
         WatchSaveFolder();
         SyncHistory();
@@ -401,89 +494,79 @@ public sealed class App : IDisposable
         }
     }
 
-    /// <summary>
-    /// Reconciles the history with what is actually on disk.
-    ///
-    /// Deletes and renames made in Explorer drop out; images that appeared there are adopted. The
-    /// watcher fires on a background thread, so the work is posted to the UI thread rather than
-    /// mutating the list underneath a frame that is drawing it.
-    /// </summary>
-    private readonly Dictionary<string, FileVersion> _historyVersions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HistorySync _sync = new();
 
+    /// <summary>Reconciles the history with the save folder. The watcher fires on a background thread,
+    /// so the work is posted to the UI thread rather than mutating the list under a frame drawing it.</summary>
     private void SyncHistory()
     {
         _main.Post(() =>
         {
-            if (_disposed) return;
-            if (_syncRunning) { _syncQueued = true; return; }
-            _syncRunning = true;
-            _ = ScanHistory(_settings.ScreenshotFolder,
-                _history.Select(item => item.FilePath).ToArray(),
-                new Dictionary<string, FileVersion>(_historyVersions, StringComparer.OrdinalIgnoreCase));
+            if (_disposed || !_sync.TryBegin()) return;
+            _ = ScanHistory(_settings.ScreenshotFolder, _history.Select(item => item.FilePath).ToArray(), _sync.Versions());
         });
     }
 
     private async Task ScanHistory(string folder, string[] known, Dictionary<string, FileVersion> versions)
     {
-        HistoryScan? result = null;
-        try { result = await Task.Run(() => HistoryScanner.Scan(folder, known, versions)); }
+        HistoryScan? scan = null;
+        try { scan = await Task.Run(() => HistoryScanner.Scan(folder, known, versions)); }
         catch (Exception exception) { Log.Error("history.scan_failed", exception); }
         _main.Post(() =>
         {
-            _syncRunning = false;
             if (_disposed) return;
-            if (!string.Equals(folder, _settings.ScreenshotFolder, StringComparison.OrdinalIgnoreCase))
-                _syncQueued = true;
-            else if (result is not null)
+            var stale = !string.Equals(folder, _settings.ScreenshotFolder, StringComparison.OrdinalIgnoreCase);
+            var result = _sync.Complete(_history, scan, stale, File.Exists, FileVersion.Read);
+            foreach (var path in result.Removed)
             {
-                var changed = false;
-                foreach (var path in result.Missing)
-                {
-                    // A capture/save may have recreated this path since the worker observed it.
-                    if (File.Exists(path)) continue;
-                    changed |= _history.RemoveAll(item => string.Equals(item.FilePath, path, StringComparison.OrdinalIgnoreCase)) != 0;
-                    _historyVersions.Remove(path);
-                    _main.ForgetMissingCapture(path);
-                }
-                foreach (var (path, version) in result.Unreadable) _historyVersions[path] = version;
-                var live = _history.ToDictionary(item => item.FilePath, StringComparer.OrdinalIgnoreCase);
-                foreach (var (candidate, version) in result.Changed)
-                {
-                    // Skip a file deleted or replaced since the scan; the watcher rescans replacements.
-                    try
-                    {
-                        if (FileVersion.Read(candidate.FilePath) != version) { _syncQueued = true; continue; }
-                    }
-                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                    { continue; }
-                    _historyVersions[candidate.FilePath] = version;
-                    if (live.TryGetValue(candidate.FilePath, out var existing))
-                    {
-                        existing.Width = candidate.Width;
-                        existing.Height = candidate.Height;
-                        _main.DropCache(existing.FilePath);
-                        _pipeline.RefreshExistingPreview(existing);
-                    }
-                    else _history.Add(candidate);
-                    changed = true;
-                }
-                if (changed)
-                {
-                    _main.SweepDecoded();
-                    _history.Sort((a, b) => b.CapturedAt.CompareTo(a.CapturedAt));
-                    _storage.SaveHistory(_history);
-                    _main.Invalidate();
-                }
+                _main.ForgetMissingCapture(path);
+                _pipeline.ForgetCapture(path);
             }
-            if (!_syncQueued) return;
-            _syncQueued = false;
-            SyncHistory();
+            foreach (var item in result.Refreshed)
+            {
+                _main.DropCache(item.FilePath);
+                _pipeline.RefreshExistingPreview(item);
+            }
+            if (result.Changed)
+            {
+                _main.SweepDecoded();
+                _storage.SaveHistory(_history);
+                _main.Invalidate();
+            }
+            _main.SweepExpired();
+            ReadNewText();
+            if (result.ScanAgain) SyncHistory();
         });
     }
 
-    /// <summary>Single-flight state for <see cref="SyncHistory"/>. UI-thread only.</summary>
-    private bool _syncRunning;
-    private bool _syncQueued;
+    /// <summary>Queues every capture whose text is unread or out of date, newest first.</summary>
+    private void ReadNewText()
+    {
+        if (!_settings.FindTextInCaptures) return;
+        _texts.Retain(_history.Select(item => item.FilePath));
+        foreach (var item in _history)
+        {
+            try
+            {
+                if (!_texts.IsCurrent(item.FilePath, FileVersion.Read(item.FilePath), _settings.OcrLanguage)) _indexer.Enqueue(item.FilePath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    /// <summary>Saved at most every few seconds while a backlog is read, and at exit.</summary>
+    private DateTime _textsSaved;
+
+    private void Indexed(string path, FileVersion version, string? language, string text)
+    {
+        // A read begun before the language changed is dropped; the change already queued it again.
+        if (_disposed || language != _settings.OcrLanguage) return;
+        _texts.Set(path, version, language, text);
+        if (text.Length > 0) _main.Invalidate();
+        if (DateTime.UtcNow - _textsSaved < TimeSpan.FromSeconds(10)) return;
+        _textsSaved = DateTime.UtcNow;
+        _storage.SaveTextIndex(_texts);
+    }
 
     public void Dispose()
     {
@@ -491,6 +574,8 @@ public sealed class App : IDisposable
         // Detached first, so a late message cannot reach disposed hotkeys or a dead tray icon.
         _main.CaptureRequested -= Capture;
         _main.CaptureTextRequested -= CaptureText;
+        _main.PasteRequested -= Paste;
+        _main.CaptureDeleted -= _pipeline.ForgetCapture;
         _main.TimedCaptureRequested -= TimedCapture;
         _main.HotkeysChanged -= ApplyHotkeys;
         _main.RecordingChanged -= SuspendHotkeys;
@@ -501,6 +586,7 @@ public sealed class App : IDisposable
         _pipeline.Dispose();
 
         _watcher?.Dispose();
+        _indexer.Dispose();
         _hotkeys.Dispose();
         UserFeedback.Tray = null;
         _tray.Dispose();

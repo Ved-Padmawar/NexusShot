@@ -24,6 +24,10 @@ public sealed partial class EditorWindow
     private const uint WmKeyDown = 0x0100;
     private const uint WmChar = 0x0102;
     private const uint WmSetCursor = 0x0020;
+    private const uint WmCaptureChanged = 0x0215;
+    private const uint WmKeyUp = 0x0101;
+    private const uint WmMButtonDown = 0x0207;
+    private const uint WmMButtonUp = 0x0208;
 
     /// <summary>One wheel notch; touchpads send fractions of it, applied as they arrive.</summary>
     private const double WheelDelta = 120;
@@ -45,7 +49,7 @@ public sealed partial class EditorWindow
         if (msg == 0x0010 && !RequestClose()) return Handled; // WM_CLOSE
         // Repaints and caption messages remain responsive; editing waits for the save result.
         if ((_fileBusy || _confirmingClose)
-            && msg is WmLButtonDown or WmLButtonUp or WmMouseMove or WmKeyDown or WmChar or WmMouseWheel)
+            && msg is WmLButtonDown or WmLButtonUp or WmMButtonDown or WmMouseMove or WmKeyDown or WmChar or WmMouseWheel)
             return Handled;
         switch (msg)
         {
@@ -53,8 +57,28 @@ public sealed partial class EditorWindow
                 _dispatch.Drain();
                 return Handled;
 
+            case WmLButtonDown when KeyDown(VIRTUAL_KEY.VK_SPACE) && !_text.IsOpen:
+            case WmMButtonDown:
+                BeginPan(ClientPoint(lParam));
+                return Handled;
+
+            case WmLButtonUp or WmMButtonUp when _panFrom is not null:
+                EndPan();
+                return Handled;
+
+            case WmCaptureChanged when _panFrom is not null:
+                _panFrom = null;
+                return Handled;
+
             case WmLButtonDown:
                 OnPointerPressed(ClientPoint(lParam));
+                return Handled;
+
+            case WmMouseMove when _panFrom is { } from:
+                var (x, y) = ClientPoint(lParam);
+                _viewport.PanBy(x - from.X, y - from.Y);
+                _panFrom = new Point(x, y);
+                Invalidate();
                 return Handled;
 
             case WmMouseMove:
@@ -63,6 +87,13 @@ public sealed partial class EditorWindow
 
             case WmLButtonUp:
                 OnPointerReleased(ClientPoint(lParam));
+                return Handled;
+
+            // A release clears _dragging first, so a live gesture here lost the pointer for good.
+            case WmCaptureChanged when _dragging:
+                _dragging = false;
+                _document.CancelGesture();
+                Invalidate();
                 return Handled;
 
             case WmMouseWheel:
@@ -83,6 +114,10 @@ public sealed partial class EditorWindow
                 if (OnKeyDown((VIRTUAL_KEY)(ulong)wParam.Value)) return Handled;
                 break;
 
+            case WmKeyUp when (VIRTUAL_KEY)(ulong)wParam.Value == VIRTUAL_KEY.VK_SPACE:
+                RefreshCursor();
+                break;
+
             case WmChar:
                 // The typed character, already mapped through the keyboard layout.
                 if (OnChar((char)(ulong)wParam.Value)) return Handled;
@@ -95,6 +130,23 @@ public sealed partial class EditorWindow
                 break;
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
+    }
+
+    /// <summary>The view follows the pointer, as a hand dragging the image would. Captured, so a
+    /// release outside the window still ends it.</summary>
+    private void BeginPan((int X, int Y) client)
+    {
+        if (_image is null) return;
+        _panFrom = new Point(client.X, client.Y);
+        Functions.SetCapture(Handle);
+        RefreshCursor();
+    }
+
+    private void EndPan()
+    {
+        _panFrom = null;
+        Functions.ReleaseCapture();
+        RefreshCursor();
     }
 
     /// <summary>
@@ -134,6 +186,12 @@ public sealed partial class EditorWindow
             return true;
         }
 
+        if (_panFrom is not null || (KeyDown(VIRTUAL_KEY.VK_SPACE) && !_text.IsOpen))
+        {
+            Functions.SetCursor(new HCURSOR { Value = SystemCursor(PointerCursor.Hand) });
+            return true;
+        }
+
         // A grip under the pointer says what dragging it will do, whatever tool is active.
         if (_hoverHandle is { } handle)
         {
@@ -166,7 +224,7 @@ public sealed partial class EditorWindow
         }
 
         // The selection's interior drags it, and its grips have already been answered above.
-        if (_document.Selected is { } selected && selected.HitTest(image))
+        if (_document.Selected is { } selected && selected.InFrame(image))
         {
             Functions.SetCursor(new HCURSOR { Value = ToolCursors.Move });
             return true;
@@ -548,8 +606,35 @@ public sealed partial class EditorWindow
                 case VIRTUAL_KEY.VK_NUMPAD9:
                     ZoomFit();
                     return true;
+                case VIRTUAL_KEY.VK_D:
+                    _document.DuplicateSelected();
+                    return true;
+                case VIRTUAL_KEY.VK_OEM_6:   // ]
+                    _document.Reorder(shift ? LayerMove.Front : LayerMove.Forward);
+                    return true;
+                case VIRTUAL_KEY.VK_OEM_4:   // [
+                    _document.Reorder(shift ? LayerMove.Back : LayerMove.Backward);
+                    return true;
             }
             return ToggleTextFormat(key);
+        }
+
+        // With nothing selected the arrows are not ours.
+        if (key is VIRTUAL_KEY.VK_LEFT or VIRTUAL_KEY.VK_RIGHT or VIRTUAL_KEY.VK_UP or VIRTUAL_KEY.VK_DOWN
+            && _document.Selected is not null)
+        {
+            var step = shift ? 10 : 1;
+            _document.NudgeSelected(
+                key switch { VIRTUAL_KEY.VK_LEFT => -step, VIRTUAL_KEY.VK_RIGHT => step, _ => 0 },
+                key switch { VIRTUAL_KEY.VK_UP => -step, VIRTUAL_KEY.VK_DOWN => step, _ => 0 });
+            return true;
+        }
+
+        // Space held is the hand; its cursor shows before the drag starts.
+        if (key == VIRTUAL_KEY.VK_SPACE)
+        {
+            RefreshCursor();
+            return true;
         }
 
         switch (key)

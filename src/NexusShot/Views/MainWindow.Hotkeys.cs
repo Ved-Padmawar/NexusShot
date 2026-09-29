@@ -9,8 +9,8 @@ public sealed partial class MainWindow
     /// Turns the key press into a binding for the armed row.
     ///
     /// A bare modifier is not a shortcut, so those are ignored and recording stays armed until a real
-    /// key arrives. Esc cancels, Backspace unbinds, Delete restores the default - and a single key such
-    /// as F9 or PrtScn is a legitimate shortcut, so no modifier is required.
+    /// key arrives. Esc cancels, Backspace unbinds, Delete restores the default. A gesture
+    /// <see cref="AppSettings.Bind"/> refuses keeps the row armed with the reason shown.
     /// </summary>
     private void RecordHotkey(VIRTUAL_KEY key)
     {
@@ -32,36 +32,32 @@ public sealed partial class MainWindow
             or VIRTUAL_KEY.VK_LMENU or VIRTUAL_KEY.VK_RMENU)
             return;
 
-        var target = _settings.Hotkey(id);
+        var gesture = key switch
+        {
+            VIRTUAL_KEY.VK_BACK => new HotkeyBinding(),
+            VIRTUAL_KEY.VK_DELETE => new AppSettings().Hotkey(id),
+            _ => new HotkeyBinding { Modifiers = HeldModifiers(), Key = (uint)key },
+        };
 
-        // Backspace unbinds - key 0 is never registered. Delete puts the default back.
-        if (key == VIRTUAL_KEY.VK_BACK)
+        _hotkeyWarning = _settings.Bind(id, gesture);
+        if (_hotkeyWarning is null)
         {
-            target.Modifiers = 0;
-            target.Key = 0;
+            // Re-registering the new set also ends the suspension recording began.
+            _recordingHotkey = null;
+            SaveSettings();
+            HotkeysChanged?.Invoke();
         }
-        else if (key == VIRTUAL_KEY.VK_DELETE)
-        {
-            var restored = new AppSettings().Hotkey(id);
-            target.Modifiers = restored.Modifiers;
-            target.Key = restored.Key;
-        }
-        else
+        Invalidate();
+
+        static uint HeldModifiers()
         {
             uint modifiers = 0;
-            if (Down(VIRTUAL_KEY.VK_CONTROL)) modifiers |= 0x0002;
-            if (Down(VIRTUAL_KEY.VK_SHIFT)) modifiers |= 0x0004;
-            if (Down(VIRTUAL_KEY.VK_MENU)) modifiers |= 0x0001;
-            if (Down(VIRTUAL_KEY.VK_LWIN) || Down(VIRTUAL_KEY.VK_RWIN)) modifiers |= 0x0008;
-
-            target.Modifiers = modifiers;
-            target.Key = (uint)key;
+            if (Down(VIRTUAL_KEY.VK_CONTROL)) modifiers |= HotkeyBinding.Control;
+            if (Down(VIRTUAL_KEY.VK_SHIFT)) modifiers |= HotkeyBinding.Shift;
+            if (Down(VIRTUAL_KEY.VK_MENU)) modifiers |= HotkeyBinding.Alt;
+            if (Down(VIRTUAL_KEY.VK_LWIN) || Down(VIRTUAL_KEY.VK_RWIN)) modifiers |= HotkeyBinding.Win;
+            return modifiers;
         }
-
-        _recordingHotkey = null;
-        SaveSettings();
-        HotkeysChanged?.Invoke();
-        Invalidate();
 
         static bool Down(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
     }

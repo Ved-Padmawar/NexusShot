@@ -7,19 +7,18 @@ namespace NexusShot.Platform;
 /// to history or observed as a PNG by the folder watcher.</summary>
 internal static class CaptureStore
 {
-    public static ScreenshotHistoryItem Save(DecodedImage pixels, string folder, bool autoSave, ImageFormat format)
+    public static ScreenshotHistoryItem Save(DecodedImage pixels, string folder, ImageFormat format, string? app = null)
     {
-        var directory = autoSave ? folder : Path.GetTempPath();
-        Directory.CreateDirectory(directory);
-        var temporary = Path.Combine(directory, $".nexusshot-{Guid.NewGuid():N}.tmp");
+        Directory.CreateDirectory(folder);
+        var temporary = Path.Combine(folder, $".nexusshot-{Guid.NewGuid():N}.tmp");
         try
         {
             ImageWriter.Write(temporary, pixels, format);
             var captured = DateTimeOffset.Now;
-            var name = autoSave ? CaptureName.For(captured.LocalDateTime) : $"NexusShot_{Guid.NewGuid():N}";
+            var name = CaptureName.For(captured.LocalDateTime, app);
             for (var suffix = 0; ; suffix++)
             {
-                var destination = Path.Combine(directory,
+                var destination = Path.Combine(folder,
                     name + (suffix == 0 ? "" : $"_{suffix:D3}") + ImageFiles.ExtensionOf(format));
                 try
                 {

@@ -79,7 +79,7 @@ internal static partial class ClipboardWriter
     /// OpenClipboard fail outright. Clipboard managers and Office hold it for a few milliseconds at
     /// a time, so one attempt loses that race often enough to drop captures.
     /// </summary>
-    private static bool TryOpenClipboard(IntPtr owner)
+    internal static bool TryOpenClipboard(IntPtr owner)
     {
         for (var attempt = 0; ; attempt++)
         {

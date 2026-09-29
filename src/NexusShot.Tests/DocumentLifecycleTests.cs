@@ -8,23 +8,76 @@ namespace NexusShot.Tests;
 public class DocumentLifecycleTests
 {
     [Fact]
-    public void SavingClearsTheDocumentButKeepsTheTypingDefaults()
+    public void SavingKeepsAnnotationsCropAndHistory()
     {
         var document = NewDocument();
-        document.ColorHex = "#00FF00";
-        document.TextStyle = TextStyle.Bold;
         Draw(document, EditorTool.Rectangle, new Point(100, 100), new Point(300, 300));
+        document.BeginCropSession();
+        Drag(document, new Point(0, 0), new Point(50, 50));
+        document.CommitCrop();
 
-        document.ResetAfterSave();
+        document.MarkSaved(document.Revision);
 
+        Assert.Single(document.Annotations);
+        Assert.NotNull(document.CropBounds);
+        Assert.True(document.CanUndo);
+        Assert.False(document.HasUnsavedChanges);
+    }
+
+    [Fact]
+    public void UndoingPastASaveIsDirtyAndRedoingBackIsClean()
+    {
+        var document = NewDocument();
+        Draw(document, EditorTool.Rectangle, new Point(100, 100), new Point(300, 300));
+        document.MarkSaved(document.Revision);
+
+        document.Undo();
         Assert.Empty(document.Annotations);
-        Assert.Null(document.Selected);
-        Assert.Null(document.CropBounds);
-        Assert.False(document.CanUndo);
-        Assert.False(document.CanRedo);
+        Assert.True(document.HasUnsavedChanges);
 
-        Assert.Equal("#00FF00", document.ColorHex);
-        Assert.Equal(TextStyle.Bold, document.TextStyle);
+        document.Redo();
+        Assert.False(document.HasUnsavedChanges);
+    }
+
+    [Fact]
+    public void AnEditMadeWhileASaveWritesStaysDirty()
+    {
+        var document = NewDocument();
+        Draw(document, EditorTool.Rectangle, new Point(100, 100), new Point(300, 300));
+        var exported = document.Revision;
+
+        Draw(document, EditorTool.Ellipse, new Point(400, 400), new Point(500, 500));
+        document.MarkSaved(exported);
+
+        Assert.True(document.HasUnsavedChanges);
+    }
+
+    [Fact]
+    public void ACancelledCreationReturnsToTheSavedRevision()
+    {
+        var document = NewDocument();
+        Draw(document, EditorTool.Rectangle, new Point(100, 100), new Point(300, 300));
+        document.MarkSaved(document.Revision);
+
+        Draw(document, EditorTool.Rectangle, new Point(600, 600), new Point(600, 600));
+
+        Assert.Single(document.Annotations);
+        Assert.False(document.HasUnsavedChanges);
+    }
+
+    [Fact]
+    public void FoundRedactionsAreOneUndoStepClippedToTheImage()
+    {
+        var document = NewDocument();
+        document.ColorHex = "#FF0000";
+
+        document.AddRedactions([new Rect(10, 10, 50, 20), new Rect(ImageWidth - 5, 0, 50, 20), new Rect(-100, -100, 10, 10)]);
+
+        Assert.Equal(2, document.Annotations.Count);
+        Assert.All(document.Annotations, redaction => Assert.Equal(Annotation.RedactColor, redaction.ColorHex));
+        Assert.Equal(new Rect(ImageWidth - 5, 0, 5, 20), document.Annotations[1].Bounds);
+        document.Undo();
+        Assert.Empty(document.Annotations);
     }
 
     [Fact]

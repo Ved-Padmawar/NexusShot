@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.Numerics;
+using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Render;
 
@@ -36,25 +37,69 @@ public static partial class ScreenCapture
 
     public static DecodedImage CaptureFullScreen(bool includeCursor) => Capture(VirtualDesktop, includeCursor);
 
-    /// <summary>
-    /// Blits the foreground window.
-    ///
-    /// The DWM extended frame is preferred over <c>GetWindowRect</c>: the latter includes the drop
-    /// shadow, which lands as a band of desktop around the window.
-    /// </summary>
+    /// <summary>The foreground window: its own pixels where Windows can capture them, otherwise what
+    /// the screen shows in its frame - overlapping windows included.</summary>
     public static DecodedImage CaptureActiveWindow(bool includeCursor)
     {
         var window = GetForegroundWindow();
-        if (window == IntPtr.Zero)
+        if (window == IntPtr.Zero || FrameBounds(window) is not { } bounds)
             throw new InvalidOperationException("Could not determine the active window.");
-        RectInt winRect;
-        if (DwmGetWindowAttribute(window, 9, out var dwmRect, Marshal.SizeOf<RECT>()) == 0)
-            winRect = new RectInt(dwmRect.Left, dwmRect.Top, dwmRect.Right - dwmRect.Left, dwmRect.Bottom - dwmRect.Top);
-        else if (WindowInterop.GetWindowRect(window, out var rect))
-            winRect = new RectInt(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
-        else throw new InvalidOperationException("Could not determine the active window.");
-        return Capture(Intersect(winRect, VirtualDesktop), includeCursor);
+
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362))
+        {
+            // IsSupported talks to the capture service, so it can throw like the capture itself.
+            try { if (WindowCapture.IsSupported) return WindowCapture.Capture(window, includeCursor); }
+            catch (Exception exception) when (exception is COMException or TimeoutException
+                or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
+            { Log.Error("capture.window_fallback", exception); }
+        }
+        return Capture(Intersect(bounds, VirtualDesktop), includeCursor);
     }
+
+    /// <summary>
+    /// The top-level windows a region pick can snap to, front to back, in desktop pixels. Left out:
+    /// hidden, minimised and cloaked windows (on another virtual desktop), click-through overlays -
+    /// an invisible full-screen one would swallow every snap - and the desktop itself, so a click on
+    /// bare wallpaper still cancels.
+    /// </summary>
+    public static List<RectInt> VisibleWindows()
+    {
+        var found = new List<RectInt>();
+        for (var window = GetTopWindow(IntPtr.Zero); window != IntPtr.Zero; window = GetWindow(window, GW_HWNDNEXT))
+        {
+            if (!WindowInterop.IsWindowVisible(window) || IsIconic(window)) continue;
+            if ((WindowInterop.GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0) continue;
+            if (DwmGetWindowAttribute(window, DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0) continue;
+            if (IsDesktop(window)) continue;
+            if (FrameBounds(window) is { Width: > 0, Height: > 0 } bounds) found.Add(bounds);
+        }
+        return found;
+    }
+
+    /// <summary>The DWM extended frame, which <c>GetWindowRect</c> would widen by the drop shadow -
+    /// a band of desktop around the window.</summary>
+    private static RectInt? FrameBounds(IntPtr window)
+    {
+        if (DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, out WindowInterop.RECT frame, Marshal.SizeOf<WindowInterop.RECT>()) == 0)
+            return new RectInt(frame.Left, frame.Top, frame.Right - frame.Left, frame.Bottom - frame.Top);
+        if (WindowInterop.GetWindowRect(window, out var rect))
+            return new RectInt(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
+        return null;
+    }
+
+    private static unsafe bool IsDesktop(IntPtr window)
+    {
+        var name = stackalloc char[16];
+        var length = GetClassNameW(window, name, 16);
+        var type = new ReadOnlySpan<char>(name, length);
+        return type is "Progman" or "WorkerW";
+    }
+
+    private const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+    private const int DWMWA_CLOAKED = 14;
+    private const int GWL_EXSTYLE = -20;
+    private const nint WS_EX_TRANSPARENT = 0x00000020;
+    private const uint GW_HWNDNEXT = 2;
 
     /// <summary>
     /// Blits the region and hands back the pixels, premultiplied BGRA and top-down - the format
@@ -118,8 +163,13 @@ public static partial class ScreenCapture
             var pixels = image.Span;
             unsafe { new ReadOnlySpan<byte>((void*)bits, image.ByteLength).CopyTo(pixels); }
 
-            // BitBlt leaves the alpha byte as garbage; the desktop is opaque, so force it.
-            for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
+            // BitBlt leaves alpha as garbage and the desktop is opaque; vectorised, as 4K is millions of pixels.
+            var words = MemoryMarshal.Cast<byte, uint>(pixels);
+            var opaque = new Vector<uint>(0xFF000000);
+            var i = 0;
+            for (; i <= words.Length - Vector<uint>.Count; i += Vector<uint>.Count)
+                (new Vector<uint>(words[i..]) | opaque).CopyTo(words[i..]);
+            for (; i < words.Length; i++) words[i] |= 0xFF000000;
 
             return image;
         }
@@ -199,6 +249,13 @@ public static partial class ScreenCapture
 
     [LibraryImport("user32.dll", SetLastError = true)] private static partial IntPtr GetForegroundWindow();
     [LibraryImport("dwmapi.dll", SetLastError = true)] private static partial int DwmGetWindowAttribute(IntPtr window, int attr, out WindowInterop.RECT value, int size);
+    [LibraryImport("dwmapi.dll", SetLastError = true)] private static partial int DwmGetWindowAttribute(IntPtr window, int attr, out int value, int size);
+    [LibraryImport("user32.dll")] private static partial IntPtr GetTopWindow(IntPtr window);
+    [LibraryImport("user32.dll")] private static partial IntPtr GetWindow(IntPtr window, uint relation);
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool IsIconic(IntPtr window);
+    [LibraryImport("user32.dll", EntryPoint = "GetClassNameW")] private static unsafe partial int GetClassNameW(IntPtr window, char* name, int capacity);
     [LibraryImport("user32.dll", SetLastError = true)] private static partial IntPtr GetDC(IntPtr window);
     [LibraryImport("user32.dll", SetLastError = true)] private static partial int ReleaseDC(IntPtr window, IntPtr dc);
 

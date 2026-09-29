@@ -176,7 +176,9 @@ public sealed partial class FloatingPreview
         var source = _card.Item.FilePath;
         try
         {
-            destination = FilePicker.SavePng(Handle, Path.GetFileName(source), Path.GetDirectoryName(source));
+            // A byte-for-byte copy, so only the capture's own format is offered.
+            destination = FilePicker.SaveImage(Handle, Path.GetFileName(source), Path.GetDirectoryName(source),
+                [ImageFiles.FormatOf(source)]);
             if (destination is null) { _savingAs = false; return; }
         }
         catch (Exception exception)

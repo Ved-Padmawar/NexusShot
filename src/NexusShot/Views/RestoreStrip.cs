@@ -79,19 +79,14 @@ public sealed partial class RestoreStrip : D2DRenderWindow
     /// is drawn solid instead.</summary>
     private void ApplyBackdrop()
     {
-        var corner = DWMWCP_ROUND;
-        DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref corner, sizeof(int));
-        var dark = 1;
-        DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
-
-        var margins = new MARGINS { Left = -1, Right = -1, Top = -1, Bottom = -1 };
-        var backdrop = DWMSBT_TRANSIENTWINDOW;
-        _acrylic = DwmExtendFrameIntoClientArea(Handle, ref margins) == 0
-            && DwmSetWindowAttribute(Handle, DWMWA_SYSTEMBACKDROP_TYPE, ref backdrop, sizeof(int)) == 0;
+        WindowInterop.SetDwmAttribute(Handle, WindowInterop.DWMWA_WINDOW_CORNER_PREFERENCE, WindowInterop.DWMWCP_ROUND);
+        WindowInterop.SetDwmAttribute(Handle, WindowInterop.DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
+        _acrylic = WindowInterop.ExtendFrameIntoClientArea(Handle)
+            && WindowInterop.SetDwmAttribute(Handle, WindowInterop.DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_TRANSIENTWINDOW);
     }
 
     /// <summary>A band across the screen, refitted as the restore list shrinks.</summary>
-    private void Relayout()
+    public void Relayout()
     {
         var work = Monitors.WorkAreaUnderCursor();
         _scale = Monitors.DpiScaleUnderCursor(Handle);
@@ -149,6 +144,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         _resources ??= new D2DResources(target);
         _ui ??= new Ui(_resources);
         _ui.Theme = SystemTheme.Resolve(AppTheme.Dark, _stack.Settings.Accent);
+        _ui.Scale = _scale;
         var ui = _ui;
         var theme = ui.Theme;
 
@@ -268,7 +264,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
                 return new LRESULT { Value = 0 };
 
             case WmMouseMove:
-                if (!_tracking) _tracking = TrackLeave();
+                if (!_tracking) _tracking = WindowInterop.TrackMouseLeave(Handle);
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
@@ -290,17 +286,6 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
 
-    /// <summary>Asks for WM_MOUSELEAVE, which Windows does not send unless a window opts in.</summary>
-    private bool TrackLeave()
-    {
-        var track = new TRACKMOUSEEVENT
-        {
-            cbSize = (uint)Marshal.SizeOf<TRACKMOUSEEVENT>(),
-            dwFlags = 0x00000002,   // TME_LEAVE
-            hwndTrack = Handle,
-        };
-        return TrackMouseEvent(ref track);
-    }
 
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
@@ -321,31 +306,5 @@ public sealed partial class RestoreStrip : D2DRenderWindow
     private static readonly IntPtr HWND_TOPMOST = new(-1);
     private const uint SWP_SHOWWINDOW = 0x0040;
 
-    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
-    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
-    private const int DWMWA_SYSTEMBACKDROP_TYPE = 38;
-    private const int DWMWCP_ROUND = 2;
     private const int DWMSBT_TRANSIENTWINDOW = 3;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MARGINS { public int Left, Right, Top, Bottom; }
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmExtendFrameIntoClientArea(IntPtr window, ref MARGINS margins);
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct TRACKMOUSEEVENT
-    {
-        public uint cbSize;
-        public uint dwFlags;
-        public IntPtr hwndTrack;
-        public uint dwHoverTime;
-    }
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool TrackMouseEvent(ref TRACKMOUSEEVENT track);
 }

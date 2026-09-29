@@ -13,7 +13,7 @@ public enum TextAlign { Left, Center, Right }
 /// <summary>The cursor a control asks for; the window maps it to a system cursor.</summary>
 public enum PointerCursor { Arrow, Hand, Text }
 
-public enum ButtonStyle { Ghost, Primary, Outline, Secondary, Danger, Destructive }
+public enum ButtonStyle { Ghost, Primary, Tinted, Outline, Secondary, Danger, Destructive }
 
 /// <summary>Where a tooltip sits relative to its anchor: below for bars, to the right for a rail.</summary>
 public enum TipSide { Below, Right }
@@ -110,7 +110,7 @@ public sealed class Ui(D2DResources resources)
     public void EndFrame()
     {
         while (_clips.Count > 0) PopClip();
-        while (_layerMasks.Count > 0) PopRoundedLayer();
+        while (_layerMasks.Count > 0) PopLayer();
 
         if (Hot != _lastHot)
         {
@@ -263,19 +263,31 @@ public sealed class Ui(D2DResources resources)
     }
 
     /// <summary>
-    /// Clips everything drawn until <see cref="PopRoundedLayer"/> to a rounded rectangle, in the
+    /// Clips everything drawn until <see cref="PopLayer"/> to a rounded rectangle, in the
     /// target's current transform - so the editor can round the capture and everything painted on it
     /// in image space. A layer rather than per-draw geometry, because an annotation is many draws.
     /// </summary>
     public void PushRoundedLayer(Rect bounds, float radius)
     {
+        using var mask = resources.Factory.CreateRoundedRectangleGeometry(Rounded(bounds, radius));
+        PushMaskLayer(mask.Object, bounds);
+    }
+
+    /// <summary>Clips to a closed outline until <see cref="PopLayer"/>, as
+    /// <see cref="PushRoundedLayer"/> clips to a rounded rectangle.</summary>
+    public void PushPathLayer(IReadOnlyList<Point> outline, Rect bounds)
+    {
+        using var mask = resources.CreatePath(outline, closed: true);
+        PushMaskLayer(mask.Object, bounds);
+    }
+
+    private void PushMaskLayer(object mask, Rect bounds)
+    {
         using var context = _target.AsDeviceContext();
         if (context is null) return;
 
-        using var mask = resources.Factory.CreateRoundedRectangleGeometry(Rounded(bounds, radius));
-
         // An AddRef'd raw pointer, as the AOT-generated layer struct wants; released after the pop.
-        var maskPointer = ComObject.GetOrCreateComInstance(mask.Object);
+        var maskPointer = ComObject.GetOrCreateComInstance(mask);
         context.PushLayer(new D2D1_LAYER_PARAMETERS1
         {
             contentBounds = AnnotationRenderer.ToRect(bounds),
@@ -288,7 +300,7 @@ public sealed class Ui(D2DResources resources)
         _layerMasks.Push(maskPointer);
     }
 
-    public void PopRoundedLayer()
+    public void PopLayer()
     {
         if (_layerMasks.Count == 0) return;
         using var context = _target.AsDeviceContext();
@@ -483,10 +495,12 @@ public sealed class Ui(D2DResources resources)
     /// An icon button: a square with an icon that reads idle, hovered, pressed, on (an armed mode, in
     /// the accent) or soft (a quieter selected state). Every square button in the app is this one.
     /// </summary>
+    /// <summary><paramref name="tint"/> is an icon colour that holds through hover and press - a
+    /// favourite's gold - so only the background answers the pointer.</summary>
     public bool IconButton(
         int id, Rect bounds, Icon icon, string? tooltip = null, string? keycap = null,
         bool on = false, bool soft = false, bool enabled = true, double iconSize = 18,
-        TipSide side = TipSide.Below, bool destructive = false)
+        TipSide side = TipSide.Below, bool destructive = false, Rgba? tint = null)
     {
         var clicked = enabled && Interact(id, bounds);
         var hot = enabled && (IsHot(id) || IsActive(id));
@@ -499,11 +513,11 @@ public sealed class Ui(D2DResources resources)
             : default;
         if (fill.A > 0) FillRounded(bounds, (float)S(Metrics.RadiusSm), fill);
 
-        var color = on ? Theme.TextOnAccent
+        var color = tint ?? (on ? Theme.TextOnAccent
             : soft ? Theme.AccentText
             : destructive && hot ? Theme.Danger
             : hot ? Theme.TextPrimary
-            : Theme.TextSecondary;
+            : Theme.TextSecondary);
         if (!enabled) color = color.WithAlpha((byte)(color.A * 0.35));
         Icon(icon, bounds, color, S(iconSize));
 
@@ -521,8 +535,10 @@ public sealed class Ui(D2DResources resources)
     /// wash disappears against a bright capture, so hover takes the accent; a destructive action
     /// (close, delete) turns red instead. Every such button in the app is this one.
     /// </summary>
+    /// <summary>As <see cref="IconButton"/>, <paramref name="tint"/> keeps the icon's colour through
+    /// hover.</summary>
     public bool OverlayButton(int id, Rect bounds, Icon icon, double iconSize, string? tooltip = null,
-        bool on = false, bool destructive = false, bool round = false)
+        bool on = false, bool destructive = false, bool round = false, Rgba? tint = null)
     {
         var clicked = Interact(id, bounds);
         var hot = IsHot(id) || IsActive(id);
@@ -531,7 +547,7 @@ public sealed class Ui(D2DResources resources)
             : IsActive(id) ? Theme.AccentPressed
             : hot || on ? Theme.Accent
             : OverlayRest;
-        var ink = destructive && hot ? Rgba.White : hot || on ? Theme.TextOnAccent : Rgba.White;
+        var ink = tint ?? (destructive && hot ? Rgba.White : hot || on ? Theme.TextOnAccent : Rgba.White);
 
         if (round)
         {
@@ -562,7 +578,8 @@ public sealed class Ui(D2DResources resources)
         return Math.Ceiling(width + S(small ? 20 : 24));
     }
 
-    /// <summary>A text button: ghost (transparent until hovered), primary (accent), outline, secondary
+    /// <summary>A text button: ghost (transparent until hovered), primary (accent), tinted (an accent
+    /// wash that deepens on hover - a solid accent shows no hover on the lighter presets), outline, secondary
     /// (a raised surface, for a button that must read on a busy backdrop), danger (ghost that turns red
     /// on approach), or destructive (outline at rest, tinted red on approach - for the action that
     /// deletes). An optional leading icon and trailing keycap.</summary>
@@ -581,6 +598,13 @@ public sealed class Ui(D2DResources resources)
             case ButtonStyle.Primary:
                 fill = pressed ? Theme.AccentPressed : hot ? Theme.AccentHover : Theme.Accent;
                 text = Theme.TextOnAccent;
+                break;
+            case ButtonStyle.Tinted:
+                fill = Theme.Accent.WithAlpha(Theme.IsDark
+                    ? (byte)(pressed ? 64 : hot ? 46 : 26)
+                    : (byte)(pressed ? 86 : hot ? 66 : 41));
+                border = Theme.Accent.WithAlpha(128);
+                text = Theme.AccentText;
                 break;
             case ButtonStyle.Outline:
                 fill = pressed ? Theme.SurfacePressed : hot ? Theme.SurfaceHover : default;

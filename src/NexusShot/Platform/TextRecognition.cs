@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using NexusShot.Core;
 using NexusShot.Render;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -26,22 +27,49 @@ internal static class TextRecognition
         return lines.Length;
     }
 
-    private static string[] Recognize(DecodedImage image, string? language)
+    /// <summary>Whether any recognition language can serve <paramref name="language"/>.</summary>
+    public static bool CanRead(string? language) => Engine(language) is not null;
+
+    /// <summary>The lines of text in the image, as the engine writes them - without spaces between
+    /// words in the languages that use none. Blocking.</summary>
+    public static string[] Recognize(DecodedImage image, string? language) =>
+        [.. Read(image, language, out _).Lines.Select(line => line.Text)];
+
+    /// <summary>Each line's words and where they sit, in <paramref name="image"/>'s pixels. Blocking.</summary>
+    public static List<IReadOnlyList<TextWord>> Words(DecodedImage image, string? language)
     {
-        // A chosen language since uninstalled falls back to the profile's rather than failing.
-        var engine = (language is null ? null : OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language(language)))
-            ?? OcrEngine.TryCreateFromUserProfileLanguages()
-            ?? throw new InvalidOperationException(
-                "No text-recognition language is installed. Add one in Settings > Time & language > Language & region.");
+        var result = Read(image, language, out var scale);
+        return [.. result.Lines.Select(line => (IReadOnlyList<TextWord>)[.. line.Words.Select(word => new TextWord(word.Text,
+            new Rect(word.BoundingRect.X * scale, word.BoundingRect.Y * scale,
+                word.BoundingRect.Width * scale, word.BoundingRect.Height * scale)))])];
+    }
 
-        var limit = (int)OcrEngine.MaxImageDimension;
-        if (image.Width > limit || image.Height > limit)
-            throw new InvalidOperationException($"Text recognition reads images up to {limit} pixels on a side.");
+    /// <summary>
+    /// The engine refuses anything larger than its limit outright, so a bigger image is read shrunk,
+    /// <paramref name="scale"/> being the factor back to its pixels. Shrunk text may read less well,
+    /// but a long scroll or a multi-monitor capture still gives up most of it.
+    /// </summary>
+    private static OcrResult Read(DecodedImage image, string? language, out int scale)
+    {
+        var engine = Engine(language) ?? throw new InvalidOperationException(
+            "No text-recognition language is installed. Add one in Settings > Time & language > Language & region.");
 
+        scale = Downsample.FactorToFit(image.Width, image.Height, (int)OcrEngine.MaxImageDimension);
+        if (scale == 1) return Run(engine, image);
+        var shrunk = Downsample.Box(image.Span, image.Width, image.Height, scale, out var width, out var height);
+        using var smaller = DecodedImage.CopyFrom(shrunk, width, height);
+        return Run(engine, smaller);
+    }
+
+    /// <summary>A chosen language since uninstalled falls back to the profile's rather than failing.</summary>
+    private static OcrEngine? Engine(string? language) =>
+        (language is null ? null : OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language(language)))
+        ?? OcrEngine.TryCreateFromUserProfileLanguages();
+
+    private static OcrResult Run(OcrEngine engine, DecodedImage image)
+    {
         using var bitmap = ToSoftwareBitmap(image);
-        var result = engine.RecognizeAsync(bitmap).AsTask().GetAwaiter().GetResult();
-
-        return [.. result.Lines.Select(line => line.Text)];
+        return engine.RecognizeAsync(bitmap).AsTask().GetAwaiter().GetResult();
     }
 
     /// <summary>Native to native through a WinRT buffer: a byte[] of a full-screen capture would sit

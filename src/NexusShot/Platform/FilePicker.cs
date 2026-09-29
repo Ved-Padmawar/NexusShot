@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+using NexusShot.Core;
 
 namespace NexusShot.Platform;
 
@@ -17,8 +18,10 @@ public static partial class FilePicker
     private static readonly Guid IID_IFileSaveDialog = new("84bccd23-5fde-4cdb-aea4-af64b83d78ab");
     private static readonly Guid IID_IShellItem = new("43826d1e-e718-42ee-bc55-a1e261c37bfe");
 
-    /// <summary>The chosen path, or null if the user cancelled.</summary>
-    public static unsafe string? SavePng(nint owner, string suggestedName, string? initialFolder)
+    /// <summary>The chosen path, or null if the user cancelled. <paramref name="formats"/> are the
+    /// types offered, the first preselected; the path's extension names the one picked.</summary>
+    public static unsafe string? SaveImage(nint owner, string suggestedName, string? initialFolder,
+        IReadOnlyList<ImageFormat> formats)
     {
         var hr = CoCreateInstance(CLSID_FileSaveDialog, IntPtr.Zero, CLSCTX_INPROC_SERVER,
             IID_IFileSaveDialog, out var raw);
@@ -32,13 +35,15 @@ public static partial class FilePicker
             dialog.GetOptions(out var options);
             dialog.SetOptions(options | FOS_OVERWRITEPROMPT | FOS_FORCEFILESYSTEM);
 
-            var filter = new COMDLG_FILTERSPEC { pszName = "PNG image", pszSpec = "*.png" };
-            var buffer = Marshal.AllocHGlobal(Marshal.SizeOf<COMDLG_FILTERSPEC>());
+            var size = Marshal.SizeOf<COMDLG_FILTERSPEC>();
+            var buffer = Marshal.AllocHGlobal(size * formats.Count);
             try
             {
-                Marshal.StructureToPtr(filter, buffer, false);
-                dialog.SetFileTypes(1, buffer);
-                dialog.SetDefaultExtension("png");
+                for (var i = 0; i < formats.Count; i++)
+                    Marshal.StructureToPtr(Filter(formats[i]), buffer + i * size, false);
+                dialog.SetFileTypes((uint)formats.Count, buffer);
+                // Without it the dialog would not append the picked type's extension to a bare name.
+                dialog.SetDefaultExtension(ImageFiles.ExtensionOf(formats[0])[1..]);
                 dialog.SetFileName(suggestedName);
 
                 if (!string.IsNullOrEmpty(initialFolder) && Directory.Exists(initialFolder)
@@ -58,7 +63,8 @@ public static partial class FilePicker
             }
             finally
             {
-                Marshal.DestroyStructure<COMDLG_FILTERSPEC>(buffer);
+                for (var i = 0; i < formats.Count; i++)
+                    Marshal.DestroyStructure<COMDLG_FILTERSPEC>(buffer + i * size);
                 Marshal.FreeHGlobal(buffer);
             }
         }
@@ -71,6 +77,13 @@ public static partial class FilePicker
             Marshal.Release(raw);
         }
     }
+
+    private static COMDLG_FILTERSPEC Filter(ImageFormat format) => format switch
+    {
+        ImageFormat.Jpeg => new() { pszName = "JPEG image", pszSpec = "*.jpg;*.jpeg" },
+        ImageFormat.Bmp => new() { pszName = "BMP image", pszSpec = "*.bmp" },
+        _ => new() { pszName = "PNG image", pszSpec = "*.png" },
+    };
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct COMDLG_FILTERSPEC

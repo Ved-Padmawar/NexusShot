@@ -23,6 +23,20 @@ public sealed partial class MainWindow
         else if (_gridEmpty)
             ui.Text("No captures match", grid, ui.Theme.TextTertiary, S(Metrics.FontMd), align: TextAlign.Center);
         else ui.Scrollbar(grid, _gridHeight, _scroll.Position);
+
+        _periodBox.DrawOpen(ui, new Rect(0, 0, width, height));
+    }
+
+    private static readonly string[] PeriodNames = ["All time", "Today", "Last 7 days", "Last 30 days"];
+    private readonly Dropdown _periodBox = new();
+
+    private List<LibraryGroups.Group> Groups() => LibraryGroups.Build(_history, _filter, DateTime.Now, Texts.TextOf);
+
+    private void Filter(LibraryFilter filter)
+    {
+        if (filter == _filter) return;
+        _filter = filter;
+        _scroll.Reset();
     }
 
     // ============================  HEADER  ============================
@@ -90,8 +104,8 @@ public sealed partial class MainWindow
         _ => "Timed capture",
     };
 
-    /// <summary>The count, the update button when there is one, the search box, and the folder and
-    /// settings buttons.</summary>
+    /// <summary>The count, the update button when there is one, the filters and search box, and the
+    /// folder and settings buttons.</summary>
     private void DrawToolsRow(Ui ui, double width)
     {
         var theme = ui.Theme;
@@ -112,16 +126,24 @@ public sealed partial class MainWindow
         right -= S(32) + S(8);
 
         var search = new Rect(right - S(220), row.Center.Y - S(15), S(220), S(30));
-        if (ShowsUpdateButton)
-            DrawUpdateButton(ui, new Rect(search.X - S(8) - UpdateButtonWidth, search.Y, UpdateButtonWidth, S(30)));
+        var result = ui.Field(Ui.Id("library.search"), search, _filter.Query, character => !char.IsControl(character), 80,
+            leading: Icons.Search, placeholder: _settings.FindTextInCaptures ? "Search names and text" : "Search",
+            face: Face.Text);
+        if (result.Changed) Filter(_filter with { Query = result.Text });
 
-        var result = ui.Field(Ui.Id("library.search"), search, _query, character => !char.IsControl(character), 80,
-            leading: Icons.Search, placeholder: "Search", face: Face.Text);
-        if (result.Changed && result.Text != _query)
-        {
-            _query = result.Text;
-            _scroll.Reset();
-        }
+        var periodWidth = Dropdown.Width(ui, PeriodNames);
+        var period = new Rect(search.X - S(8) - periodWidth, search.Y, periodWidth, S(30));
+        _periodBox.Field(ui, Ui.Id("library.period"), period, PeriodNames, (int)_filter.Period,
+            index => Filter(_filter with { Period = (LibraryPeriod)index }));
+
+        var favorites = new Rect(period.X - S(8) - S(32), row.Center.Y - S(16), S(32), S(32));
+        if (ui.IconButton(Ui.Id("library.favorites"), favorites, _filter.FavoritesOnly ? Icons.StarFilled : Icons.Star,
+            _filter.FavoritesOnly ? "Show all captures" : "Show favorites only",
+            tint: _filter.FavoritesOnly ? ui.Theme.Favorite : null))
+            Filter(_filter with { FavoritesOnly = !_filter.FavoritesOnly });
+
+        if (ShowsUpdateButton)
+            DrawUpdateButton(ui, new Rect(favorites.X - S(8) - UpdateButtonWidth, search.Y, UpdateButtonWidth, S(30)));
     }
 
     /// <summary>The row's left end: the count and a Select button, or, while picking, how many are
@@ -159,7 +181,7 @@ public sealed partial class MainWindow
         x += labelWidth + S(14);
 
         // Everything the grid shows, so a search narrows what Select all takes.
-        var shown = LibraryGroups.Build(_history, _query, DateTime.Now).SelectMany(group => group.Items)
+        var shown = Groups().SelectMany(group => group.Items)
             .Select(item => item.FilePath).ToList();
         if (ui.Button(Ui.Id("library.select.all"), Place(ui.ButtonWidth("Select all", Icons.SelectAll, small: true)),
             "Select all", ButtonStyle.Outline, Icons.SelectAll, small: true, enabled: !shown.All(_selection.Contains)))
@@ -180,7 +202,7 @@ public sealed partial class MainWindow
 
     /// <summary>A tile's look this frame: everything that decides its pixels, so a band redraws only
     /// when one of these changes.</summary>
-    private readonly record struct TileLook(bool Hot, double Lift, double Shown, bool Picked, bool Copied,
+    private readonly record struct TileLook(bool Hot, double Lift, double Shown, bool Picked, bool Copied, bool Favorite,
         ImageSurface? Bitmap, string Ago);
 
     private sealed record GridTile(ScreenshotHistoryItem Item, int Index, Rect Bounds)
@@ -210,7 +232,7 @@ public sealed partial class MainWindow
         var theme = ui.Theme;
         var inset = S(16);
         var layout = new LibraryLayout(bounds.Width - inset * 2, _scale);
-        var groups = LibraryGroups.Build(_history, _query, DateTime.Now);
+        var groups = Groups();
         _gridEmpty = groups.Count == 0;
 
         // Measured before placement, so the clamp and the scrollbar agree with this frame's rows.
@@ -224,7 +246,7 @@ public sealed partial class MainWindow
         layers.PlaceScroll(bounds, (int)bounds.Width, (int)Math.Ceiling(contentHeight), scroll);
         var origin = new Point(bounds.X, bounds.Y - scroll);
 
-        var signature = HashCode.Combine(bounds.Width, _scale, theme, _query);
+        var signature = HashCode.Combine(bounds.Width, _scale, theme, _filter, _filter.Query.Length > 0 ? Texts.Generation : 0);
         if (signature != _gridSignature)
         {
             _bands.Clear();
@@ -338,6 +360,7 @@ public sealed partial class MainWindow
             ui.Animate(Ui.Id(id, 1), hot && !_selection.Active ? 1 : 0, Metrics.MotionFast),
             _selection.Contains(tile.Item.FilePath),
             string.Equals(_copiedPath, tile.Item.FilePath, StringComparison.OrdinalIgnoreCase) && DateTime.UtcNow < _toastUntil,
+            tile.Item.Favorite,
             GetThumbnail(resources, tile.Item, decodeWidth),
             LibraryGroups.Ago(tile.Item.CapturedAt.LocalDateTime, now));
     }
@@ -361,6 +384,7 @@ public sealed partial class MainWindow
             hash.Add(Math.Round(look.Shown * 40));
             hash.Add(look.Picked);
             hash.Add(look.Copied);
+            hash.Add(look.Favorite);
             hash.Add(look.Bitmap is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(look.Bitmap));
             hash.Add(look.Ago);
         }
@@ -393,17 +417,25 @@ public sealed partial class MainWindow
         else ui.StrokeRounded(image, radius, look.Hot ? theme.StrokeStrong : theme.StrokeDefault);
 
         if (_selection.Active) DrawPickBadge(ui, image, look.Picked);
+        else if (look.Favorite && look.Shown < 0.99)
+        {
+            var badge = new Rect(image.X + S(8), image.Y + S(8), S(24), S(24));
+            ui.FillRounded(badge, (float)S(12), Rgba.Black.WithAlpha((byte)(150 * (1 - look.Shown))));
+            ui.Icon(Icons.StarFilled, badge, theme.Favorite.WithAlpha((byte)(255 * (1 - look.Shown))), S(14));
+        }
 
         var overlayClicked = false;
         if (look.Shown > 0.01)
         {
-            (Icon Icon, string Tip, Action Run, bool Danger)[] actions =
+            (Icon Icon, string Tip, Action Run, bool Danger, Rgba? Tint)[] actions =
             [
-                (Icons.Delete, "Delete", () => AskDelete([item]), true),
-                (Icons.Folder, "Show in folder", () => Reveal(item.FilePath), false),
-                (look.Copied ? Icons.Tick : Icons.Copy, look.Copied ? "Copied" : "Copy", () => Post(() => CopyToClipboard(item)), false),
-                (Icons.Share, "Share", () => Post(() => Share(item)), false),
-                (Icons.Edit, "Open in editor", () => Post(() => EditRequested?.Invoke(item)), false),
+                (Icons.Delete, "Delete", () => AskDelete([item]), true, null),
+                (item.Favorite ? Icons.StarFilled : Icons.Star, item.Favorite ? "Remove from favorites" : "Add to favorites",
+                    () => ToggleFavorite(item), false, item.Favorite ? theme.Favorite : null),
+                (Icons.Folder, "Show in folder", () => Reveal(item.FilePath), false, null),
+                (look.Copied ? Icons.Tick : Icons.Copy, look.Copied ? "Copied" : "Copy", () => Post(() => CopyToClipboard(item)), false, null),
+                (Icons.Share, "Share", () => Post(() => Share(item)), false, null),
+                (Icons.Edit, "Open in editor", () => Post(() => EditRequested?.Invoke(item)), false, null),
             ];
             var size = S(28);
             var x = image.Right - S(8) - actions.Length * size - (actions.Length - 1) * S(4);
@@ -412,7 +444,7 @@ public sealed partial class MainWindow
             {
                 var button = new Rect(x + i * (size + S(4)), y, size, size);
                 if (ui.OverlayButton(Ui.Id(id, 10 + i), button, actions[i].Icon, S(15), actions[i].Tip,
-                    on: look.Copied && actions[i].Icon == Icons.Tick, destructive: actions[i].Danger))
+                    on: look.Copied && actions[i].Icon == Icons.Tick, destructive: actions[i].Danger, tint: actions[i].Tint))
                 {
                     actions[i].Run();
                     overlayClicked = true;
@@ -428,6 +460,13 @@ public sealed partial class MainWindow
             new Rect(caption.X, caption.Y, caption.Width - agoWidth - S(8), caption.Height), theme.TextPrimary,
             S(Metrics.FontSm), Weight.Semibold);
         return overlayClicked;
+    }
+
+    private void ToggleFavorite(ScreenshotHistoryItem item)
+    {
+        item.Favorite = !item.Favorite;
+        _storage.SaveHistory(_history);
+        Invalidate();
     }
 
     /// <summary>A click on a tile, not on one of its actions: picks it while picking, and opens the

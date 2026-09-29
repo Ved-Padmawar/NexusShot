@@ -110,17 +110,6 @@ public class PlacementTests
 
     // ---- desktop pickers ----
 
-    [Fact]
-    public void AClickOrAOnePixelDragSelectsNothing()
-    {
-        Assert.Null(OverlayGeometry.Selection(new Point(50, 50), new Point(50, 50)));
-        Assert.Null(OverlayGeometry.Selection(new Point(50, 50), new Point(300, 51)));
-    }
-
-    [Fact]
-    public void ADragInAnyDirectionSelectsTheSameRegion() =>
-        Assert.Equal(new Rect(10, 20, 90, 80), OverlayGeometry.Selection(new Point(100, 100), new Point(10, 20)));
-
     private static readonly Size Desktop = new(1920, 1080);
     private static readonly Size Badge = new(80, 26);
 

@@ -32,7 +32,7 @@ public sealed class LibraryWindowTests : IDisposable
                 var storage = new Storage(_directory);
                 var settings = new AppSettings { ScreenshotFolder = _directory };
                 using var screen = new Offscreen(Width, Height);
-                using var window = new MainWindow(storage, settings, history);
+                using var window = new MainWindow(storage, settings, history) { DeleteToBin = File.Delete };
                 test(new Library(window, screen, settings, storage));
             }
             catch (Exception exception) { failure = exception; }
@@ -321,11 +321,11 @@ public sealed class LibraryWindowTests : IDisposable
 
     private static readonly UpdateRelease Release = new(new Version(9, 0, 0), "installer", 0, "signature");
 
-    /// <summary>Clicks along the tools row between the capture count and Search until the update
-    /// button answers, returning where it was.</summary>
+    /// <summary>Clicks leftward along the tools row, from just short of the favourites and period
+    /// filters toward the Select button, until the update button answers; returns where it was.</summary>
     private static Point ClickUpdateButton(Library library, Func<bool> answered)
     {
-        for (var x = Width / 2; x < Width - 330; x += 6)
+        for (var x = Width / 2 - 24; x > 200; x -= 6)
         {
             var at = new Point(x, 56 + 22);
             library.Click(at);

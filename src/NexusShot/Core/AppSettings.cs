@@ -44,22 +44,30 @@ public static class HotkeyIds
 }
 
 /// <summary>
-/// A persisted global shortcut: raw Win32 modifier flags (ALT=1, CONTROL=2, SHIFT=4, WIN=8) plus a
-/// virtual-key code. Modifier-less bindings are valid - a single key like F9 or PrtScn is a
-/// legitimate capture shortcut, as in the system snipping tool.
+/// A persisted global shortcut: raw Win32 modifier flags plus a virtual-key code. Key 0 is unbound.
 /// </summary>
 public sealed class HotkeyBinding
 {
+    public const uint Alt = 0x0001;
+    public const uint Control = 0x0002;
+    public const uint Shift = 0x0004;
+    public const uint Win = 0x0008;
+
     public uint Modifiers { get; set; }
     public uint Key { get; set; }
 
     public HotkeyBinding Clone() => new() { Modifiers = Modifiers, Key = Key };
     public bool IsSameGesture(HotkeyBinding other) => Modifiers == other.Modifiers && Key == other.Key;
+
+    /// <summary>F1-F24, PrtScn and Pause type nothing, so they may be taken system-wide alone, as the
+    /// Snipping Tool takes PrtScn. Any other key needs Ctrl, Alt or Win: bare, or with Shift - which
+    /// only changes what it types - it would swallow that key in every app.</summary>
+    public bool IsUsable => Key == 0 || (Modifiers & ~Shift) != 0 || Key is >= 0x70 and <= 0x87 or 0x2C or 0x13;
 }
 
 public sealed class AppSettings
 {
-    private const uint ControlShift = 0x0002 | 0x0004;
+    private const uint ControlShift = HotkeyBinding.Control | HotkeyBinding.Shift;
 
     public string ScreenshotFolder { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "NexusShot");
@@ -74,7 +82,16 @@ public sealed class AppSettings
     public int TimedCaptureSeconds { get; set; } = 5;
 
     public bool CopyToClipboardAutomatically { get; set; } = true;
-    public bool SaveAutomatically { get; set; } = true;
+
+    /// <summary>Captures older than this many days go to the Recycle Bin; 0 keeps everything. One of
+    /// <see cref="Retention.Choices"/>.</summary>
+    public int KeepCapturesDays { get; set; }
+
+    /// <summary>Adds the name of the app in front to a capture's file name.</summary>
+    public bool NameAfterApp { get; set; }
+
+    /// <summary>Reads the text in each capture in the background, for the Library search.</summary>
+    public bool FindTextInCaptures { get; set; } = true;
     public bool StartWithWindows { get; set; }
     public AppTheme Theme { get; set; } = AppTheme.System;
 
@@ -84,10 +101,13 @@ public sealed class AppSettings
     public AfterCapture AfterCapture { get; set; } = AfterCapture.Card;
     public bool ShutterSound { get; set; }
 
-    /// <summary>Whether NexusShot looks for a newer release at startup and once a day. It only ever
-    /// says one exists; updating is always the user's click.</summary>
+    /// <summary>Whether NexusShot looks for a newer release at startup, every six hours and after
+    /// wake. It only ever says one exists; updating is always the user's click.</summary>
     public bool CheckForUpdates { get; set; } = true;
     public bool IncludeCursor { get; set; }
+
+    /// <summary>The magnifier beside the pointer in the region picker.</summary>
+    public bool ShowMagnifier { get; set; } = true;
 
     /// <summary>The written format of new captures.</summary>
     public ImageFormat CaptureFormat { get; set; } = ImageFormat.Png;
@@ -145,6 +165,38 @@ public sealed class AppSettings
         HotkeyId.TimedCapture => TimedCaptureHotkey,
         _ => throw new ArgumentOutOfRangeException(nameof(id)),
     };
+
+    /// <summary>The one writer of a shortcut. Null once <paramref name="gesture"/> is bound; otherwise
+    /// why it was refused, and nothing changed. A gesture two actions shared would fail to register
+    /// for the second, which would then be reported as taken by another app.</summary>
+    public string? Bind(HotkeyId id, HotkeyBinding gesture)
+    {
+        if (!gesture.IsUsable) return "Add Ctrl, Alt or Win - on its own that key would stop typing everywhere.";
+        if (OwnerOf(gesture, id) is { } owner) return $"{owner.Title()} already uses that shortcut.";
+        var binding = Hotkey(id);
+        binding.Modifiers = gesture.Modifiers;
+        binding.Key = gesture.Key;
+        return null;
+    }
+
+    /// <summary>Unbinds whatever <see cref="Bind"/> would refuse, keeping the first of any duplicates:
+    /// a hand-edited or older settings file is held to the same rules as the recorder.</summary>
+    public void DropUnusableHotkeys()
+    {
+        foreach (var id in HotkeyIds.All)
+        {
+            var binding = Hotkey(id);
+            var clashesWithEarlier = OwnerOf(binding, id) is { } owner && owner < id;
+            if (binding.IsUsable && !clashesWithEarlier) continue;
+            binding.Modifiers = 0;
+            binding.Key = 0;
+        }
+    }
+
+    private HotkeyId? OwnerOf(HotkeyBinding gesture, HotkeyId except) => gesture.Key == 0
+        ? null
+        : HotkeyIds.All.Where(other => other != except && Hotkey(other).IsSameGesture(gesture))
+            .Select(other => (HotkeyId?)other).FirstOrDefault();
 }
 
 public sealed class ScreenshotHistoryItem
@@ -153,6 +205,9 @@ public sealed class ScreenshotHistoryItem
     public required DateTimeOffset CapturedAt { get; set; }
     public int Width { get; set; }
     public int Height { get; set; }
+
+    /// <summary>Starred in the Library: filterable, and never removed by <see cref="Retention"/>.</summary>
+    public bool Favorite { get; set; }
 
     public string FileName => Path.GetFileName(FilePath);
 }
@@ -165,6 +220,7 @@ public sealed class ScreenshotHistoryItem
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(AppSettings))]
 [JsonSerializable(typeof(List<ScreenshotHistoryItem>))]
+[JsonSerializable(typeof(Dictionary<string, TextIndex.Entry>))]
 internal partial class AppJsonContext : JsonSerializerContext;
 
 /// <summary>
@@ -197,6 +253,12 @@ public sealed class Storage
 
     public string SettingsPath => Path.Combine(_directory, "settings.json");
     public string HistoryPath => Path.Combine(_directory, "history.json");
+    public string TextIndexPath => Path.Combine(_directory, "text-index.json");
+
+    public TextIndex LoadTextIndex() => new(Read(TextIndexPath, AppJsonContext.Default.DictionaryStringEntry));
+
+    public void SaveTextIndex(TextIndex index) =>
+        Write(TextIndexPath, new Dictionary<string, TextIndex.Entry>(index.Entries), AppJsonContext.Default.DictionaryStringEntry);
 
     public AppSettings LoadSettings()
     {
@@ -210,6 +272,7 @@ public sealed class Storage
         settings.RestoreClosedHotkey ??= defaults.RestoreClosedHotkey;
         settings.CaptureTextHotkey ??= defaults.CaptureTextHotkey;
         settings.TimedCaptureHotkey ??= defaults.TimedCaptureHotkey;
+        settings.DropUnusableHotkeys();
         if (string.IsNullOrWhiteSpace(settings.ScreenshotFolder)) settings.ScreenshotFolder = defaults.ScreenshotFolder;
         settings.PreviewDismissSeconds = Math.Clamp(settings.PreviewDismissSeconds, 0, 120);
         settings.TimedCaptureSeconds = Math.Clamp(settings.TimedCaptureSeconds, 1, 30);
@@ -218,6 +281,7 @@ public sealed class Storage
         if (!Enum.IsDefined(settings.AfterCapture)) settings.AfterCapture = AfterCapture.Card;
         if (!Enum.IsDefined(settings.CardCorner)) settings.CardCorner = CardCorner.BottomLeft;
         if (!Enum.IsDefined(settings.CaptureFormat)) settings.CaptureFormat = ImageFormat.Png;
+        if (!Retention.Choices.Contains(settings.KeepCapturesDays)) settings.KeepCapturesDays = 0;
         settings.Accent = Accent.Named(settings.Accent).Name;
         settings.RecentColors = ValidColors(settings.RecentColors, AppSettings.MaxRecentColors);
         settings.SavedColors = ValidColors(settings.SavedColors, AppSettings.MaxSavedColors);

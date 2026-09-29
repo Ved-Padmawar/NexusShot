@@ -39,7 +39,7 @@ public class WorkflowRegressionTests : IDisposable
         Assert.False(document.HasUnsavedChanges);
         document.Redo();
         Assert.True(document.HasUnsavedChanges);
-        document.ResetAfterSave();
+        document.MarkSaved(document.Revision);
         Assert.False(document.HasUnsavedChanges);
     }
 
@@ -68,7 +68,7 @@ public class WorkflowRegressionTests : IDisposable
         files.OpenedAt(Path.Combine(_directory, "source.png"));
         var committed = false;
         files.Committing += () => committed = true;
-        Assert.Null(files.PrepareSaveAs((_, _) => null));
+        Assert.Null(files.PrepareSaveAs((_, _, _) => null));
         Assert.False(committed);
     }
 
@@ -97,7 +97,7 @@ public class WorkflowRegressionTests : IDisposable
     }
 
     [Fact]
-    public async Task SuccessfulSaveAdoptsPixelsOnlyOnCompletion()
+    public async Task SuccessfulSaveIsAdoptedOnlyOnCompletion()
     {
         var source = await MakeImage(100, 100);
         var document = NewDocument();
@@ -106,7 +106,7 @@ public class WorkflowRegressionTests : IDisposable
         var files = new EditorFiles(document, () => ImageSurface.Decode(source));
         files.OpenedAt(source);
         var destination = Path.Combine(_directory, "edited.png");
-        using var request = files.PrepareSaveAs((_, _) => destination)!;
+        using var request = files.PrepareSaveAs((_, _, _) => destination)!;
         await MediaWorker.Run(() => { request.Save(); return true; });
         Assert.True(document.HasUnsavedChanges);
         Assert.Equal(source, files.Path);
@@ -223,6 +223,24 @@ public class WorkflowRegressionTests : IDisposable
     }
 
     [Fact]
+    public void TheWatcherRecoversWhenItsFolderComesBack()
+    {
+        var folder = Path.Combine(_directory, "drive");
+        Directory.CreateDirectory(folder);
+        using var fired = new ManualResetEventSlim();
+        using var watcher = new FolderWatcher(folder, fired.Set);
+
+        // Long enough for the watcher to fail while the folder is gone, as a dropped drive does.
+        Directory.Delete(folder);
+        Thread.Sleep(500);
+        fired.Reset();
+        Directory.CreateDirectory(folder);
+
+        // A recovered watcher rescans; a dead one never reports again.
+        Assert.True(fired.Wait(TimeSpan.FromSeconds(10)), "the watcher never came back");
+    }
+
+    [Fact]
     public void TheWatcherIgnoresFilesThatAreNotImages()
     {
         using var fired = new ManualResetEventSlim();
@@ -234,33 +252,14 @@ public class WorkflowRegressionTests : IDisposable
     }
 
     [Fact]
-    public async Task AutoSaveDisabledDoesNotTouchTheConfiguredFolder()
-    {
-        var invalidFolder = Path.Combine(_directory, "must-not-exist");
-        var item = await MediaWorker.Run(() =>
-        {
-            using var image = DecodedImage.Allocate(4, 4);
-            image.Span.Fill(255);
-            return CaptureStore.Save(image, invalidFolder, autoSave: false, ImageFormat.Png);
-        });
-        try
-        {
-            Assert.False(Directory.Exists(invalidFolder));
-            Assert.True(File.Exists(item.FilePath));
-            Assert.Equal(4, item.Width);
-        }
-        finally { File.Delete(item.FilePath); }
-    }
-
-    [Fact]
     public async Task CaptureWritesDistinctFilesAndNoPartials()
     {
         await MediaWorker.Run(() =>
         {
             using var image = DecodedImage.Allocate(4, 4);
             image.Span.Fill(255);
-            var first = CaptureStore.Save(image, _directory, autoSave: true, ImageFormat.Png);
-            var second = CaptureStore.Save(image, _directory, autoSave: true, ImageFormat.Png);
+            var first = CaptureStore.Save(image, _directory, ImageFormat.Png);
+            var second = CaptureStore.Save(image, _directory, ImageFormat.Png);
             Assert.NotEqual(first.FilePath, second.FilePath);
             return true;
         });
@@ -278,6 +277,23 @@ public class WorkflowRegressionTests : IDisposable
         Assert.All(bytes[24..40], value => Assert.Equal(0, value));
         if (v5) Assert.All(bytes[60..124], value => Assert.Equal(0, value));
         Assert.Equal(new byte[] { 20, 30, 40, 255 }, bytes[headerSize..]);
+    }
+
+    [Fact]
+    public void ClipboardRowsAreFlippedAndOnlyTranslucentPixelsMeetWhite()
+    {
+        // Top row: two opaque pixels. Bottom row: half-transparent premultiplied red, then clear.
+        byte[] pixels =
+        [
+            10, 20, 30, 255,   40, 50, 60, 255,
+            0, 0, 128, 128,    0, 0, 0, 0,
+        ];
+        var dib = new byte[40 + pixels.Length];
+
+        ClipboardImage.WriteDib(dib, pixels, 2, 2, 40, 8, v5: false);
+
+        Assert.Equal(new byte[] { 127, 127, 255, 255, 255, 255, 255, 255 }, dib[40..48]);
+        Assert.Equal(new byte[] { 10, 20, 30, 255, 40, 50, 60, 255 }, dib[48..]);
     }
 
     [Fact]

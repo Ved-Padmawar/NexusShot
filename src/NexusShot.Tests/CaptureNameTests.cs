@@ -29,6 +29,27 @@ public class CaptureNameTests
     }
 
     [Fact]
+    public void AnAppsNameRidesAlongWithoutHidingTheTime()
+    {
+        var when = new DateTime(2026, 9, 29, 14, 5, 33);
+        var name = CaptureName.For(when, "Google Chrome");
+
+        Assert.Equal("NexusShot 2026-09-29 14.05.33 - Google Chrome", name);
+        Assert.True(CaptureName.TryParseTime(name + "_002.png", out var parsed));
+        Assert.Equal(when, parsed);
+    }
+
+    [Fact]
+    public void AnAppNameIsMadeSafeForAFileName()
+    {
+        var when = new DateTime(2026, 9, 29, 14, 5, 33);
+
+        Assert.Equal("NexusShot 2026-09-29 14.05.33 - Mail Inbox", CaptureName.For(when, "Mail: Inbox?"));
+        Assert.Equal(CaptureName.For(when), CaptureName.For(when, " :*? "));
+        Assert.Equal(40, CaptureName.For(when, new string('x', 80)).Split(" - ")[1].Length);
+    }
+
+    [Fact]
     public void AFileTheAppDidNotNameIsRefused()
     {
         // Left to the caller's file-system fallback rather than guessed at.
@@ -36,6 +57,7 @@ public class CaptureNameTests
         Assert.False(CaptureName.TryParseTime("Screenshot 2026-08-31 01.59.25.png", out _));
         Assert.False(CaptureName.TryParseTime("NexusShot not-a-date.png", out _));
         Assert.False(CaptureName.TryParseTime("NexusShot 2026-08-31 01.59.25_draft.png", out _));
+        Assert.False(CaptureName.TryParseTime("NexusShot 2026-08-31 01.59.25 - .png", out _));
     }
 
     [Fact]

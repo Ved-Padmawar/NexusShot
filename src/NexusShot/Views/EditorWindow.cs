@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Render;
 using NexusShot.Platform;
@@ -55,6 +54,9 @@ public sealed partial class EditorWindow : CaptionWindow
 
     /// <summary>True while a drag inside the box is selecting text.</summary>
     private bool _caretDragging;
+
+    /// <summary>A middle-button or Space drag moving the view, from the last pointer position.</summary>
+    private Point? _panFrom;
 
     private string? _loadError;
 
@@ -286,7 +288,7 @@ public sealed partial class EditorWindow : CaptionWindow
 
         // An open text box draws its own annotation.
         _renderer.DrawAnnotations(target, _document, _effects, skip: _text.Annotation);
-        _ui.PopRoundedLayer();
+        _ui.PopLayer();
 
         // Editing is a sub-state of selection, so an open box keeps the grips that resize it.
         _renderer.DrawAdorners(target, _document, AdornerScale);
@@ -339,6 +341,7 @@ public sealed partial class EditorWindow : CaptionWindow
             case EditorChrome.Command.CopyAndClose: Post(() => RunFileAction(CopyAndClose)); break;
             case EditorChrome.Command.CopyText: Post(() => RunFileAction(CopyText)); break;
             case EditorChrome.Command.Share: Post(() => RunFileAction(Share)); break;
+            case EditorChrome.Command.FindSensitive: Post(FindSensitiveText); break;
             case EditorChrome.Command.ZoomIn: ZoomBy(Viewport.Step, null); break;
             case EditorChrome.Command.ZoomOut: ZoomBy(1 / Viewport.Step, null); break;
             case EditorChrome.Command.ZoomActual: ZoomActual(); break;
@@ -396,9 +399,5 @@ public sealed partial class EditorWindow : CaptionWindow
     }
 
     /// <summary>Alt+Tab and the taskbar name the window by the file it is editing.</summary>
-    private void UpdateTitle() => SetWindowTextW(Handle, $"{_files.FileName} - NexusShot");
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowTextW", StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowTextW(IntPtr window, string text);
+    private void UpdateTitle() => WindowInterop.SetWindowText(Handle, $"{_files.FileName} - NexusShot");
 }

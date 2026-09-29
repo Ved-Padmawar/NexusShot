@@ -64,8 +64,15 @@ public sealed class QuickAccess(AppSettings settings)
         if (_closed.Count > ClosedCapacity) _closed.RemoveAt(_closed.Count - 1);
     }
 
-    /// <summary>Drops a capture whose file is gone from the restore list.</summary>
-    public void Forget(string path) => _closed.RemoveAll(closed => SamePath(closed.FilePath, path));
+    /// <summary>Drops a capture whose file is gone: from the restore list and, without passing
+    /// through it, from the open cards. Returns the card that was up, for its window to close.</summary>
+    public QuickAccessCard? Forget(string path)
+    {
+        _closed.RemoveAll(closed => SamePath(closed.FilePath, path));
+        if (Find(path) is not { } card) return null;
+        _open.Remove(card);
+        return card;
+    }
 
     public void TogglePin(QuickAccessCard card)
     {

@@ -3,23 +3,8 @@ using NexusShot.Render;
 
 namespace NexusShot.Platform;
 
-internal readonly record struct FileVersion(long Length, DateTime LastWriteUtc)
-{
-    public static FileVersion Read(string path)
-    {
-        var file = new FileInfo(path);
-        return new(file.Length, file.LastWriteTimeUtc);
-    }
-}
-
-/// <summary><paramref name="Unreadable"/> are images that failed to decode, with the version that
-/// failed, so the caller can skip them until they change rather than retrying on every rescan.</summary>
-internal sealed record HistoryScan(
-    IReadOnlyList<(ScreenshotHistoryItem Item, FileVersion Version)> Changed,
-    IReadOnlyList<string> Missing,
-    IReadOnlyList<(string Path, FileVersion Version)> Unreadable);
-
-/// <summary>Disk reads happen on a worker. The UI applies the result to its current list.</summary>
+/// <summary>Disk reads happen on a worker; <see cref="HistorySync"/> applies the result on the UI
+/// thread.</summary>
 internal static class HistoryScanner
 {
     public static HistoryScan Scan(string folder, IReadOnlyCollection<string> known,

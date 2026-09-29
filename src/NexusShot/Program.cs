@@ -47,15 +47,14 @@ internal static partial class Program
                 return;
             }
 
-            // A file from "Open with" opens in the running instance, so a save gets a card like a capture.
-            var file = args.Length == 1 && File.Exists(args[0]) ? Path.GetFullPath(args[0]) : null;
-            if (!Platform.SingleInstance.Claim(file)) return;
+            // Files and captures go to the running instance, which owns the hotkeys, history and cards.
+            var request = Core.LaunchRequest.Parse(args, File.Exists);
+            if (!Platform.SingleInstance.Claim(request)) return;
 
             try
             {
                 using var app = new App();
-                if (file is not null) app.Open([file]);
-                app.Run(showWindow: file is null && !Platform.Startup.IsStartupLaunch(args));
+                app.Run(request);
             }
             finally
             {

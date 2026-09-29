@@ -10,7 +10,7 @@ public sealed partial class EditorDocument
     private enum GestureKind { None, Draw, Move, Resize, CropMove, CropResize }
 
     private readonly List<Annotation> _annotations = [];
-    private sealed record DocumentSnapshot(IReadOnlyList<Annotation> Annotations, Rect? CropBounds, Rect? PendingCrop);
+    private sealed record DocumentSnapshot(IReadOnlyList<Annotation> Annotations, Rect? CropBounds, Rect? PendingCrop, long Revision);
     private readonly Stack<DocumentSnapshot> _undo = new();
     private readonly Stack<DocumentSnapshot> _redo = new();
     private const int MaxUndo = 100;
@@ -31,7 +31,7 @@ public sealed partial class EditorDocument
     private Annotation? _createdUndoOwner;
     // A provisional draw may be discarded. Keep stack references (not another deep copy of the
     // document) so cancellation restores redo and the oldest entry at the history limit too.
-    private (DocumentSnapshot[] Undo, DocumentSnapshot[] Redo)? _creationHistory;
+    private (DocumentSnapshot[] Undo, DocumentSnapshot[] Redo, long Revision)? _creationHistory;
     private bool _adjusting;
     private readonly Dictionary<Annotation, EraserMask> _activeEraserMasks = [];
 
@@ -61,6 +61,13 @@ public sealed partial class EditorDocument
         if (!_annotations.Remove(annotation)) return false;
         AnnotationGeneration++;
         return true;
+    }
+
+    private void MoveAnnotation(Annotation annotation, int index)
+    {
+        _annotations.Remove(annotation);
+        _annotations.Insert(index, annotation);
+        AnnotationGeneration++;
     }
 
     private void ReplaceAnnotations(IReadOnlyList<Annotation>? annotations)
@@ -100,6 +107,9 @@ public sealed partial class EditorDocument
 
     /// <summary>The fill new rectangles and ellipses are drawn with.</summary>
     public ShapeFill ShapeFill { get; private set; }
+
+    /// <summary>Whether new lines, arrows and outlines are dashed.</summary>
+    public bool DashedLines { get; private set; }
     public TextStyle TextStyle { get; set; }
     /// <summary>The selected annotation. Changing it closes any editor on a different annotation,
     /// so the two cannot drift apart.</summary>
@@ -142,15 +152,25 @@ public sealed partial class EditorDocument
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
 
-    /// <summary>Saved pixels are the baseline; saving flattens and clears the annotations.
-    /// Undoing back to an empty document is therefore clean without a separate dirty flag.</summary>
-    public bool HasUnsavedChanges => _annotations.Count != 0 || CropBounds is not null
-        || (PendingCrop is { } crop && crop != new Rect(0, 0, ImageWidth, ImageHeight));
+    /// <summary>
+    /// Names the content state: every undoable edit moves to a fresh revision, and undo and redo
+    /// return to the revision their snapshot recorded. Saving remembers one, so undoing back to the
+    /// saved state reads as clean, and an edit made while a save was writing still reads as dirty.
+    /// </summary>
+    public long Revision { get; private set; }
+    private long _nextRevision = 1;
+    private long _savedRevision;
+
+    /// <summary>A crop frame dragged away from the committed crop is an edit too: Save applies it.</summary>
+    public bool HasUnsavedChanges => Revision != _savedRevision
+        || (PendingCrop is { } crop && crop != (CropBounds ?? new Rect(0, 0, ImageWidth, ImageHeight)));
 
     /// <summary>A worker owns this independent copy. No UI selection, events or undo history
-    /// crosses the thread boundary.</summary>
+    /// crosses the thread boundary. Ends any adjustment, so an edit made after the snapshot - a key
+    /// nudge has no mouse-up to end it - gets its own revision and cannot pass as already saved.</summary>
     public EditorDocument CreateExportSnapshot()
     {
+        EndAdjustment();
         var copy = new EditorDocument();
         copy.SetImageSize(ImageWidth, ImageHeight);
         copy.ReplaceAnnotations(_annotations.Select(annotation => annotation.Clone()).ToArray());
@@ -169,7 +189,7 @@ public sealed partial class EditorDocument
     /// Brush strokes (pen, blur, pixelate) have no meaningful box to resize.</summary>
     public static bool IsBoxResizable(Annotation annotation) => annotation.Tool
         is EditorTool.Rectangle or EditorTool.Ellipse or EditorTool.Highlight
-        or EditorTool.Spotlight or EditorTool.Text;
+        or EditorTool.Spotlight or EditorTool.Text or EditorTool.Redact;
 
     public void SetImageSize(double width, double height)
     {
@@ -197,6 +217,17 @@ public sealed partial class EditorDocument
         if (Selected is not { IsFillable: true } shape || shape.Fill == fill) return;
         PushUndo();
         shape.Fill = fill;
+        Notify();
+    }
+
+    /// <summary>Dashed or solid, for new lines and outlines and, when one is selected, for it as one
+    /// undo step.</summary>
+    public void SetDashed(bool dashed)
+    {
+        DashedLines = dashed;
+        if (Selected is not { IsDashable: true } shape || shape.Dashed == dashed) return;
+        PushUndo();
+        shape.Dashed = dashed;
         Notify();
     }
 
@@ -350,6 +381,78 @@ public sealed partial class EditorDocument
         Notify();
     }
 
+    /// <summary>Covers each area with a redaction, as one undo step: what Find sensitive text found
+    /// is accepted or undone together.</summary>
+    public void AddRedactions(IReadOnlyList<Rect> areas)
+    {
+        var image = new Rect(0, 0, ImageWidth, ImageHeight);
+        var boxes = areas.Select(area => area.Intersect(image)).Where(box => !box.IsEmpty).ToList();
+        if (boxes.Count == 0) return;
+        PushUndo();
+        foreach (var box in boxes)
+        {
+            AddAnnotation(new Annotation
+            {
+                Tool = EditorTool.Redact,
+                Start = new Point(box.X, box.Y),
+                End = new Point(box.Right, box.Bottom),
+                ColorHex = Annotation.RedactColor,
+            });
+        }
+        Notify();
+    }
+
+    /// <summary>A copy of the selection, offset so it is seen to appear, and selected in its place.</summary>
+    public void DuplicateSelected()
+    {
+        if (Selected is not { } original || EditingText is not null) return;
+        PushUndo();
+        var copy = original.Duplicate();
+        var (dx, dy) = ClampDeltaToImage(copy, DuplicateOffset, DuplicateOffset);
+        copy.Translate(dx, dy);
+        AddAnnotation(copy);
+        Selected = copy;
+        Notify();
+    }
+
+    private const double DuplicateOffset = 16;
+
+    /// <summary>Moves the selection by a key press, kept inside the image. A run of nudges is one undo
+    /// step, ended as any adjustment is.</summary>
+    public void NudgeSelected(double dx, double dy)
+    {
+        if (Selected is not { } shape || EditingText is not null) return;
+        var (x, y) = ClampDeltaToImage(shape, dx, dy);
+        if (x == 0 && y == 0) return;
+        PrepareAdjustUndo(isAdjusting: true);
+        shape.Translate(x, y);
+        Notify();
+    }
+
+    /// <summary>Whether the selection shares pixels with another annotation: the only time its place
+    /// in the paint order shows.</summary>
+    public bool SelectionOverlaps => Selected is { } shape
+        && _annotations.Any(other => !ReferenceEquals(other, shape) && !other.Bounds.Intersect(shape.Bounds).IsEmpty);
+
+    /// <summary>Moves the selection up or down the paint order, which is the list order.</summary>
+    public void Reorder(LayerMove move)
+    {
+        if (Selected is not { } shape) return;
+        var index = _annotations.IndexOf(shape);
+        var target = move switch
+        {
+            LayerMove.Forward => index + 1,
+            LayerMove.Backward => index - 1,
+            LayerMove.Front => _annotations.Count - 1,
+            _ => 0,
+        };
+        target = Math.Clamp(target, 0, _annotations.Count - 1);
+        if (target == index) return;
+        PushUndo();
+        MoveAnnotation(shape, target);
+        Notify();
+    }
+
     public void DeleteSelected()
     {
         if (Selected is null) return;
@@ -359,21 +462,12 @@ public sealed partial class EditorDocument
         Notify();
     }
 
-    /// <summary>Pristine state over a freshly saved image: annotations, crop and history are
-    /// baked into the file now; tool/colour/formatting defaults survive.</summary>
-    public void ResetAfterSave()
+    /// <summary>Records <paramref name="revision"/> - the one the export was taken from - as what is on
+    /// disk. Annotations, crop and history stay: the editor keeps the original pixels, so a save can
+    /// be undone and saved again.</summary>
+    public void MarkSaved(long revision)
     {
-        ReplaceAnnotations(null);
-        _undo.Clear();
-        _redo.Clear();
-        _draft = null;
-        _createdUndoOwner = null;
-        _gesture = GestureKind.None;
-        _creationHistory = null;
-        EndAdjustment();
-        Selected = null;
-        CropBounds = null;
-        PendingCrop = null;
+        _savedRevision = revision;
         Notify();
     }
 

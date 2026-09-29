@@ -42,6 +42,13 @@ public static class Icons
     public static readonly Icon Blur = new(
         "M12 3.5c3.2 3.9 6 6.9 6 10.6a6 6 0 0 1-12 0c0-3.7 2.8-6.7 6-10.6zM9 14.5a3 3 0 0 0 3 3");
     public static readonly Icon Pixelate = new("M4 4h5v5H4zM15 4h5v5h-5zM9.5 9.5h5v5h-5zM4 15h5v5H4zM15 15h5v5h-5z");
+    public static readonly Icon LineSolid = new("M4 12h16", strokeWidth: 2.2);
+    public static readonly Icon LineDashed = new("M4 12h3.5M10.25 12h3.5M16.5 12h3.5", strokeWidth: 2.2);
+    public static readonly Icon BringForward = new(Rect(9, 9, 11, 11, 2) + "M5 15V6a1 1 0 0 1 1-1h9",
+        Rect(9, 9, 11, 11, 2), fillOpacity: 0.35);
+    public static readonly Icon SendBackward = new(Rect(4, 4, 11, 11, 2) + "M19 9v9a1 1 0 0 1-1 1H9",
+        Rect(4, 4, 11, 11, 2), fillOpacity: 0.35);
+    public static readonly Icon Redact = new(Rect(3.5, 9.5, 17, 5, 1) + "M4 5.5h16M4 18.5h10", Rect(3.5, 9.5, 17, 5, 1));
     public static readonly Icon Spotlight = new(Circle(12, 12, 4)
         + "M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4");
     public static readonly Icon Crop = new("M7 3v12a2 2 0 0 0 2 2h12M3 7h12a2 2 0 0 1 2 2v12");
@@ -63,6 +70,10 @@ public static class Icons
     public static readonly Icon Delete = new(
         "M4.5 7h15M10 11v6M14 11v6M6.5 7l.9 11.2A2 2 0 0 0 9.4 20h5.2a2 2 0 0 0 2-1.8L17.5 7M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2");
     public static readonly Icon Edit = new("M4.5 19.5l1-4.2L16 4.8a2 2 0 0 1 2.9 0l.3.3a2 2 0 0 1 0 2.9L8.7 18.5z");
+    public static readonly Icon Star = new(StarPath);
+    public static readonly Icon StarFilled = new(StarPath, StarPath);
+    private const string StarPath =
+        "M12 3.4L14.41 9.28 20.75 9.76 15.9 13.87 17.41 20.04 12 16.7 6.59 20.04 8.1 13.87 3.25 9.76 9.59 9.28z";
     public static readonly Icon Pin = new("M9 4h6M10 4v5.5L7 13h10l-3-3.5V4M12 13v7");
     public static readonly Icon Drag = new("M9 5h.01M15 5h.01M9 12h.01M15 12h.01M9 19h.01M15 19h.01", strokeWidth: 3);
     public static readonly Icon Dropper = new(
@@ -70,6 +81,7 @@ public static class Icons
 
     // Capture.
     public static readonly Icon CaptureRegion = new("M4 8.5V4h4.5M15.5 4H20v4.5M20 15.5V20h-4.5M8.5 20H4v-4.5M12 9v6M9 12h6");
+    public static readonly Icon CaptureFreeform = new("M3.5 9.5a8.5 5 0 1 1 5 4.6M8.5 14.1c-1.6.6-2.4 1.7-2 2.9.5 1.4 2.3 1.9 3.9 1.2");
     public static readonly Icon CaptureWindow = new(Rect(3, 4.5, 18, 15, 2.2) + "M3 9h18M6 6.8h.01M8.5 6.8h.01");
     public static readonly Icon CaptureScreen = new(Rect(3, 4, 18, 12.5, 2) + "M8.5 20.5h7M12 16.5v4");
     public static readonly Icon Timer = new(Circle(12, 13.5, 7.5) + "M12 9.5v4l2.5 2M9.5 2.5h5");

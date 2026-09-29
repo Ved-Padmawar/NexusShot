@@ -30,6 +30,7 @@ public sealed unsafe class D2DResources : IDisposable
         DWRITE_WORD_WRAPPING WordWrapping), IComObject<IDWriteTextFormat>> _formats = new(MaxFormats);
 
     private IComObject<ID2D1StrokeStyle>? _roundStroke;
+    private IComObject<ID2D1StrokeStyle>? _dashedStroke;
     private IComObject<IDWriteFactory>? _dwrite;
 
     public D2DResources(IComObject<ID2D1RenderTarget> target) => _target = target;
@@ -129,6 +130,18 @@ public sealed unsafe class D2DResources : IDisposable
         dashStyle = D2D1_DASH_STYLE.D2D1_DASH_STYLE_SOLID,
         miterLimit = 10,
     });
+
+    /// <summary>Round-capped dashes, in multiples of the stroke width: the caps add half a width to
+    /// each end, so the visible dash and gap come out near equal.</summary>
+    public IComObject<ID2D1StrokeStyle> DashedStroke => _dashedStroke ??= CreateStroke(new D2D1_STROKE_STYLE_PROPERTIES
+    {
+        startCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_ROUND,
+        endCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_ROUND,
+        lineJoin = D2D1_LINE_JOIN.D2D1_LINE_JOIN_ROUND,
+        dashCap = D2D1_CAP_STYLE.D2D1_CAP_STYLE_ROUND,
+        dashStyle = D2D1_DASH_STYLE.D2D1_DASH_STYLE_CUSTOM,
+        miterLimit = 10,
+    }, [1.5f, 3f]);
 
     /// <summary>
     /// A text format for the given font and layout settings. Alignment and wrapping are part of the
@@ -442,6 +455,8 @@ public sealed unsafe class D2DResources : IDisposable
         _checker = null;
         _roundStroke?.Dispose();
         _roundStroke = null;
+        _dashedStroke?.Dispose();
+        _dashedStroke = null;
         _dwrite?.Dispose();
         _dwrite = null;
         _factory?.Dispose();

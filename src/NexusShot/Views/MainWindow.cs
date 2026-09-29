@@ -15,6 +15,8 @@ public sealed partial class MainWindow : CaptionWindow
     private const uint WmLButtonDown = 0x0201;
     private const uint WmLButtonUp = 0x0202;
     private const uint WmKeyDown = 0x0100;
+    private const uint WmSysKeyDown = 0x0104;
+    private const uint WmSysChar = 0x0106;
     private const uint WmChar = 0x0102;
     private const uint WmMouseWheel = 0x020A;
 
@@ -60,7 +62,10 @@ public sealed partial class MainWindow : CaptionWindow
     private double _gridViewport = 1;
 
     /// <summary>The search box's text. View state: it filters what is drawn, never the history.</summary>
-    private string _query = "";
+    private LibraryFilter _filter = new();
+
+    /// <summary>The text read out of each capture, for the search. The app owns and fills it.</summary>
+    internal TextIndex Texts { get; init; } = new();
 
     private bool _settingsOpen;
 
@@ -93,6 +98,11 @@ public sealed partial class MainWindow : CaptionWindow
 
     public event Action<CaptureMode>? CaptureRequested;
     public event Action? CaptureTextRequested;
+
+    public event Action<string>? CaptureDeleted;
+
+    /// <summary>Ctrl+V over the Library: open what is on the clipboard.</summary>
+    public event Action? PasteRequested;
     public event Action? TimedCaptureRequested;
     public event Action<ScreenshotHistoryItem>? EditRequested;
     public event Action<IReadOnlyList<string>>? OpenRequested;
@@ -105,7 +115,7 @@ public sealed partial class MainWindow : CaptionWindow
     public Func<uint, long, long, bool>? MessageIntercept { get; set; }
 
     public MainWindow(Storage storage, AppSettings settings, List<ScreenshotHistoryItem> history)
-        : base(Platform.SingleInstance.MainWindowTitle)
+        : base(Platform.SingleInstance.MainWindowTitle, Platform.SingleInstance.MainWindowClass)
     {
         _storage = storage;
         _settings = settings;
@@ -289,7 +299,8 @@ public sealed partial class MainWindow : CaptionWindow
         _ui.BeginFrame(resources, _hoverPaused ? new Point(-1, -1) : _pointer, _pointerDown,
             new D2D_SIZE_F((float)width, (float)height));
 
-        _ui.Inert = ModalOpen;
+        // An open menu hangs over the grid; the tiles under it must not answer the pointer.
+        _ui.Inert = ModalOpen || DropdownOpen;
         if (_history.Count > 0) DrawGrid(_ui, resources, layers, GridBounds(width, height));
         else
         {
@@ -432,6 +443,12 @@ public sealed partial class MainWindow : CaptionWindow
                 if (OnKeyDown((VIRTUAL_KEY)(ulong)wParam.Value)) return new LRESULT { Value = 0 };
                 break;
 
+            // Alt+key and F10; their queued WM_SYSCHAR goes too, or DefWindowProc beeps for a mnemonic.
+            case WmSysKeyDown when _recordingHotkey is not null:
+                Functions.PeekMessageW(out _, Handle, WmSysChar, WmSysChar, PEEK_MESSAGE_REMOVE_TYPE.PM_REMOVE);
+                RecordHotkey((VIRTUAL_KEY)(ulong)wParam.Value);
+                return new LRESULT { Value = 0 };
+
             case WmChar:
                 if (_ui is not { HasKeyboardFocus: true } ui) break;
                 ui.Char((char)(ulong)wParam.Value);
@@ -484,6 +501,12 @@ public sealed partial class MainWindow : CaptionWindow
         if (key == VIRTUAL_KEY.VK_DELETE && _selection.Active && !ModalOpen)
         {
             AskDeleteSelected();
+            return true;
+        }
+
+        if (key == VIRTUAL_KEY.VK_V && (Functions.GetKeyState((int)VIRTUAL_KEY.VK_CONTROL) & 0x8000) != 0 && !ModalOpen)
+        {
+            PasteRequested?.Invoke();
             return true;
         }
 

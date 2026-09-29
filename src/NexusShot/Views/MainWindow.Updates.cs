@@ -305,7 +305,7 @@ public sealed partial class MainWindow
 
         var primary = unsaved > 0 ? "Save all and restart" : "Restart";
         var primaryIcon = unsaved > 0 ? Icons.Save : Icons.Restart;
-        if (TintedButton(ui, Ui.Id("restart.save"), Take(ui.ButtonWidth(primary, primaryIcon)), primary, primaryIcon))
+        if (ui.Button(Ui.Id("restart.save"), Take(ui.ButtonWidth(primary, primaryIcon)), primary, ButtonStyle.Tinted, primaryIcon))
             Restart(saveEditors: true);
 
         if (unsaved > 0 && ui.Button(Ui.Id("restart.discard"), Take(ui.ButtonWidth("Discard and restart", Icons.Delete)),
@@ -317,25 +317,6 @@ public sealed partial class MainWindow
             _restartPrompt = null;
 
         ui.Inert = false;
-    }
-
-    /// <summary>The update's own look for a button: the accent as a wash with a border, deepening on
-    /// hover. A solid accent has no visible hover on the lighter presets.</summary>
-    private bool TintedButton(Ui ui, int id, Rect bounds, string label, Icon icon)
-    {
-        var theme = ui.Theme;
-        var clicked = ui.Interact(id, bounds);
-        var hot = ui.IsHot(id) || ui.IsActive(id);
-        var radius = (float)S(Metrics.RadiusSm);
-        ui.FillRounded(bounds, radius, theme.Accent.WithAlpha(theme.IsDark ? (byte)(hot ? 46 : 26) : (byte)(hot ? 66 : 41)));
-        ui.StrokeRounded(bounds, radius, theme.Accent.WithAlpha(128));
-
-        var font = S(Metrics.FontMd);
-        var textWidth = ui.MeasureText(label, font, Weight.Semibold);
-        var x = bounds.Center.X - (S(15) + S(7) + textWidth) / 2;
-        ui.Icon(icon, new Rect(x, bounds.Y, S(15), bounds.Height), theme.AccentText, S(15));
-        ui.Text(label, new Rect(x + S(22), bounds.Y, textWidth + 1, bounds.Height), theme.AccentText, font, Weight.Semibold);
-        return clicked;
     }
 
     // ============================  SETTINGS ROW  ============================

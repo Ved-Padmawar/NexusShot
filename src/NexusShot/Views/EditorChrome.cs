@@ -36,14 +36,14 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         null,
         EditorTool.Pen, EditorTool.Brush, EditorTool.Eraser, EditorTool.Text, EditorTool.Counter,
         null,
-        EditorTool.Highlight, EditorTool.Blur, EditorTool.Pixelate, EditorTool.Spotlight,
+        EditorTool.Highlight, EditorTool.Blur, EditorTool.Pixelate, EditorTool.Redact, EditorTool.Spotlight,
         null,
         EditorTool.Crop,
     ];
 
     public enum Command
     {
-        None, Undo, Redo, Save, SaveAs, CopyAndClose, CopyText, Share,
+        None, Undo, Redo, Save, SaveAs, CopyAndClose, CopyText, Share, FindSensitive,
         ZoomIn, ZoomOut, ZoomActual, ZoomFit, PickFromScreen,
     }
 
@@ -166,7 +166,7 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         }
 
         var copyClose = Take(ui.ButtonWidth("Copy & close", Icons.Copy, small: true), S(28));
-        if (ui.Button(Ui.Id("editor.copyclose"), copyClose, "Copy & close", ButtonStyle.Primary,
+        if (ui.Button(Ui.Id("editor.copyclose"), copyClose, "Copy & close", ButtonStyle.Tinted,
             Icons.Copy, small: true, enabled: enabled)) Requested = Command.CopyAndClose;
 
         var save = Take(ui.ButtonWidth("Save", Icons.Save, small: true), S(28));
@@ -276,9 +276,12 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         var selected = document.Selected;
         var tool = selected?.Tool ?? document.ActiveTool;
 
-        var hasColor = tool is not (EditorTool.Blur or EditorTool.Pixelate or EditorTool.Eraser or EditorTool.Spotlight);
-        var hasSize = tool is not (EditorTool.Highlight or EditorTool.Spotlight);
+        var hasColor = tool is not (EditorTool.Blur or EditorTool.Pixelate or EditorTool.Eraser or EditorTool.Spotlight
+            or EditorTool.Redact);
+        var hasSize = tool is not (EditorTool.Highlight or EditorTool.Spotlight or EditorTool.Redact);
+        var isRedact = tool is EditorTool.Redact;
         var hasFill = tool is EditorTool.Rectangle or EditorTool.Ellipse;
+        var hasDash = tool is EditorTool.Rectangle or EditorTool.Ellipse or EditorTool.Line or EditorTool.Arrow;
         var isText = tool is EditorTool.Text;
         var isCounter = tool is EditorTool.Counter;
 
@@ -287,8 +290,11 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         if (hasColor) groups.Add((ColorGroupWidth(), rect => DrawColorGroup(rect, document)));
         if (hasSize) groups.Add((SizeLabelWidth(document.SizingTool) + S(10 + 112 + 10 + 44), rect => DrawSizeGroup(rect, document.SizingTool, frame.Size)));
         if (hasFill) groups.Add((S(30 * 3 + 4), rect => DrawFillGroup(rect, document)));
+        if (hasDash) groups.Add((S(30 * 2 + 2), rect => DrawDashGroup(rect, document)));
         if (isText) groups.Add((S(30 * 3 + 4), rect => DrawTextGroup(rect, frame.TextStyle)));
         if (isCounter) groups.Add((CounterGroupWidth(document), rect => DrawCounterGroup(rect, document)));
+        if (isRedact && selected is null) groups.Add((FindSensitiveWidth(), DrawFindSensitive));
+        if (document.SelectionOverlaps) groups.Add((S(30 * 2 + 2), rect => DrawLayerGroup(rect, document)));
         if (selected is not null) groups.Add((S(28), rect => DrawDeleteButton(rect, document)));
         if (groups.Count == 0)
         {
@@ -321,6 +327,19 @@ public sealed class EditorChrome(Ui ui) : IDisposable
             x += groups[i].Width;
         }
         ui.PopClip();
+    }
+
+    private const string FindSensitiveLabel = "Find sensitive text";
+
+    private double FindSensitiveWidth() => ui.ButtonWidth(FindSensitiveLabel, Icons.Ocr, small: true);
+
+    /// <summary>Reads the image and covers emails, card and phone numbers, addresses and keys.</summary>
+    private void DrawFindSensitive(Rect rect)
+    {
+        if (ui.Button(Ui.Id("redact.find"), new Rect(rect.X, rect.Center.Y - S(14), rect.Width, S(28)),
+            FindSensitiveLabel, ButtonStyle.Outline, Icons.Ocr, small: true,
+            tooltip: "Covers emails, card and phone numbers, IP addresses and keys - check what it missed"))
+            Requested = Command.FindSensitive;
     }
 
     private double ColorGroupWidth() => Palette.Swatches.Length * S(20) + (Palette.Swatches.Length - 1) * S(7) + S(3) + ChipWidth();
@@ -424,6 +443,28 @@ public sealed class EditorChrome(Ui ui) : IDisposable
                 soft: current == options[i].Fill, iconSize: 15))
                 document.SetFill(options[i].Fill);
         }
+    }
+
+    private void DrawDashGroup(Rect row, EditorDocument document)
+    {
+        var dashed = document.Selected is { IsDashable: true } shape ? shape.Dashed : document.DashedLines;
+        if (ui.IconButton(Ui.Id("editor.solid"), new Rect(row.X, row.Center.Y - S(14), S(30), S(28)), Icons.LineSolid,
+            "Solid", soft: !dashed, iconSize: 15))
+            document.SetDashed(false);
+        if (ui.IconButton(Ui.Id("editor.dashed"), new Rect(row.X + S(32), row.Center.Y - S(14), S(30), S(28)), Icons.LineDashed,
+            "Dashed", soft: dashed, iconSize: 15))
+            document.SetDashed(true);
+    }
+
+    private void DrawLayerGroup(Rect row, EditorDocument document)
+    {
+        var shift = (Functions.GetKeyState((int)VIRTUAL_KEY.VK_SHIFT) & 0x8000) != 0;
+        if (ui.IconButton(Ui.Id("editor.forward"), new Rect(row.X, row.Center.Y - S(14), S(30), S(28)), Icons.BringForward,
+            "Bring in front of what it overlaps · Shift: to the very front", "Ctrl ]", iconSize: 15))
+            document.Reorder(shift ? LayerMove.Front : LayerMove.Forward);
+        if (ui.IconButton(Ui.Id("editor.backward"), new Rect(row.X + S(32), row.Center.Y - S(14), S(30), S(28)), Icons.SendBackward,
+            "Send behind what it overlaps · Shift: to the very back", "Ctrl [", iconSize: 15))
+            document.Reorder(shift ? LayerMove.Back : LayerMove.Backward);
     }
 
     private void DrawTextGroup(Rect row, TextStyle active)
@@ -572,6 +613,7 @@ public sealed class EditorChrome(Ui ui) : IDisposable
         EditorTool.Highlight => Icons.Highlight,
         EditorTool.Blur => Icons.Blur,
         EditorTool.Pixelate => Icons.Pixelate,
+        EditorTool.Redact => Icons.Redact,
         EditorTool.Counter => Icons.Counter,
         EditorTool.Spotlight => Icons.Spotlight,
         _ => Icons.Crop,
@@ -580,6 +622,8 @@ public sealed class EditorChrome(Ui ui) : IDisposable
     private static string Name(EditorTool tool) => tool switch
     {
         EditorTool.Eraser => "Eraser · pen and brush",
+        EditorTool.Blur or EditorTool.Pixelate => $"{tool} · can be partly undone, so use Redact for secrets",
+        EditorTool.Redact => "Redact · solid block, for secrets",
         _ => tool.ToString(),
     };
 }

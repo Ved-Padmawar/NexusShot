@@ -55,8 +55,8 @@ public sealed partial class MainWindow
         ui.Text(title, new Rect(textX, card.Y + pad - S(2), card.Right - pad - textX, S(24)), theme.TextPrimary,
             S(Metrics.FontLg), Weight.Semibold, face: Face.Display);
         ui.Text(_promptCount == 1
-                ? "The file is deleted from disk and cannot be undone."
-                : "The files are deleted from disk and cannot be undone.",
+                ? "The file moves to the Recycle Bin."
+                : "The files move to the Recycle Bin.",
             new Rect(textX, card.Y + pad + S(26), card.Right - pad - textX, S(20)), theme.TextSecondary, S(Metrics.FontMd));
 
         var buttonY = card.Bottom - pad - S(32);

@@ -1,12 +1,16 @@
 namespace NexusShot.Core;
 
 /// <summary>
-/// A box-filter shrink, for the library's blurred tile previews: blur is wanted at that size, and it
-/// runs on pixels the worker already has, with no second decode.
+/// A box-filter shrink, on pixels a worker already has, with no second decode: the library's blurred
+/// tile previews, where blur is wanted, and images too large for text recognition.
 /// </summary>
 public static class Downsample
 {
     public static int FactorFor(int width, int target) => Math.Max(1, width / Math.Max(1, target));
+
+    /// <summary>The smallest factor that brings both sides within <paramref name="limit"/>.</summary>
+    public static int FactorToFit(int width, int height, int limit) =>
+        Math.Max(1, (Math.Max(width, height) + limit - 1) / limit);
 
     /// <summary>Tightly packed pixels; a partial edge block folds into the last output pixel.</summary>
     public static byte[] Box(ReadOnlySpan<byte> pixels, int width, int height, int factor, out int outWidth, out int outHeight)

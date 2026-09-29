@@ -65,6 +65,10 @@ public sealed class Annotation
     /// <summary>True for tools painted as a stroke whose pixels get an effect, not a shape.</summary>
     public bool IsBrushEffect => Tool is EditorTool.Blur or EditorTool.Pixelate;
 
+    /// <summary>Redaction is black and opaque whatever colour is chosen for the other tools: a tint
+    /// someone could lift, or a colour that blends into the page, defeats it.</summary>
+    public const string RedactColor = "#000000";
+
     /// <summary>Half the painted stroke's width, in image pixels. Scales with the thickness slider.</summary>
     public double BrushRadius => PaintStrokeGeometry.EffectRadius(StrokeThickness);
 
@@ -87,6 +91,11 @@ public sealed class Annotation
 
     /// <summary>True for the tools that have an interior to fill.</summary>
     public bool IsFillable => Tool is EditorTool.Rectangle or EditorTool.Ellipse;
+
+    /// <summary>A dashed outline or line. Ignored by tools that are not <see cref="IsDashable"/>.</summary>
+    public bool Dashed { get; set; }
+
+    public bool IsDashable => Tool is EditorTool.Rectangle or EditorTool.Ellipse or EditorTool.Line or EditorTool.Arrow;
 
     /// <summary>The annotation's colour. Parsed here rather than at paint time: the renderer draws
     /// every frame, and the string only changes when the user picks a colour.</summary>
@@ -203,7 +212,9 @@ public sealed class Annotation
         }
     }
 
-    /// <summary>Hit test in image pixels, with a slack radius so thin strokes stay grabbable.</summary>
+    /// <summary>Whether a press picks this annotation up, in image pixels, with a slack radius so thin
+    /// strokes stay grabbable. An outline rectangle or ellipse is picked by its outline: by its box, one
+    /// drawn around other annotations would hide them from the pointer.</summary>
     public bool HitTest(Point point, double slack = 6)
     {
         if (Tool is EditorTool.Pen or EditorTool.Brush or EditorTool.Eraser || IsBrushEffect)
@@ -224,15 +235,47 @@ public sealed class Annotation
         if (IsLinear)
             return DistanceToSegment(point, Start, End) <= slack + StrokeThickness / 2;
 
+        if (IsFillable)
+        {
+            var reach = slack + StrokeThickness / 2;
+            var outer = new Rect(Bounds.X - reach, Bounds.Y - reach, Bounds.Width + reach * 2, Bounds.Height + reach * 2);
+            if (!InShape(outer, point)) return false;
+            if (Fill != ShapeFill.Outline) return true;
+            var inner = Bounds.Deflate(reach);
+            return inner.Width <= 0 || inner.Height <= 0 || !InShape(inner, point);
+        }
+
+        return InFrame(point, slack);
+    }
+
+    /// <summary>Whether a press lands inside the selection frame - where a selected annotation is
+    /// dragged from, whatever its shape, since that frame is what the user sees around it.</summary>
+    public bool InFrame(Point point, double slack = 6)
+    {
+        if (IsLinear || IsStrokeTool || IsBrushEffect) return HitTest(point, slack);
         var bounds = Bounds;
         return point.X >= bounds.Left - slack && point.X <= bounds.Right + slack
             && point.Y >= bounds.Top - slack && point.Y <= bounds.Bottom + slack;
     }
 
-    /// <summary>Deep copy, for undo snapshots: undo must restore values, not shared references.</summary>
-    public Annotation Clone() => new()
+    private bool InShape(Rect box, Point point)
     {
-        Id = Id,
+        if (Tool != EditorTool.Ellipse) return box.Contains(point);
+        var (rx, ry) = (box.Width / 2, box.Height / 2);
+        if (rx <= 0 || ry <= 0) return false;
+        var (dx, dy) = ((point.X - box.Center.X) / rx, (point.Y - box.Center.Y) / ry);
+        return dx * dx + dy * dy <= 1;
+    }
+
+    /// <summary>Deep copy, for undo snapshots: undo must restore values, not shared references.</summary>
+    public Annotation Clone() => CloneAs(Id);
+
+    /// <summary>A copy that is a new annotation in its own right, with its own identity.</summary>
+    public Annotation Duplicate() => CloneAs(Guid.NewGuid());
+
+    private Annotation CloneAs(Guid id) => new()
+    {
+        Id = id,
         Tool = Tool,
         Start = Start,
         End = End,
@@ -246,6 +289,7 @@ public sealed class Annotation
         CounterValue = CounterValue,
         CounterRun = CounterRun,
         Fill = Fill,
+        Dashed = Dashed,
         ColorHex = ColorHex,
         StrokeThickness = StrokeThickness,
         Format = Format,

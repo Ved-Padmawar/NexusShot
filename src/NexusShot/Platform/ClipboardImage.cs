@@ -1,4 +1,6 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
+using NexusShot.Core;
 using NexusShot.Render;
 
 namespace NexusShot.Platform;
@@ -29,10 +31,10 @@ internal static partial class ClipboardImage
     private static readonly uint CF_PNG = RegisterClipboardFormatW("PNG");
 
     /// <summary>Decodes the file, then copies it. For callers that only have a path.</summary>
-    public static void Copy(string pngPath)
+    public static void Copy(string path)
     {
-        using var image = ImageSurface.Decode(pngPath);
-        Copy(image, pngPath);
+        using var image = ImageSurface.Decode(path);
+        Copy(image, path);
     }
 
     /// <summary>
@@ -40,11 +42,13 @@ internal static partial class ClipboardImage
     ///
     /// The capture path has the bitmap in memory before it ever reaches a file, so decoding the PNG
     /// back again just to build the DIBs was a full re-decode of every capture.
-    /// <paramref name="pngPath"/> is read only for the lossless "PNG" format; pass null to place
-    /// the DIBs alone.
+    /// <paramref name="file"/> is placed as the "PNG" format only when it is one: a JPEG or BMP
+    /// capture's bytes under that name are refused or misread by the apps that ask for it, and those
+    /// formats carry no alpha the DIBs would lose. Pass null to place the DIBs alone.
     /// </summary>
-    public static void Copy(DecodedImage image, string? pngPath)
+    public static void Copy(DecodedImage image, string? file)
     {
+        var png = file is not null && ImageFiles.FormatOf(file) == ImageFormat.Png ? file : null;
         var width = image.Width;
         var height = image.Height;
 
@@ -52,10 +56,10 @@ internal static partial class ClipboardImage
 
         ClipboardWriter.Write(() =>
         {
-            if (CF_PNG != 0 && pngPath is not null)
+            if (CF_PNG != 0 && png is not null)
             {
                 try
-                { ClipboardWriter.PlaceFile(CF_PNG, pngPath); }
+                { ClipboardWriter.PlaceFile(CF_PNG, png); }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
                     // Losing the lossless format still leaves the DIBs below.
@@ -110,6 +114,14 @@ internal static partial class ClipboardImage
             var source = (height - 1 - y) * stride;
             var destination = headerSize + y * stride;
 
+            // Over white, an opaque pixel is itself, and a screenshot is opaque throughout.
+            var row = premultipliedBgra.Slice(source, stride);
+            if (IsOpaque(row))
+            {
+                row.CopyTo(dib[destination..]);
+                continue;
+            }
+
             for (var x = 0; x < stride; x += 4)
             {
                 var alpha = premultipliedBgra[source + x + 3];
@@ -123,6 +135,20 @@ internal static partial class ClipboardImage
                 dib[destination + x + 3] = 255;
             }
         }
+    }
+
+    /// <summary>Alpha is each BGRA word's top byte, so a word is opaque exactly when it is at least
+    /// 0xFF000000.</summary>
+    private static bool IsOpaque(ReadOnlySpan<byte> row)
+    {
+        var words = MemoryMarshal.Cast<byte, uint>(row);
+        var opaque = new Vector<uint>(0xFF000000);
+        var i = 0;
+        for (; i <= words.Length - Vector<uint>.Count; i += Vector<uint>.Count)
+            if (!Vector.GreaterThanOrEqualAll(new Vector<uint>(words[i..]), opaque)) return false;
+        for (; i < words.Length; i++)
+            if (words[i] < 0xFF000000) return false;
+        return true;
     }
 
     [LibraryImport("user32.dll", EntryPoint = "RegisterClipboardFormatW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
