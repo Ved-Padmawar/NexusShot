@@ -43,15 +43,48 @@ public sealed class Ui(D2DResources resources)
 
     /// <summary>Set once per frame, before any widget is called.</summary>
     public Point Pointer { get; private set; }
+
+    /// <summary>Whether the button is held, as its own messages last said.</summary>
     public bool PointerDown { get; private set; }
 
-    /// <summary>True on the frame the pointer went down. Popups use it to dismiss on an outside
+    /// <summary>True on the frame after the button went down. Popups use it to dismiss on an outside
     /// click, which they must do before any widget under them gets the event.</summary>
     public bool PointerPressed { get; private set; }
     private bool _pointerReleased;
+    private Point? _queuedPress;
+    private Point? _queuedRelease;
+
+    /// <summary>The window's button messages, recorded with where they happened. Several can arrive
+    /// between two paints, the pointer moving on after each, so a frame reads these rather than the
+    /// button's state at paint time.</summary>
+    public void NotePress(Point at)
+    {
+        _queuedPress = at;
+        PointerDown = true;
+    }
+
+    /// <inheritdoc cref="NotePress"/>
+    public void NoteRelease(Point at)
+    {
+        _queuedRelease = at;
+        PointerDown = false;
+    }
+
+    /// <summary>Drops the press without a click, for a window that lost the mouse mid-press: no
+    /// release is coming, and the widget it began on must not fire.</summary>
+    public void CancelPress()
+    {
+        Active = 0;
+        _queuedPress = null;
+        _queuedRelease = null;
+        PointerDown = false;
+    }
 
     /// <summary>Where the pointer went down, for drags measured from their start.</summary>
     public Point PressPoint { get; private set; }
+
+    /// <summary>Where the pointer was let go: a click lands only if this is over the widget.</summary>
+    private Point _releasePoint;
 
     /// <summary>True once any widget reported a click this frame. The frame handling a click has
     /// already drawn the pre-click state, so its window must schedule one more paint.</summary>
@@ -83,15 +116,17 @@ public sealed class Ui(D2DResources resources)
 
     /// <param name="area">The window's size, for a target that is not the window - a composition
     /// surface reports the size of the atlas it lives in.</param>
-    public void BeginFrame(IComObject<ID2D1RenderTarget> target, Point pointer, bool pointerDown, D2D_SIZE_F? area = null)
+    public void BeginFrame(IComObject<ID2D1RenderTarget> target, Point pointer, D2D_SIZE_F? area = null)
     {
         _target = target;
         _area = area;
-        PointerPressed = pointerDown && !PointerDown;
-        _pointerReleased = !pointerDown && PointerDown;
-        if (PointerPressed) PressPoint = pointer;
+        PointerPressed = _queuedPress.HasValue;
+        PressPoint = _queuedPress ?? PressPoint;
+        _pointerReleased = _queuedRelease.HasValue;
+        _releasePoint = _queuedRelease ?? _releasePoint;
+        _queuedPress = null;
+        _queuedRelease = null;
         Pointer = pointer;
-        PointerDown = pointerDown;
         Hot = 0;
         ClickedThisFrame = false;
         Animating = false;
@@ -102,7 +137,7 @@ public sealed class Ui(D2DResources resources)
         _cursors.Clear();
 
         // A press outside the focused field takes the keyboard back, as it would from a text box.
-        if (PointerPressed && _focus != 0 && !_focusBounds.Contains(pointer)) Blur();
+        if (PointerPressed && _focus != 0 && !_focusBounds.Contains(PressPoint)) Blur();
     }
 
     /// <summary>Ends the frame: the tooltip paints last, over everything, and any clip a caller left
@@ -238,15 +273,12 @@ public sealed class Ui(D2DResources resources)
 
     private readonly Stack<Rect> _clips = new();
 
-    /// <summary>True when the pointer is inside every active clip. Walked by hand: this runs per widget
-    /// per frame, and the LINQ form allocates.</summary>
-    private bool PointerVisible
+    /// <summary>True when <paramref name="point"/> is inside every active clip. Walked by hand: this
+    /// runs per widget per frame, and the LINQ form allocates.</summary>
+    private bool Visible(Point point)
     {
-        get
-        {
-            foreach (var clip in _clips) if (!clip.Contains(Pointer)) return false;
-            return true;
-        }
+        foreach (var clip in _clips) if (!clip.Contains(point)) return false;
+        return true;
     }
 
     /// <summary>A bitmap drawn into <paramref name="destination"/>, clipped to a rounded
@@ -407,11 +439,11 @@ public sealed class Ui(D2DResources resources)
     {
         if (Inert) return false;
         AddCursor(bounds, cursor);
-        var inside = bounds.Contains(Pointer) && PointerVisible;
+        var inside = bounds.Contains(Pointer) && Visible(Pointer);
         if (inside && Active == 0) Hot = id;
-        if (inside && PointerPressed) Active = id;
+        if (PointerPressed && bounds.Contains(PressPoint) && Visible(PressPoint)) Active = id;
 
-        var clicked = Active == id && _pointerReleased && inside;
+        var clicked = Active == id && _pointerReleased && bounds.Contains(_releasePoint) && Visible(_releasePoint);
         if (clicked) ClickedThisFrame = true;
         return clicked;
     }
@@ -1023,9 +1055,9 @@ public sealed class Ui(D2DResources resources)
 
         if (text is not null)
         {
-            if (PointerPressed && bounds.Contains(Pointer) && !Inert)
+            if (PointerPressed && bounds.Contains(PressPoint) && !Inert)
             {
-                text.MoveTo(IndexAt(text.Text, Pointer.X - TextX(text.Text), font, face));
+                text.MoveTo(IndexAt(text.Text, PressPoint.X - TextX(text.Text), font, face));
                 _selecting = true;
             }
             else if (_selecting && PointerDown)

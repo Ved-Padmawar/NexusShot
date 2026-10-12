@@ -273,7 +273,7 @@ public sealed class Storage
         settings.CaptureTextHotkey ??= defaults.CaptureTextHotkey;
         settings.TimedCaptureHotkey ??= defaults.TimedCaptureHotkey;
         settings.DropUnusableHotkeys();
-        if (string.IsNullOrWhiteSpace(settings.ScreenshotFolder)) settings.ScreenshotFolder = defaults.ScreenshotFolder;
+        if (!IsUsableFolder(settings.ScreenshotFolder)) settings.ScreenshotFolder = defaults.ScreenshotFolder;
         settings.PreviewDismissSeconds = Math.Clamp(settings.PreviewDismissSeconds, 0, 120);
         settings.TimedCaptureSeconds = Math.Clamp(settings.TimedCaptureSeconds, 1, 30);
         if (!Enum.IsDefined(settings.Theme)) settings.Theme = AppTheme.System;
@@ -287,6 +287,12 @@ public sealed class Storage
         settings.SavedColors = ValidColors(settings.SavedColors, AppSettings.MaxSavedColors);
         return settings;
     }
+
+    /// <summary>An absolute path the file system accepts. An empty or relative one, or one holding a
+    /// character such as NUL, would fail every use of the folder, startup's included.</summary>
+    private static bool IsUsableFolder(string? folder) =>
+        !string.IsNullOrWhiteSpace(folder) && Path.IsPathFullyQualified(folder)
+        && folder.IndexOfAny(Path.GetInvalidPathChars()) < 0;
 
     /// <summary>Drops anything in a colour list that is not a colour, and caps its length.</summary>
     private static List<string> ValidColors(List<string>? colors, int limit) =>

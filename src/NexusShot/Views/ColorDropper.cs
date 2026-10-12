@@ -1,6 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.MouseMessage;
 
 namespace NexusShot.Views;
 
@@ -91,7 +92,7 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
 
         var ui = _ui;
         ui.Scale = Functions.GetDpiForWindow(Handle) / 96.0;
-        ui.BeginFrame(target, _cursor, false);
+        ui.BeginFrame(target, _cursor);
 
         var full = new D2D_RECT_F(0, 0, _desktop.Width, _desktop.Height);
         target.Object.DrawBitmap(_snapshot.Bitmap.Object, (nint)(&full), 1f,
@@ -130,12 +131,6 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
                 return new LRESULT { Value = 0 };
         }
         return base.WindowProc(hwnd, msg, wParam, lParam);
-    }
-
-    private static Point ClientPoint(LPARAM lParam)
-    {
-        var value = lParam.Value.ToInt64();
-        return new Point((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
     }
 
     /// <summary>A full-desktop snapshot is the largest bitmap the app makes, so it goes the moment

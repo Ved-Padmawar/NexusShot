@@ -94,8 +94,8 @@ public sealed partial class MainWindow
         var sheet = new Rect((width - sheetWidth) / 2, top + S(12) * (1 - open), sheetWidth, sheetHeight);
 
         // A scrim press closes the sheet; the frame keeps drawing it so the fade-out does not blink.
-        if (_settingsOpen && ui.PointerPressed && !sheet.Contains(ui.Pointer) && !DropdownOpen
-            && ui.Pointer.Y > CaptionHeight)
+        if (_settingsOpen && ui.PointerPressed && !sheet.Contains(ui.PressPoint) && !DropdownOpen
+            && ui.PressPoint.Y > CaptionHeight)
             CloseSettings();
 
         // Closing: the sheet fades out but no longer answers the pointer.

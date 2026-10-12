@@ -74,7 +74,7 @@ public sealed class ColorPicker
         _bounds = new Rect(x, y, width, height);
 
         // Clicking outside closes it - and does not fall through to whatever is underneath.
-        if (ui.PointerPressed && !_bounds.Contains(ui.Pointer) && !anchor.Contains(ui.Pointer))
+        if (ui.PointerPressed && !_bounds.Contains(ui.PressPoint) && !anchor.Contains(ui.PressPoint))
         {
             _open = false;
             return new PickerResult(null, false, false, null, null, null, Closed: true);

@@ -89,11 +89,9 @@ public sealed partial class EditorWindow
                 OnPointerReleased(ClientPoint(lParam));
                 return Handled;
 
-            // A release clears _dragging first, so a live gesture here lost the pointer for good.
-            case WmCaptureChanged when _dragging:
-                _dragging = false;
-                _document.CancelGesture();
-                Invalidate();
+            // A release clears its press state first, so a live press here lost the pointer for good.
+            case WmCaptureChanged when _dragging || _chromeCaptured || _caretDragging:
+                CancelPress();
                 return Handled;
 
             case WmMouseWheel:
@@ -277,7 +275,7 @@ public sealed partial class EditorWindow
     private void OnPointerPressed((int X, int Y) client)
     {
         _clientPointer = new Point(client.X, client.Y);
-        _pointerDown = true;
+        _ui?.NotePress(_clientPointer);
 
         if (_image is null)
         { Invalidate(); return; }
@@ -342,8 +340,6 @@ public sealed partial class EditorWindow
     private void OnPointerMoved((int X, int Y) client, bool leftDown)
     {
         _clientPointer = new Point(client.X, client.Y);
-        // A move never starts a press: the eyedropper closes on its press, leaving the button down.
-        _pointerDown &= leftDown;
 
         if (_image is null)
         { Invalidate(); return; }
@@ -376,10 +372,26 @@ public sealed partial class EditorWindow
         Invalidate();
     }
 
+    /// <summary>Ends whatever the press began without its release: a canvas gesture is undone, a
+    /// chrome drag keeps what it set, and no widget clicks.</summary>
+    private void CancelPress()
+    {
+        _chromeCaptured = false;
+        _caretDragging = false;
+        _ui?.CancelPress();
+        _document.EndAdjustment();
+        if (_dragging)
+        {
+            _dragging = false;
+            _document.CancelGesture();
+        }
+        Invalidate();
+    }
+
     private void OnPointerReleased((int X, int Y) client)
     {
         _clientPointer = new Point(client.X, client.Y);
-        _pointerDown = false;
+        _ui?.NoteRelease(_clientPointer);
 
         // A slider or picker drag is one undo step, ended by the release.
         _document.EndAdjustment();

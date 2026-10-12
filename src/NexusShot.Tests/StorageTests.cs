@@ -25,6 +25,18 @@ public class StorageTests : IDisposable
         Assert.Equal(0, settings.PreviewDismissSeconds);
     }
 
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("shots")]
+    [InlineData("C:\\sh\u0000ots")]
+    public void AnUnusableSaveFolderFallsBackToTheDefault(string folder)
+    {
+        var storage = new Storage(_directory);
+        storage.SaveSettings(new AppSettings { ScreenshotFolder = folder });
+
+        Assert.Equal(new AppSettings().ScreenshotFolder, storage.LoadSettings().ScreenshotFolder);
+    }
+
     [Fact]
     public void NullHistoryEntriesAreIgnored()
     {
@@ -79,6 +91,22 @@ public class StorageTests : IDisposable
         var read = reopened.LoadTextIndex();
         Assert.Equal("line one", read.TextOf(@"C:\S\A.PNG"));
         Assert.True(read.IsCurrent(@"C:\s\a.png", new FileVersion(3, new DateTime(2026, 2, 3, 4, 5, 6, DateTimeKind.Utc)), "en-US"));
+    }
+
+    [Fact]
+    public void NullAndCaseDuplicateTextEntriesAreDroppedOnLoad()
+    {
+        var storage = new Storage(_directory);
+        File.WriteAllText(storage.TextIndexPath, """
+            {"gone.png":null,
+             "a.png":{"Version":{"Length":1,"LastWriteUtc":"2026-01-01T00:00:00Z"},"Language":"","Text":"first"},
+             "A.PNG":{"Version":{"Length":1,"LastWriteUtc":"2026-01-01T00:00:00Z"},"Language":"","Text":"second"}}
+            """);
+
+        var index = storage.LoadTextIndex();
+
+        Assert.Null(index.TextOf("gone.png"));
+        Assert.Equal("first", index.TextOf("a.png"));
     }
 
     public void Dispose() => Directory.Delete(_directory, recursive: true);

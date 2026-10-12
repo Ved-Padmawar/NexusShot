@@ -4,7 +4,8 @@ using static NexusShot.Tests.Editing;
 
 namespace NexusShot.Tests;
 
-/// <summary>Selection frames, endpoint handles and the crop frame, drawn on screen but never exported.</summary>
+/// <summary>On-screen drawing with one renderer kept across frames: selection frames, handles and the
+/// crop frame, which are never exported, and the geometry the renderer caches between frames.</summary>
 public sealed class AdornerRenderTests : IDisposable
 {
     private static readonly Rgba Green = Palette.Parse("#34C759");
@@ -24,6 +25,9 @@ public sealed class AdornerRenderTests : IDisposable
 
     private void DrawAdorners(EditorDocument document) =>
         _screen.Draw(Rgba.White, target => _renderer.DrawAdorners(target, document, 1));
+
+    private void DrawAnnotations(EditorDocument document) =>
+        _screen.Draw(Rgba.White, target => _renderer.DrawAnnotations(target, document, null));
 
     [Fact]
     public void ASelectedTextBoxAndLineAreFramedInTheirOwnColour()
@@ -53,5 +57,21 @@ public sealed class AdornerRenderTests : IDisposable
         _screen.Draw(Rgba.Black, target => _renderer.DrawAdorners(target, document, 1));
 
         Assert.Equal(Rgba.White, _screen.Pixel(300, 1));   // top edge, away from the grips
+    }
+
+    [Fact]
+    public void AnEraseAfterUndoRedrawsTheNewHoleNotTheOldOne()
+    {
+        var document = NewDocument();
+        Stroke(document, EditorTool.Pen, [new Point(100, 400), new Point(900, 400)], thickness: 16);
+        Stroke(document, EditorTool.Eraser, [new Point(300, 400)], thickness: 40);
+        DrawAnnotations(document);
+
+        document.Undo();
+        Stroke(document, EditorTool.Eraser, [new Point(700, 400)], thickness: 40);
+        DrawAnnotations(document);
+
+        Assert.NotEqual(Rgba.White, _screen.Pixel(300, 400));
+        Assert.Equal(Rgba.White, _screen.Pixel(700, 400));
     }
 }

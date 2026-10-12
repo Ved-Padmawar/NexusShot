@@ -1,6 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.MouseMessage;
 
 namespace NexusShot.Views;
 
@@ -14,6 +15,7 @@ public sealed partial class MainWindow : CaptionWindow
     private const uint WmMouseMove = 0x0200;
     private const uint WmLButtonDown = 0x0201;
     private const uint WmLButtonUp = 0x0202;
+    private const uint WmCaptureChanged = 0x0215;
     private const uint WmKeyDown = 0x0100;
     private const uint WmSysKeyDown = 0x0104;
     private const uint WmSysChar = 0x0106;
@@ -48,7 +50,6 @@ public sealed partial class MainWindow : CaptionWindow
     /// Ctrl+click had usually released Ctrl already.</summary>
     private bool _pressedWithControl;
     private Point _pointer;
-    private bool _pointerDown;
 
     /// <summary>Set by a wheel scroll, cleared when the pointer really moves. Tiles slide under a
     /// still pointer while the grid scrolls, and each one played its hover as it passed - a flicker
@@ -296,7 +297,7 @@ public sealed partial class MainWindow : CaptionWindow
         var height = (double)client.Height;
         layers.Resize(client.Width, client.Height, _ui.Theme.SurfaceWindow);
 
-        _ui.BeginFrame(resources, _hoverPaused ? new Point(-1, -1) : _pointer, _pointerDown,
+        _ui.BeginFrame(resources, _hoverPaused ? new Point(-1, -1) : _pointer,
             new D2D_SIZE_F((float)width, (float)height));
 
         // An open menu hangs over the grid; the tiles under it must not answer the pointer.
@@ -398,9 +399,10 @@ public sealed partial class MainWindow : CaptionWindow
 
             case WmLButtonDown:
                 _pointer = ClientPoint(lParam);
-                _pointerDown = true;
                 _pressedWithControl = ((ulong)wParam.Value & 0x0008) != 0; // MK_CONTROL
                 _hoverPaused = false;
+                _ui?.NotePress(_pointer);
+                WindowInterop.SetCapture(Handle);
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
@@ -416,7 +418,14 @@ public sealed partial class MainWindow : CaptionWindow
 
             case WmLButtonUp:
                 _pointer = ClientPoint(lParam);
-                _pointerDown = false;
+                _ui?.NoteRelease(_pointer);
+                if (WindowInterop.GetCapture() == Handle) WindowInterop.ReleaseCapture();
+                Invalidate();
+                return new LRESULT { Value = 0 };
+
+            // Capture taken away mid-press: the release will never arrive, so nothing stays pressed.
+            case WmCaptureChanged when _ui is { PointerDown: true } pressed:
+                pressed.CancelPress();
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
@@ -530,12 +539,6 @@ public sealed partial class MainWindow : CaptionWindow
     {
         SetCloaked(true);
         Hide();
-    }
-
-    private static Point ClientPoint(LPARAM lParam)
-    {
-        var value = lParam.Value.ToInt64();
-        return new Point((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
     }
 
     /// <summary>A short confirmation at the foot of the window: an action that changes nothing visible

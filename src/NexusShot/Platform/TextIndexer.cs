@@ -8,18 +8,18 @@ namespace NexusShot.Platform;
 /// Reads the text in captures for the Library search: one at a time, on its own thread below normal
 /// priority, so neither the UI nor the media worker a copy or save waits on is held up by a backlog
 /// of hundreds. Results go to <c>read</c> on this thread, with the language they were read in; the
-/// caller moves them to its own.
+/// caller moves them to its own. Turning text search off drains the queue unread.
 /// </summary>
 internal sealed class TextIndexer : IDisposable
 {
     private readonly BlockingCollection<string> _queue = [];
     private readonly HashSet<string> _waiting = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Func<string?> _language;
+    private readonly AppSettings _settings;
     private readonly Action<string, FileVersion, string?, string> _read;
 
-    public TextIndexer(Func<string?> language, Action<string, FileVersion, string?, string> read)
+    public TextIndexer(AppSettings settings, Action<string, FileVersion, string?, string> read)
     {
-        _language = language;
+        _settings = settings;
         _read = read;
         new Thread(Run) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "Text index" }.Start();
     }
@@ -39,8 +39,8 @@ internal sealed class TextIndexer : IDisposable
             lock (_waiting) _waiting.Remove(path);
 
             // Without a language nothing is recorded, so captures are read once one is installed.
-            var language = _language();
-            if (!TextRecognition.CanRead(language)) continue;
+            var language = _settings.OcrLanguage;
+            if (!_settings.FindTextInCaptures || !TextRecognition.CanRead(language)) continue;
 
             FileVersion version;
             try { version = FileVersion.Read(path); }

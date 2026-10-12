@@ -27,6 +27,26 @@ public class ImageWriterTests : IDisposable
     }
 
     [Fact]
+    public void ATallImagesThumbnailKeepsOnlyTheTopThatFillsTheTile()
+    {
+        using var image = DecodedImage.Allocate(400, 4000);
+        var pixels = image.Span;
+        pixels.Clear();
+        for (var i = 0; i < pixels.Length; i += 4)
+        {
+            pixels[i + (i / 4 / 400 < 2000 ? 2 : 0)] = 255;   // BGRA: red top half, blue below
+            pixels[i + 3] = 255;
+        }
+        var path = Path.Combine(_directory, "tall.png");
+        ImageWriter.Write(path, image);
+
+        using var thumbnail = ImageSurface.DecodeScaled(path, 240, 150, cover: true);
+
+        Assert.Equal((240, 150), (thumbnail.Width, thumbnail.Height));
+        Assert.Equal(255, thumbnail.Span[(75 * 240 + 120) * 4 + 2]);
+    }
+
+    [Fact]
     public unsafe void AnExifRotationIsAppliedToSizeAndPixels()
     {
         // 16 x 8, left half red and right half blue, tagged "rotate 90 clockwise to view".

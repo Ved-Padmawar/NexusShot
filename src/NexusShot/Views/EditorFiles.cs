@@ -64,29 +64,35 @@ public sealed record ExportRequest(EditorDocument Document, DecodedImage Pixels,
         return lines;
     }
 
+    /// <summary>A shared file outlives its share: the receiving app reads it on its own schedule.</summary>
+    private static readonly TimeSpan ShareLifetime = TimeSpan.FromHours(1);
+
     /// <summary>
     /// Writes the flattened image for the share sheet and returns its path. Named after the capture,
-    /// because the receiving app shows the name. It cannot be deleted when this returns - the share
-    /// sheet reads it later, on its own schedule - so each share clears the previous one instead, and
-    /// at most one lingers in the temp folder.
+    /// because the receiving app shows the name; each share gets its own folder, so a second share of
+    /// the same capture never replaces a file the first receiver has yet to read.
     /// </summary>
     public string SaveShareCopy()
     {
-        var folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "NexusShot share");
-        if (Directory.Exists(folder))
-        {
-            foreach (var stale in Directory.EnumerateFiles(folder))
-            {
-                try { File.Delete(stale); }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                { Log.Error("share.temp_cleanup", exception); }
-            }
-        }
-        Directory.CreateDirectory(folder);
+        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "NexusShot share");
+        ClearExpiredShares(root);
+        var folder = Directory.CreateDirectory(System.IO.Path.Combine(root, Guid.NewGuid().ToString("N"))).FullName;
 
         var path = System.IO.Path.Combine(folder, System.IO.Path.GetFileNameWithoutExtension(Source) + ".png");
         Exporter.Save(Document, Pixels, path);
         return path;
+    }
+
+    private static void ClearExpiredShares(string root)
+    {
+        if (!Directory.Exists(root)) return;
+        foreach (var share in new DirectoryInfo(root).EnumerateDirectories())
+        {
+            if (DateTime.UtcNow - share.CreationTimeUtc < ShareLifetime) continue;
+            try { share.Delete(recursive: true); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { Log.Error("share.temp_cleanup", exception); }
+        }
     }
 
     private void WithFlattened(Action<string> use)

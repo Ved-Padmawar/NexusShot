@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.MouseMessage;
 
 namespace NexusShot.Views;
 
@@ -29,6 +30,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
     private const uint WmMouseMove = 0x0200;
     private const uint WmLButtonDown = 0x0201;
     private const uint WmLButtonUp = 0x0202;
+    private const uint WmCaptureChanged = 0x0215;
     private const uint WmMouseLeave = 0x02A3;
     private const int VkEscape = 0x1B;
 
@@ -50,7 +52,6 @@ public sealed partial class RestoreStrip : D2DRenderWindow
     private readonly Dictionary<string, DecodedImage> _decoded = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _requested = new(StringComparer.OrdinalIgnoreCase);
 
-    private bool _pointerDown;
     private bool _tracking;
 
     public event Action<ScreenshotHistoryItem>? RestoreRequested;
@@ -150,7 +151,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
 
         var client = ClientRect;
         renderTarget.Clear(new D3DCOLORVALUE(0, 0, 0, 0));
-        ui.BeginFrame(target, PointerInClient(), _pointerDown);
+        ui.BeginFrame(target, PointerInClient());
         ui.FillRect(new Rect(0, 0, client.Width, client.Height), _acrylic ? AcrylicTint : theme.SurfaceWindow);
 
         var closed = _stack.RecentlyClosed;
@@ -274,12 +275,20 @@ public sealed partial class RestoreStrip : D2DRenderWindow
                 return new LRESULT { Value = 0 };
 
             case WmLButtonDown:
-                _pointerDown = true;
+                _ui?.NotePress(ClientPoint(lParam));
+                WindowInterop.SetCapture(Handle);
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmLButtonUp:
-                _pointerDown = false;
+                _ui?.NoteRelease(ClientPoint(lParam));
+                if (WindowInterop.GetCapture() == Handle) WindowInterop.ReleaseCapture();
+                Invalidate();
+                return new LRESULT { Value = 0 };
+
+            // Capture taken away mid-press: the release will never arrive, so nothing stays pressed.
+            case WmCaptureChanged when _ui is { PointerDown: true } pressed:
+                pressed.CancelPress();
                 Invalidate();
                 return new LRESULT { Value = 0 };
         }

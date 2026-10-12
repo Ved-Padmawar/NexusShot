@@ -50,4 +50,10 @@ public class LaunchAndPasteTests
         Assert.Equal(new byte[] { 10, 20, 30 }, image.Span[..3].ToArray());
         Assert.Equal(new byte[] { 40, 50, 60 }, image.Span[4..7].ToArray());
     }
+
+    [Fact]
+    public void ADibTooShortForItsHeaderIsAReadErrorNotACrash()
+    {
+        Assert.Throws<IOException>(() => ClipboardReader.AsBitmapFile(new byte[12]));
+    }
 }

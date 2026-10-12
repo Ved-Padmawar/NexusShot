@@ -12,10 +12,11 @@ namespace NexusShot.Render;
 public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 {
     /// <summary>An erased stroke's realized geometry, keyed by everything that changes its shape:
-    /// the endpoints catch a translate, which moves every point but changes no count.</summary>
+    /// the endpoints catch a translate, which moves every point but changes no count, and the mask
+    /// list's identity catches an undo, which restores a copy that may match every count.</summary>
     private sealed record ErasedGeometry(
-        int PointCount, Point First, Point Last, double Thickness, int MaskCount, int MaskPointCount,
-        IComObject<ID2D1PathGeometry> Geometry);
+        int PointCount, Point First, Point Last, double Thickness, List<EraserMask> Masks, int MaskCount,
+        int MaskPointCount, IComObject<ID2D1PathGeometry> Geometry);
 
     private readonly Dictionary<Guid, ErasedGeometry> _erasedStrokes = [];
 
@@ -194,6 +195,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
                 && cached.First == annotation.Points[0]
                 && cached.Last == annotation.Points[^1]
                 && cached.Thickness == annotation.StrokeThickness
+                && ReferenceEquals(cached.Masks, annotation.Erasures)
                 && cached.MaskCount == annotation.Erasures.Count
                 && cached.MaskPointCount == maskPoints)
                 return cached.Geometry;
@@ -207,7 +209,7 @@ public sealed class AnnotationRenderer(D2DResources resources) : IDisposable
 
         _erasedStrokes[annotation.Id] = new ErasedGeometry(
             annotation.Points.Count, annotation.Points[0], annotation.Points[^1],
-            annotation.StrokeThickness, annotation.Erasures.Count, maskPoints, geometry);
+            annotation.StrokeThickness, annotation.Erasures, annotation.Erasures.Count, maskPoints, geometry);
         return geometry;
     }
 

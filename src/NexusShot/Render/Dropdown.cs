@@ -81,7 +81,7 @@ public sealed class Dropdown
         var menu = new Rect(_anchor.Right - width, top, width, height);
 
         // Clicking away closes without choosing, and the click must not fall through to a row below.
-        if (ui.PointerPressed && !menu.Contains(ui.Pointer) && !_anchor.Contains(ui.Pointer))
+        if (ui.PointerPressed && !menu.Contains(ui.PressPoint) && !_anchor.Contains(ui.PressPoint))
         {
             _openId = 0;
             return;

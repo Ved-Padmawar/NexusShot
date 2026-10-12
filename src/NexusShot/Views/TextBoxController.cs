@@ -108,8 +108,9 @@ internal sealed class TextBoxController(EditorDocument document)
             case VIRTUAL_KEY.VK_Y when control:
                 return TextKeyResult.Redo;
 
-            // Escape closes the box, so it is the one key that goes on to the window.
+            // Escape closes the box and Save commits it first, so both go on to the window.
             case VIRTUAL_KEY.VK_ESCAPE:
+            case VIRTUAL_KEY.VK_S when control:
                 return TextKeyResult.NotHandled;
 
             // Everything else is swallowed: the printable keys arrive again as WM_CHAR and are

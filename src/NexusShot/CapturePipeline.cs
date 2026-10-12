@@ -218,6 +218,26 @@ public sealed class CapturePipeline : IDisposable
         }
     }
 
+    /// <summary>Records a file an editor wrote and returns its row. An existing row takes the new size
+    /// and keeps its time and favourite; any other file, wherever it was saved, joins the library.</summary>
+    private ScreenshotHistoryItem AdoptSaved(string path)
+    {
+        _main.DropCache(path);
+        var (width, height) = ImageSurface.ReadSize(path);
+        if (_history.FirstOrDefault(entry => string.Equals(entry.FilePath, path, StringComparison.OrdinalIgnoreCase)) is not { } existing)
+        {
+            var item = new ScreenshotHistoryItem { FilePath = path, CapturedAt = DateTimeOffset.Now, Width = width, Height = height };
+            _main.AddCapture(item);
+            return item;
+        }
+
+        existing.Width = width;
+        existing.Height = height;
+        _storage.SaveHistory(_history);
+        _main.Invalidate();
+        return existing;
+    }
+
     private void Edit(ScreenshotHistoryItem item)
     {
         if (_editors.Owner(item.FilePath) is { } existing)
@@ -244,63 +264,21 @@ public sealed class CapturePipeline : IDisposable
             _main.Invalidate();
         };
 
-        // Save overwrites the capture, so its history row and its card are both stale.
+        // Save overwrites the file, so its card is stale.
         editor.Saved += path =>
         {
-            var (width, height) = ImageSurface.ReadSize(path);
-
-            var entry = _history.FirstOrDefault(candidate => string.Equals(candidate.FilePath, path, StringComparison.OrdinalIgnoreCase));
-            if (entry is not null)
-            {
-                entry.Width = width;
-                entry.Height = height;
-                _storage.SaveHistory(_history);
-            }
-
-            _main.DropCache(path);
-            _main.Invalidate();
-
-            var saved = entry ?? new ScreenshotHistoryItem
-            {
-                FilePath = path,
-                CapturedAt = DateTimeOffset.Now,
-                Width = width,
-                Height = height,
-            };
+            var saved = AdoptSaved(path);
             if (carded) RefreshExistingPreview(saved);
             else ShowPreview(saved);
             carded = true;
         };
 
-        // Save As writes a new file; it belongs in the history, and gets a card of its own.
         editor.SavedAs += path =>
         {
             _editors.Move(editor, editorPath, path);
             editorPath = path;
             carded = true;
-            _main.DropCache(path);
-            var (width, height) = ImageSurface.ReadSize(path);
-            var existing = _history.FirstOrDefault(entry => string.Equals(entry.FilePath, path, StringComparison.OrdinalIgnoreCase));
-            if (existing is not null)
-            {
-                existing.Width = width;
-                existing.Height = height;
-                _storage.SaveHistory(_history);
-                _main.Invalidate();
-                ShowPreview(existing);
-                return;
-            }
-
-            var item = new ScreenshotHistoryItem
-            {
-                FilePath = path,
-                CapturedAt = DateTimeOffset.Now,
-                Width = width,
-                Height = height,
-            };
-
-            _main.AddCapture(item);
-            ShowPreview(item);
+            ShowPreview(AdoptSaved(path));
         };
 
         var scale = Functions.GetDpiForWindow(editor.Handle) / 96.0;

@@ -11,10 +11,15 @@ public sealed class TextIndex
     /// language was recorded deserialize with none, so they never match and are read once more.</summary>
     public sealed record Entry(FileVersion Version, string Language, string Text);
 
-    private readonly Dictionary<string, Entry> _entries;
+    private readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
 
-    public TextIndex(IDictionary<string, Entry>? entries = null) =>
-        _entries = new(entries ?? new Dictionary<string, Entry>(), StringComparer.OrdinalIgnoreCase);
+    /// <summary>The file is valid JSON, not necessarily a valid index: a null entry is dropped, so its
+    /// capture is read again, and of keys differing only in case the first is kept.</summary>
+    public TextIndex(IDictionary<string, Entry>? entries = null)
+    {
+        foreach (var (path, entry) in entries ?? new Dictionary<string, Entry>())
+            if (entry is not null) _entries.TryAdd(path, entry);
+    }
 
     /// <summary>Changes whenever an entry does, so a view filtering by text knows to redraw.</summary>
     public long Generation { get; private set; }

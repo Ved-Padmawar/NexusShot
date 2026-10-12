@@ -44,6 +44,9 @@ internal readonly struct ShellItemRef : IDisposable
 
     internal FolderPicker.IShellItem Item => (FolderPicker.IShellItem)_wrapper;
 
+    /// <summary>The raw reference, for an interface that takes the item untyped.</summary>
+    internal IntPtr Pointer => _pointer;
+
     public void Dispose()
     {
         if (_wrapper is System.Runtime.InteropServices.Marshalling.ComObject com)

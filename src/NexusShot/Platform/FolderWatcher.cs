@@ -14,28 +14,33 @@ public sealed class FolderWatcher : IDisposable
     private readonly FileSystemWatcher _watcher;
     private readonly Timer _debounce;
     private readonly Timer _retry;
+    private readonly string _folder;
     private readonly Action _changed;
     private volatile bool _disposed;
 
     public FolderWatcher(string folder, Action changed)
     {
+        _folder = folder;
         _changed = changed;
 
-        Directory.CreateDirectory(folder);
+        try { Directory.CreateDirectory(folder); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        { Log.Error("watcher.folder", exception, folder); }
 
         _debounce = new Timer(_ => Fire(), null, Timeout.Infinite, Timeout.Infinite);
         _retry = new Timer(_ => Rearm(), null, Timeout.Infinite, Timeout.Infinite);
 
         // Every format the app writes and opens, or a JPEG or BMP deleted in Explorer stays listed.
-        _watcher = new FileSystemWatcher(folder) { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite };
+        _watcher = new FileSystemWatcher { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite };
         foreach (var extension in ImageFiles.Extensions) _watcher.Filters.Add("*" + extension);
-        _watcher.EnableRaisingEvents = true;
 
         _watcher.Created += OnChanged;
         _watcher.Deleted += OnChanged;
         _watcher.Renamed += OnRenamed;
         _watcher.Changed += OnChanged;
         _watcher.Error += OnError;
+
+        TryStart();
     }
 
     private void OnChanged(object? sender, FileSystemEventArgs e) => Schedule();
@@ -51,26 +56,30 @@ public sealed class FolderWatcher : IDisposable
     /// </summary>
     private void OnError(object? sender, ErrorEventArgs e) => Rearm();
 
-    /// <summary>Restarts the watcher and rescans. A network or removable folder can be gone for a
-    /// while, so a failed restart tries again every few seconds until the folder is back.</summary>
+    /// <summary>Restarts the watcher and rescans, as events may have been missed.</summary>
     private void Rearm()
     {
-        if (_disposed) return;
+        if (!_disposed && TryStart()) Schedule();
+    }
 
+    /// <summary>Starts watching, or restarts. A network or removable folder can be gone for a while,
+    /// at launch or later, so a failed start tries again every few seconds until the folder is back.</summary>
+    private bool TryStart()
+    {
         try
         {
             _watcher.EnableRaisingEvents = false;
+            _watcher.Path = _folder;
             _watcher.EnableRaisingEvents = true;
+            return true;
         }
-        catch (ObjectDisposedException) { return; }
-        catch (Exception exception) when (exception is IOException or ArgumentException)
+        catch (ObjectDisposedException) { return false; }
+        catch (Exception exception) when (exception is IOException or ArgumentException or UnauthorizedAccessException)
         {
             try { _retry.Change(5000, Timeout.Infinite); }
             catch (ObjectDisposedException) { }
-            return;
+            return false;
         }
-
-        Schedule();
     }
 
     /// <summary>Restarts the debounce. Events can arrive on a watcher thread while the owner is

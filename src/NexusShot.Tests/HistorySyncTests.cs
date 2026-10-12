@@ -1,4 +1,6 @@
+using System.Security.AccessControl;
 using NexusShot.Core;
+using NexusShot.Platform;
 
 namespace NexusShot.Tests;
 
@@ -92,5 +94,31 @@ public class HistorySyncTests
         Assert.False(result.Changed);
         Assert.True(result.ScanAgain);
         Assert.False(sync.Versions().ContainsKey("busy.png"));
+    }
+
+    [Fact]
+    public void ACaptureIsDeletedOnlyWhenWindowsCanSayItIsGone()
+    {
+        var folder = Directory.CreateTempSubdirectory("nexusshot-denied-");
+        var hidden = Path.Combine(folder.FullName, "a.png");
+        File.WriteAllBytes(hidden, [0]);
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var deny = new FileSystemAccessRule(user, FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Deny);
+        var security = folder.GetAccessControl();
+        security.AddAccessRule(deny);
+        folder.SetAccessControl(security);
+        try
+        {
+            Assert.False(HistoryScanner.IsDeleted(hidden));
+            Assert.True(HistoryScanner.IsDeleted(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".png")));
+            Assert.False(HistoryScanner.IsDeleted(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString(), "a.png")));
+        }
+        finally
+        {
+            security.RemoveAccessRule(deny);
+            folder.SetAccessControl(security);
+            folder.Delete(recursive: true);
+        }
     }
 }

@@ -39,7 +39,8 @@ public sealed class ImageSurface : IDisposable
 
     /// <summary>The CPU half of <see cref="LoadScaled"/>: decodes and scales, touching no device, so
     /// it is safe to call from any thread. The caller owns the result. With <paramref name="cover"/>
-    /// the image fills the box instead of fitting inside it, for a view that crops to the box.</summary>
+    /// the image fills the box and is cropped to its shape - from the top, where a capture's title bar
+    /// is, and centred across - so a very tall or wide image costs no more than the box.</summary>
     public static DecodedImage DecodeScaled(string path, int maxWidth, int maxHeight, bool cover = false)
     {
         using var decoder = WicImagingFactory.CreateDecoderFromFilename(path);
@@ -54,7 +55,9 @@ public sealed class ImageSurface : IDisposable
 
         var width = Math.Max(1, (int)Math.Round(sourceWidth * scale));
         var height = Math.Max(1, (int)Math.Round(sourceHeight * scale));
-        if ((long)width * height > MaximumPixels)
+        var keptWidth = cover ? Math.Min(width, Math.Max(1, (int)Math.Round(height * (double)maxWidth / maxHeight))) : width;
+        var keptHeight = cover ? Math.Min(height, Math.Max(1, (int)Math.Round(width * (double)maxHeight / maxWidth))) : height;
+        if ((long)keptWidth * keptHeight > MaximumPixels)
             throw new InvalidOperationException("Image too large to decode.");
 
         using var scaler = WicImagingFactory.CreateBitmapScaler();
@@ -71,7 +74,7 @@ public sealed class ImageSurface : IDisposable
             0,
             WICBitmapPaletteType.WICBitmapPaletteTypeCustom).ThrowOnError();
 
-        return CopyPixels(converter.Object, width, height);
+        return CopyPixels(converter.Object, keptWidth, keptHeight, (width - keptWidth) / 2);
     }
 
     /// <summary>The GPU half: uploads decoded pixels. Must run on the thread that owns the device.
@@ -198,12 +201,15 @@ public sealed class ImageSurface : IDisposable
 
     /// <summary>Drains a WIC source straight into unmanaged memory, so the pixels never reach the
     /// managed heap. The image is freed if the copy fails, rather than leaking on the throw.</summary>
-    private static DecodedImage CopyPixels(IWICBitmapSource source, int width, int height)
+    /// <summary>Copies a <paramref name="width"/> by <paramref name="height"/> region from the top,
+    /// <paramref name="left"/> pixels in.</summary>
+    private static unsafe DecodedImage CopyPixels(IWICBitmapSource source, int width, int height, int left = 0)
     {
         var image = DecodedImage.Allocate(width, height);
         try
         {
-            source.CopyPixels(0, (uint)image.Stride, (uint)image.ByteLength, image.Pointer)
+            var region = new WICRect { X = left, Y = 0, Width = width, Height = height };
+            source.CopyPixels((nint)(&region), (uint)image.Stride, (uint)image.ByteLength, image.Pointer)
                 .ThrowOnError();
             return image;
         }

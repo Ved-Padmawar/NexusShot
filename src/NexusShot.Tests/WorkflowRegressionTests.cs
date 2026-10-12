@@ -219,7 +219,7 @@ public class WorkflowRegressionTests : IDisposable
 
         File.Delete(path);
 
-        Assert.True(fired.Wait(TimeSpan.FromSeconds(5)), $"no change reported for a deleted {extension}");
+        Assert.True(fired.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken), $"no change reported for a deleted {extension}");
     }
 
     [Fact]
@@ -237,7 +237,21 @@ public class WorkflowRegressionTests : IDisposable
         Directory.CreateDirectory(folder);
 
         // A recovered watcher rescans; a dead one never reports again.
-        Assert.True(fired.Wait(TimeSpan.FromSeconds(10)), "the watcher never came back");
+        Assert.True(fired.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken), "the watcher never came back");
+    }
+
+    [Fact]
+    public void AWatcherStartedOnAMissingFolderAttachesOnceItAppears()
+    {
+        var blocker = Path.Combine(_directory, "offline");
+        File.WriteAllBytes(blocker, [0]);
+        using var fired = new ManualResetEventSlim();
+        using var watcher = new FolderWatcher(Path.Combine(blocker, "shots"), fired.Set);
+
+        File.Delete(blocker);
+        Directory.CreateDirectory(Path.Combine(blocker, "shots"));
+
+        Assert.True(fired.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken), "the watcher never attached");
     }
 
     [Fact]
@@ -248,7 +262,7 @@ public class WorkflowRegressionTests : IDisposable
 
         File.WriteAllText(Path.Combine(_directory, "notes.txt"), "x");
 
-        Assert.False(fired.Wait(TimeSpan.FromSeconds(1)));
+        Assert.False(fired.Wait(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -338,7 +352,7 @@ public class WorkflowRegressionTests : IDisposable
         using var entered = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
         var first = MediaWorker.Run(() => { entered.Set(); release.Wait(); return 0; });
-        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
         var waiting = new List<Task<int>>();
         try
         {

@@ -33,6 +33,14 @@ public class InlineEditingTests
     }
 
     [Fact]
+    public void CtrlSGoesOnToTheWindowWhilePlainSIsTyped()
+    {
+        var (_, controller, _) = Open("a");
+        Assert.Equal(TextKeyResult.NotHandled, controller.HandleKey(VIRTUAL_KEY.VK_S, control: true, shift: false));
+        Assert.Equal(TextKeyResult.Handled, controller.HandleKey(VIRTUAL_KEY.VK_S, control: false, shift: false));
+    }
+
+    [Fact]
     public void ClearingTextThenKeepingItsBoxDoesNotResurrectOldText()
     {
         var (document, controller, annotation) = Open("old text");

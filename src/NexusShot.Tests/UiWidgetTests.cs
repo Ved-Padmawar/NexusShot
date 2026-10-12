@@ -48,6 +48,61 @@ public sealed class UiWidgetTests : IDisposable
         Assert.False(PressAndRelease(Outside, Inside, Button));
 
     [Fact]
+    public void APressAndReleaseBetweenTwoFramesIsStillAClick()
+    {
+        _screen.Frame(_ui, Inside, down: false, () => Button());
+        _ui.NotePress(Inside);
+        _ui.NoteRelease(Inside);
+        var clicked = false;
+        _screen.Frame(_ui, Inside, down: false, () => clicked = Button());
+        Assert.True(clicked);
+    }
+
+    [Fact]
+    public void APressOutsideReleasedOverAButtonBetweenTwoFramesIsNotAClick()
+    {
+        _screen.Frame(_ui, Outside, down: false, () => Button());
+        _ui.NotePress(Outside);
+        _ui.NoteRelease(Inside);
+        var clicked = false;
+        _screen.Frame(_ui, Inside, down: false, () => clicked = Button());
+        Assert.False(clicked);
+    }
+
+    [Fact]
+    public void AReleaseOutsideIsNotAClickEvenIfThePointerIsBackOverTheButtonByThePaint()
+    {
+        _screen.Frame(_ui, Inside, down: false, () => Button());
+        _screen.Frame(_ui, Inside, down: true, () => Button());
+        _ui.NoteRelease(Outside);
+        var clicked = false;
+        _screen.Frame(_ui, Inside, down: false, () => clicked = Button());
+        Assert.False(clicked);
+    }
+
+    [Fact]
+    public void AClickStandsEvenIfThePointerHasMovedAwayByThePaint()
+    {
+        _screen.Frame(_ui, Inside, down: false, () => Button());
+        _screen.Frame(_ui, Inside, down: true, () => Button());
+        _ui.NoteRelease(Inside);
+        var clicked = false;
+        _screen.Frame(_ui, Outside, down: false, () => clicked = Button());
+        Assert.True(clicked);
+    }
+
+    [Fact]
+    public void APressThatLostTheMouseNeverClicks()
+    {
+        _screen.Frame(_ui, Inside, down: false, () => Button());
+        _screen.Frame(_ui, Inside, down: true, () => Button());
+        _ui.CancelPress();
+        var clicked = false;
+        _screen.Frame(_ui, Inside, down: false, () => clicked = Button());
+        Assert.False(clicked);
+    }
+
+    [Fact]
     public void ADisabledButtonNeverClicks() =>
         Assert.False(_screen.Click(_ui, Inside, () => _ui.Button(Id, Box, "Go", enabled: false)));
 

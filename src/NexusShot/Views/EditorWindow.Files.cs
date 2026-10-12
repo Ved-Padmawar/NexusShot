@@ -54,17 +54,19 @@ public sealed partial class EditorWindow
         var saveAs = action == FileAction.SaveAs;
         var copy = action is FileAction.Copy or FileAction.CopyAndClose or FileAction.CopyText or FileAction.Share;
         if (_image is null || _fileBusy) return;
-        if (action == FileAction.Save) ApplyPendingCrop();
         _fileBusy = true;
         ExportRequest? request = null;
         try
         {
+            if (action == FileAction.Save)
+            {
+                AdmitDestination(_files.Path);
+                ApplyPendingCrop();
+            }
             request = saveAs
                 ? _files.PrepareSaveAs(ChooseSaveAsDestination)
                 : _files.PrepareSave();
             if (request is null) { _fileBusy = false; _closeAfterSave = false; return; }
-            if (!copy && CanSaveTo?.Invoke(request.Destination) == false)
-                throw new InvalidOperationException("That file is already open in another editor. Choose a different name.");
             if (!copy) PendingSavePath = request.Destination;
             ShowToast(action switch
             {
@@ -86,13 +88,21 @@ public sealed partial class EditorWindow
         }
     }
 
-    /// <summary>A cancelled dialog must cost the document nothing, so the crop is applied only once
-    /// a destination is chosen.</summary>
+    /// <summary>A cancelled dialog or a refused destination must cost the document nothing, so the
+    /// crop is applied only once a destination is chosen and admitted.</summary>
     private string? ChooseSaveAsDestination(string name, string? folder, IReadOnlyList<ImageFormat> formats)
     {
         var destination = FilePicker.SaveImage(Handle, name, folder, formats);
-        if (destination is not null) ApplyPendingCrop();
+        if (destination is null) return null;
+        AdmitDestination(System.IO.Path.GetFullPath(destination));
+        ApplyPendingCrop();
         return destination;
+    }
+
+    private void AdmitDestination(string path)
+    {
+        if (CanSaveTo?.Invoke(path) == false)
+            throw new InvalidOperationException("That file is already open in another editor. Choose a different name.");
     }
 
     /// <summary>Saving writes the crop frame being dragged, so the document commits it too and shows

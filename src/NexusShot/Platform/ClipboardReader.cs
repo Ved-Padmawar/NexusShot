@@ -11,6 +11,7 @@ internal static partial class ClipboardReader
     private const uint CF_HDROP = 15;
     private const uint CF_DIBV5 = 17;
     private const uint BI_BITFIELDS = 3;
+    private const int BitmapInfoHeaderSize = 40;
 
     private static readonly uint CF_PNG = RegisterClipboardFormatW("PNG");
 
@@ -53,14 +54,16 @@ internal static partial class ClipboardReader
 
     /// <summary>A packed DIB is a .bmp file without its 14-byte file header, whose one real field is
     /// where the pixels start: past the info header, the three masks a BI_BITFIELDS DIB with the
-    /// small header appends, and any palette.</summary>
+    /// small header appends, and any palette. A buffer too short for the header is refused here;
+    /// any other malformation is left for the decoder to reject.</summary>
     internal static byte[] AsBitmapFile(ReadOnlySpan<byte> dib)
     {
+        if (dib.Length < BitmapInfoHeaderSize) throw new IOException("The clipboard image is malformed.");
         var headerSize = BitConverter.ToUInt32(dib);
         var bitCount = BitConverter.ToUInt16(dib[14..]);
         var compression = BitConverter.ToUInt32(dib[16..]);
         var colorsUsed = BitConverter.ToUInt32(dib[32..]);
-        var masks = compression == BI_BITFIELDS && headerSize == 40 ? 12u : 0u;
+        var masks = compression == BI_BITFIELDS && headerSize == BitmapInfoHeaderSize ? 12u : 0u;
         var colors = colorsUsed != 0 ? colorsUsed : bitCount <= 8 ? 1u << bitCount : 0u;
         var pixels = 14 + headerSize + masks + colors * 4;
 

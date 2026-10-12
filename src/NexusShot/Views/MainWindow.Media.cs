@@ -164,7 +164,7 @@ public sealed partial class MainWindow
     /// together rather than one dialog per file.</summary>
     private void DeleteCaptures(IReadOnlyList<ScreenshotHistoryItem> items)
     {
-        var failed = items.Count(item => !DeleteFile(item));
+        var failed = items.Count(item => !DeleteFile(item, DeleteToBin));
         _selection.End();
         _storage.SaveHistory(_history);
 
@@ -179,13 +179,13 @@ public sealed partial class MainWindow
 
     /// <summary>Moves captures past the age the user keeps to the Recycle Bin. Quietly: this is
     /// housekeeping they set up, not an action anyone is waiting on, and a file in use is simply
-    /// tried again next time.</summary>
+    /// tried again next time, as is one the Recycle Bin cannot take.</summary>
     public void SweepExpired()
     {
         var expired = Retention.Expired(_history, _settings.KeepCapturesDays, DateTimeOffset.Now)
             .Where(item => IsUnder(item.FilePath, _settings.ScreenshotFolder)).ToList();
         if (expired.Count == 0) return;
-        var removed = expired.Count(DeleteFile);
+        var removed = expired.Count(item => DeleteFile(item, RecycleBin.Recycle));
         _storage.SaveHistory(_history);
         Log.Info("retention.swept", $"{removed} of {expired.Count}");
         Invalidate();
@@ -194,16 +194,16 @@ public sealed partial class MainWindow
     /// <summary>Replaceable, so tests delete their files outright instead of filling the Recycle Bin.</summary>
     internal Action<string> DeleteToBin { get; set; } = RecycleBin.Delete;
 
-    /// <summary>Removes the file and its row. False, with the failure logged, when the file could not
-    /// go; the history is left for the caller to save once.</summary>
-    private bool DeleteFile(ScreenshotHistoryItem item)
+    /// <summary>Removes the file through <paramref name="remove"/>, and its row. False, with the failure
+    /// logged, when the file could not go; the history is left for the caller to save once.</summary>
+    private bool DeleteFile(ScreenshotHistoryItem item, Action<string> remove)
     {
         try
         {
             var full = Path.GetFullPath(item.FilePath);
             if (!IsUnder(full, _settings.ScreenshotFolder))
                 throw new InvalidOperationException("The image is outside the managed screenshot folder.");
-            DeleteToBin(full);
+            remove(full);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
             or ArgumentException or InvalidOperationException)

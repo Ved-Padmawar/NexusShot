@@ -53,10 +53,13 @@ internal sealed class Offscreen : IDisposable
         _stale = true;
     }
 
-    /// <summary>One immediate-mode frame with the pointer at <paramref name="pointer"/>.</summary>
+    /// <summary>One immediate-mode frame with the pointer at <paramref name="pointer"/>. A change in
+    /// <paramref name="down"/> arrives as the button message a window would pass on, at that point.</summary>
     public void Frame(Ui ui, Point pointer, bool down, Action body) => Draw(ui.Theme.SurfaceWindow, target =>
     {
-        ui.BeginFrame(target, pointer, down);
+        if (down && !ui.PointerDown) ui.NotePress(pointer);
+        else if (!down && ui.PointerDown) ui.NoteRelease(pointer);
+        ui.BeginFrame(target, pointer);
         body();
         ui.EndFrame();
     });

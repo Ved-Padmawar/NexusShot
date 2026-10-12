@@ -7,6 +7,23 @@ namespace NexusShot.Platform;
 /// thread.</summary>
 internal static class HistoryScanner
 {
+    /// <summary>True only when Windows can say the name is not in its folder. A file it cannot reach -
+    /// offline, unmounted, in a missing folder, or denied - keeps its row, favourites included, where
+    /// File.Exists would call it gone.</summary>
+    public static bool IsDeleted(string path)
+    {
+        try
+        {
+            File.GetAttributes(path);
+            return false;
+        }
+        catch (FileNotFoundException) { return true; }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
     public static HistoryScan Scan(string folder, IReadOnlyCollection<string> known,
         IReadOnlyDictionary<string, FileVersion> versions)
     {
@@ -37,7 +54,9 @@ internal static class HistoryScanner
                 }, version));
             }
             catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
-            { missing.Add(path); }
+            {
+                if (IsDeleted(path)) missing.Add(path);
+            }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
                 or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
             {

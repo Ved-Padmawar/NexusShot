@@ -78,7 +78,7 @@ public sealed partial class CountdownBadge : D2DRenderWindow
 
         var client = ClientRect;
         var bounds = new Rect(0, 0, client.Width, client.Height);
-        _ui.BeginFrame(target, new Point(-1, -1), false);
+        _ui.BeginFrame(target, new Point(-1, -1));
         _ui.FillRect(bounds, _ui.Theme.SurfaceWindow);
         _ui.Text(_remaining.ToString(), bounds, _ui.Theme.TextPrimary, 28 * _scale,
             Weight.Bold, TextAlign.Center, face: Face.Display);

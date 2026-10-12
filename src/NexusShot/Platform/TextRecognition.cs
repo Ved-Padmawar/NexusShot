@@ -61,9 +61,12 @@ internal static class TextRecognition
         return Run(engine, smaller);
     }
 
-    /// <summary>A chosen language since uninstalled falls back to the profile's rather than failing.</summary>
+    /// <summary>A chosen language since uninstalled, or a malformed tag from a hand-edited settings
+    /// file, falls back to the profile's rather than failing.</summary>
     private static OcrEngine? Engine(string? language) =>
-        (language is null ? null : OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language(language)))
+        (language is not null && Windows.Globalization.Language.IsWellFormed(language)
+            ? OcrEngine.TryCreateFromLanguage(new Windows.Globalization.Language(language))
+            : null)
         ?? OcrEngine.TryCreateFromUserProfileLanguages();
 
     private static OcrResult Run(OcrEngine engine, DecodedImage image)

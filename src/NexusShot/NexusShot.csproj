@@ -16,7 +16,7 @@
 
     <!-- The fallback for a local build. A release overrides it with the tag, via build.ps1's
          -p:Version. The settings header reads it back off the assembly. -->
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -39,10 +39,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="DirectNAot" Version="1.6.6" />
+    <PackageReference Include="DirectNAot" Version="1.7.0" />
     <!-- Ships Window / D2DRenderWindow / Application: the Win32 host and message loop,
          maintained by the interop author. We inherit rather than hand-roll a WndProc. -->
-    <PackageReference Include="DirectNAot.Extensions" Version="1.6.6" />
+    <PackageReference Include="DirectNAot.Extensions" Version="1.7.0" />
   </ItemGroup>
 
   <!-- DirectN's own projects declare these globally; its API is written assuming they are in

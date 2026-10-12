@@ -34,7 +34,6 @@ public sealed partial class EditorWindow : CaptionWindow
 
     /// <summary>Client-space pointer, for the chrome and for hit-testing it before the canvas.</summary>
     private Point _clientPointer;
-    private bool _pointerDown;
 
     /// <summary>The image's placement this frame: the mapping between client and image space.</summary>
     private double _scale = 1;
@@ -252,7 +251,7 @@ public sealed partial class EditorWindow : CaptionWindow
         var theme = _ui.Theme;
         renderTarget.Clear(D2DResources.ToD3D(theme.SurfaceStage));
 
-        _ui.BeginFrame(target, _clientPointer, _pointerDown);
+        _ui.BeginFrame(target, _clientPointer);
         _ui.FillDots(new Rect(0, 0, client.Width, client.Height), theme.StageDot, (float)(18 * DpiScale));
 
         if (_image is null)

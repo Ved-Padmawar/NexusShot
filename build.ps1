@@ -45,16 +45,15 @@ function Assert-LastExitCode([string]$what) {
     if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)." }
 }
 
-# Found rather than hardcoded: the path embeds the target framework, so pinning it here means the
-# script silently breaks the next time the TFM moves.
+# Asked of MSBuild rather than hardcoded or searched for: the path embeds the target framework, and
+# an older framework's output left beside the current one would otherwise run stale code.
 function Get-BuiltExe([string]$configuration) {
-    $found = Get-ChildItem (Join-Path $root "src\NexusShot\bin\$configuration") `
-        -Recurse -Filter 'NexusShot.exe' -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.DirectoryName -notlike '*\native' } |
-        Select-Object -First 1
+    $target = dotnet msbuild $project -getProperty:TargetPath "-p:Configuration=$configuration"
+    Assert-LastExitCode 'Output path lookup'
 
-    if (-not $found) { throw "No NexusShot.exe under bin\$configuration. Did the build run?" }
-    return $found.FullName
+    $exe = [IO.Path]::ChangeExtension($target.Trim(), '.exe')
+    if (-not (Test-Path $exe)) { throw "No $exe. Did the build run?" }
+    return $exe
 }
 
 # Native AOT needs the MSVC toolchain, which it locates through vswhere.
@@ -83,7 +82,7 @@ switch ($Mode) {
 
         # Unit tests first: they cover the document, geometry and history without a GPU, so a
         # failure here is faster to read than a bad pixel in the render check below.
-        dotnet test $tests -c Debug --nologo
+        dotnet test --project $tests -c Debug
         Assert-LastExitCode 'Unit tests'
 
         # A generated test image, so the check needs nothing checked in.

@@ -31,11 +31,11 @@ public sealed class App : IDisposable
         _settings = _storage.LoadSettings();
         _history = _storage.LoadHistory();
 
-        _history.RemoveAll(item => !File.Exists(item.FilePath));
+        _history.RemoveAll(item => HistoryScanner.IsDeleted(item.FilePath));
         _texts = _storage.LoadTextIndex();
 
         _main = new MainWindow(_storage, _settings, _history) { Texts = _texts };
-        _indexer = new TextIndexer(() => _settings.OcrLanguage, (path, version, language, text) => _main.Post(() => Indexed(path, version, language, text)));
+        _indexer = new TextIndexer(_settings, (path, version, language, text) => _main.Post(() => Indexed(path, version, language, text)));
         _pipeline = new CapturePipeline(_storage, _settings, _history, _main);
         _main.CaptureRequested += Capture;
         _main.CaptureTextRequested += CaptureText;
@@ -482,16 +482,7 @@ public sealed class App : IDisposable
     {
         _watcher?.Dispose();
         _watchedFolder = _settings.ScreenshotFolder;
-
-        try
-        {
-            _watcher = new FolderWatcher(_settings.ScreenshotFolder, SyncHistory);
-        }
-        catch (Exception exception) when (exception is IOException or ArgumentException or UnauthorizedAccessException)
-        {
-            Log.Error("watcher.failed", exception, _settings.ScreenshotFolder);
-            _watcher = null;
-        }
+        _watcher = new FolderWatcher(_settings.ScreenshotFolder, SyncHistory);
     }
 
     private readonly HistorySync _sync = new();
@@ -559,8 +550,8 @@ public sealed class App : IDisposable
 
     private void Indexed(string path, FileVersion version, string? language, string text)
     {
-        // A read begun before the language changed is dropped; the change already queued it again.
-        if (_disposed || language != _settings.OcrLanguage) return;
+        // A read begun under other settings is dropped; a language change already queued it again.
+        if (_disposed || !_settings.FindTextInCaptures || language != _settings.OcrLanguage) return;
         _texts.Set(path, version, language, text);
         if (text.Length > 0) _main.Invalidate();
         if (DateTime.UtcNow - _textsSaved < TimeSpan.FromSeconds(10)) return;

@@ -37,7 +37,7 @@ public sealed partial class MainWindow
         var card = new Rect((width - S(480)) / 2, (height - S(156)) / 2 + S(10) * (1 - open), S(480), S(156));
 
         // A press on the scrim cancels, and must not also land on the library.
-        if (ConfirmOpen && ui.PointerPressed && !card.Contains(ui.Pointer) && ui.Pointer.Y > CaptionHeight)
+        if (ConfirmOpen && ui.PointerPressed && !card.Contains(ui.PressPoint) && ui.PressPoint.Y > CaptionHeight)
             _pendingDelete = null;
         ui.Inert = !ConfirmOpen;
 

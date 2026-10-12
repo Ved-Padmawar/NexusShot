@@ -5,9 +5,9 @@ using NexusShot.Views;
 namespace NexusShot.Tests;
 
 /// <summary>
-/// The destination an editor writes to. Save, Save As and Copy themselves need a GPU and a file
-/// dialog, so those stay with the native audit; what is tested here is the path ownership that used
-/// to be a mutable field on the window class.
+/// The destination an editor writes to: the path ownership that used to be a mutable field on the
+/// window class, and where a share's copy lands. Save As itself needs a file dialog, so it stays with
+/// the native audit.
 /// </summary>
 public class EditorFilesTests
 {
@@ -89,6 +89,28 @@ public class EditorFilesTests
 
         Assert.Equal("photo_edited.jpg", offeredName);
         Assert.Equal([ImageFormat.Jpeg, ImageFormat.Png, ImageFormat.Bmp], offered);
+    }
+
+    [Fact]
+    public void ASecondShareLeavesTheFirstSharesFileInPlace()
+    {
+        var document = new EditorDocument();
+        document.SetImageSize(1, 1);
+        using var request = new ExportRequest(document, NoPixels(), @"C:\shots\capture.png", @"C:\shots\capture.png", 0);
+
+        var first = request.SaveShareCopy();
+        var second = request.SaveShareCopy();
+        try
+        {
+            Assert.NotEqual(first, second);
+            Assert.True(File.Exists(first));
+            Assert.Equal("capture.png", Path.GetFileName(second));
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(first)!, recursive: true);
+            Directory.Delete(Path.GetDirectoryName(second)!, recursive: true);
+        }
     }
 
     private static DecodedImage NoPixels() => DecodedImage.Allocate(1, 1);

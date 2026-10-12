@@ -1,6 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.MouseMessage;
 
 namespace NexusShot.Views;
 
@@ -68,7 +69,6 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
     /// <summary>Where the bar was last drawn, so a press on it is not taken as the start of a drag.</summary>
     private Rect _bar;
-    private bool _pressedOnBar;
 
     /// <summary>The choice in overlay pixels, or null if cancelled.</summary>
     private PickResult? _result;
@@ -163,7 +163,7 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
         if (_snapshot is null || _ui is null) return;
         var ui = _ui;
-        ui.BeginFrame(target, _picker.Pointer, _pressedOnBar || _picker.IsDragging);
+        ui.BeginFrame(target, _picker.Pointer);
 
         var full = new Rect(0, 0, _desktop.Width, _desktop.Height);
 
@@ -303,8 +303,8 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
             case WmLButtonDown:
                 var at = ClientPoint(lParam);
-                if (_bar.Contains(at) && !_picker.IsDragging) _pressedOnBar = true;
-                else _picker.Press(at);
+                _ui?.NotePress(at);
+                if (!_bar.Contains(at) || _picker.IsDragging) _picker.Press(at);
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
@@ -313,13 +313,11 @@ public sealed partial class RegionOverlay : D2DRenderWindow
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
-            case WmLButtonUp when _pressedOnBar:
-                _pressedOnBar = false;
-                Invalidate();
-                return new LRESULT { Value = 0 };
-
-            case WmLButtonUp when _picker.IsDragging:
-                Finish(_picker.Release(ClientPoint(lParam), Held(VIRTUAL_KEY.VK_SHIFT), Held(VIRTUAL_KEY.VK_SPACE)));
+            case WmLButtonUp:
+                var released = ClientPoint(lParam);
+                _ui?.NoteRelease(released);
+                if (_picker.IsDragging) Finish(_picker.Release(released, Held(VIRTUAL_KEY.VK_SHIFT), Held(VIRTUAL_KEY.VK_SPACE)));
+                else Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmKeyDown when (VIRTUAL_KEY)(ulong)wParam.Value == VIRTUAL_KEY.VK_ESCAPE:
@@ -370,12 +368,6 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     }
 
     private static bool Held(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
-
-    private static Point ClientPoint(LPARAM lParam)
-    {
-        var value = lParam.Value.ToInt64();
-        return new Point((short)(value & 0xFFFF), (short)((value >> 16) & 0xFFFF));
-    }
 
     /// <summary>
     /// Releases the snapshot as soon as the window is destroyed.

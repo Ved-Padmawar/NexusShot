@@ -1,6 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.MouseMessage;
 
 namespace NexusShot.Views;
 
@@ -179,7 +180,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
             }
         }
 
-        _ui.BeginFrame(target, PointerInClient(), _pointerDown);
+        _ui.BeginFrame(target, PointerInClient());
 
         // Covered edge to edge; DWM rounds the window, so the overhang is clipped with the corners.
         target.DrawBitmap(
@@ -258,9 +259,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private int _dismissOriginX;
     private int _dismissOriginY;
 
-    private bool _pointerDown;
-
-    /// <summary>Where the press landed, so a drag can be told from a click.</summary>
+    /// <summary>Where the press landed while the button is held, so a drag can be told from a click.</summary>
     private Point? _pressOrigin;
 
     /// <summary>True when the press landed on an action button, which is not a drag.</summary>
@@ -293,13 +292,13 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 }
 
                 // Past the threshold, button down, not on an action: a drag out of the app.
-                if (_pointerDown && _pressOrigin is { } origin && !_pressedAction)
+                if (_pressOrigin is { } origin && !_pressedAction)
                 {
                     var now = PointerInClient();
                     if (Math.Abs(now.X - origin.X) >= 6 || Math.Abs(now.Y - origin.Y) >= 6)
                     {
-                        _pointerDown = false;
                         _pressOrigin = null;
+                        _ui?.CancelPress();
 
                         // DoDragDrop needs the mouse; holding capture would starve it.
                         if (WindowInterop.GetCapture() == Handle) WindowInterop.ReleaseCapture();
@@ -326,13 +325,12 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 // A live press may be a drag leaving the card, so it is not cancelled here.
                 _hovered = false;
                 ApplyDwmChrome();
-                if (!_pointerDown) _pressOrigin = null;
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
             case WmLButtonDown:
-                _pointerDown = true;
-                var press = PointerInClient();
+                var press = ClientPoint(lParam);
+                _ui?.NotePress(press);
                 _pressOrigin = press;
                 _pressedAction = CardLayout.ButtonAt(new Point(press.X / _scale, press.Y / _scale)) is not null;
 
@@ -342,7 +340,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
                 return new LRESULT { Value = 0 };
 
             case WmLButtonUp:
-                _pointerDown = false;
+                _ui?.NoteRelease(ClientPoint(lParam));
                 _pressOrigin = null;
                 if (WindowInterop.GetCapture() == Handle) WindowInterop.ReleaseCapture();
                 Invalidate();
