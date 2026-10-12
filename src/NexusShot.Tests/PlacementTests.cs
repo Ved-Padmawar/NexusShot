@@ -118,14 +118,14 @@ public class PlacementTests
         Assert.Equal(new Point(100, 308), OverlayGeometry.SizeBadge(new Rect(100, 100, 200, 200), Badge, Desktop, 8));
 
     [Fact]
-    public void TheSizeBadgeMovesAboveASelectionAtTheBottomEdge() =>
-        Assert.Equal(new Point(100, 866), OverlayGeometry.SizeBadge(new Rect(100, 900, 200, 180), Badge, Desktop, 8));
+    public void TheSizeBadgeMovesInsideTheBottomOfASelectionAtTheBottomEdge() =>
+        Assert.Equal(new Point(100, 1046), OverlayGeometry.SizeBadge(new Rect(100, 900, 200, 180), Badge, Desktop, 8));
 
     [Fact]
     public void TheSizeBadgeStaysOnTheDesktopWhenTheSelectionFillsIt()
     {
         var badge = OverlayGeometry.SizeBadge(new Rect(1900, 0, 20, 1080), Badge, Desktop, 8);
-        Assert.Equal(new Point(1840, 0), badge);
+        Assert.Equal(new Point(1840, 1046), badge);
     }
 
     private static readonly Size Loupe = new(121, 151);

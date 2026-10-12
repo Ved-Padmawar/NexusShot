@@ -7,12 +7,13 @@ namespace NexusShot.Core;
 /// </summary>
 public static class OverlayGeometry
 {
-    /// <summary>The size badge's top-left: <paramref name="gap"/> below the selection, above it when
-    /// there is no room below, and slid sideways to stay on the desktop.</summary>
+    /// <summary>The size badge's top-left, at the selection's bottom-left in every mode:
+    /// <paramref name="gap"/> below it, inside its bottom edge when there is no room below, and slid
+    /// sideways to stay on the desktop.</summary>
     public static Point SizeBadge(Rect selection, Size badge, Size desktop, double gap)
     {
         var y = selection.Bottom + gap;
-        if (y + badge.Height > desktop.Height) y = Math.Max(0, selection.Top - badge.Height - gap);
+        if (y + badge.Height > desktop.Height) y = Math.Max(0, selection.Bottom - gap - badge.Height);
         var x = Math.Clamp(selection.X, 0, Math.Max(0, desktop.Width - badge.Width));
         return new Point(x, y);
     }

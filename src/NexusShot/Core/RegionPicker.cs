@@ -37,8 +37,11 @@ public sealed class RegionPicker(
     public IReadOnlyList<Point> Path => _path;
 
     /// <summary>Whether a press starts a drag; otherwise a click takes <see cref="Target"/>.</summary>
-    public bool Drags => Mode is PickerMode.Region or PickerMode.Freeform
-        || Mode == PickerMode.Text && TextScope == TextScope.Area;
+    public bool Drags => DragsIn(Mode, TextScope);
+
+    /// <inheritdoc cref="Drags"/>
+    public static bool DragsIn(PickerMode mode, TextScope scope) => mode is PickerMode.Region or PickerMode.Freeform
+        || mode == PickerMode.Text && scope == TextScope.Area;
 
     /// <summary>What a click here takes: the top-most window, or in Screen mode the monitor, clipped to
     /// the desktop. None while dragging, and none for a lasso, where it would only be noise.</summary>

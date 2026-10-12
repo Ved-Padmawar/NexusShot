@@ -53,6 +53,9 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         (PickerMode.Text, "Text", Icons.Ocr),
     ];
 
+    private static readonly (string Label, TextScope Scope)[] TextScopes =
+        [("Area", TextScope.Area), ("Window", TextScope.Window)];
+
     private readonly RectInt _desktop;
     private readonly DecodedImage _snapshotPixels;
     private readonly RegionPicker _picker;
@@ -69,6 +72,9 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
     /// <summary>Where the bar was last drawn, so a press on it is not taken as the start of a drag.</summary>
     private Rect _bar;
+
+    /// <summary>The bar's width in its widest mode, measured once, so switching modes never resizes it.</summary>
+    private double? _barWidth;
 
     /// <summary>The choice in overlay pixels, or null if cancelled.</summary>
     private PickResult? _result;
@@ -210,11 +216,10 @@ public sealed partial class RegionOverlay : D2DRenderWindow
                 $"{(int)pointer.X + _desktop.X}, {(int)pointer.Y + _desktop.Y}");
         if (!_picker.IsDragging) DrawBar(ui);
         ui.EndFrame();
-        if (ui.Animating) Invalidate();
+        if (ui.Animating || ui.ClickedThisFrame) Invalidate();
     }
 
-    /// <summary>The live pixel dimensions, pinned just outside the selection so it never covers the
-    /// content being selected.</summary>
+    /// <summary>The live pixel dimensions, where <see cref="OverlayGeometry.SizeBadge"/> places them.</summary>
     private void DrawSizeBadge(Ui ui, Rect selection)
     {
         var label = $"{(int)selection.Width} × {(int)selection.Height}";
@@ -237,15 +242,13 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     {
         var theme = ui.Theme;
         var widths = Modes.Select(mode => ui.ButtonWidth(mode.Label, mode.Icon, small: true)).ToArray();
-        var scopes = _picker.Mode == PickerMode.Text
-            ? new[] { ("Area", TextScope.Area), ("Window", TextScope.Window) } : [];
-        var scopeWidths = scopes.Select(scope => ui.ButtonWidth(scope.Item1, small: true)).ToArray();
-        var hint = Hint();
+        var scopes = ScopesIn(_picker.Mode);
+        var scopeWidths = scopes.Select(scope => ui.ButtonWidth(scope.Label, small: true)).ToArray();
+        var hint = Hint(_picker.Mode, _picker.TextScope);
         var hintWidth = Math.Ceiling(ui.MeasureText(hint, S(Metrics.FontSm)));
 
-        var width = S(6) + widths.Sum() + S(2) * (widths.Length - 1)
-            + (scopes.Length > 0 ? S(17) + scopeWidths.Sum() + S(2) : 0)
-            + S(17) + hintWidth + S(14);
+        var width = _barWidth ??= S(6) + widths.Sum() + S(2) * (widths.Length - 1)
+            + Modes.Max(mode => Enum.GetValues<TextScope>().Max(scope => TailWidth(ui, mode.Mode, scope))) + S(14);
         _bar = new Rect(Math.Round(_home.X + (_home.Width - width) / 2), _home.Y + S(16), width, S(40));
         ui.Shadow(_bar, (float)S(Metrics.RadiusLg), S(18), S(6), theme.Shadow);
         ui.FillRounded(_bar, (float)S(Metrics.RadiusLg), theme.SurfacePane);
@@ -281,15 +284,26 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         ui.Text(hint, new Rect(x, _bar.Y, hintWidth + 1, _bar.Height), theme.TextSecondary, S(Metrics.FontSm));
     }
 
-    private string Hint() => _picker.Mode switch
+    private static (string Label, TextScope Scope)[] ScopesIn(PickerMode mode) => mode == PickerMode.Text ? TextScopes : [];
+
+    /// <summary>Everything right of the mode buttons in <paramref name="mode"/>: its scope buttons and
+    /// its hint, each behind a separator.</summary>
+    private double TailWidth(Ui ui, PickerMode mode, TextScope scope)
+    {
+        var scopes = ScopesIn(mode);
+        return (scopes.Length > 0 ? S(17) + scopes.Sum(choice => ui.ButtonWidth(choice.Label, small: true)) + S(2) : 0)
+            + S(17) + Math.Ceiling(ui.MeasureText(Hint(mode, scope), S(Metrics.FontSm)));
+    }
+
+    private string Hint(PickerMode mode, TextScope scope) => mode switch
     {
         PickerMode.Region => "Drag an area or click a window  ·  Shift square  ·  Space move",
         PickerMode.Freeform => "Draw around what you want",
         PickerMode.Window => "Click a window",
         PickerMode.Screen => "Click a screen",
-        _ when _picker.TextScope == TextScope.Area => "Drag over the text",
+        _ when scope == TextScope.Area => "Drag over the text",
         _ => "Click a window to read its text",
-    } + (_picker.HasLastRegion && _picker.Drags ? "  ·  Enter last area" : "") + "  ·  Esc cancel";
+    } + (_picker.HasLastRegion && RegionPicker.DragsIn(mode, scope) ? "  ·  Enter last area" : "") + "  ·  Esc cancel";
 
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
     {
