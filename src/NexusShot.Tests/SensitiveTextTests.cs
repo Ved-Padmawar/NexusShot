@@ -55,7 +55,7 @@ public class SensitiveTextTests
             "# OPENAI_API_KEY=sk-proj-Ab12Cd34Ef56Gh78",
             "OPENAI_API_KEY=sk-proj-Ab12 Cd34Ef 56Gh78Ij90",
             "AZURE_OPENAI_API_KEY= 3f9a 1c0b7e 2d4f",
-            "AZURE_OPENAI_ENDPOINT=https://example.openai.azure.com");
+            "AZURE_OPENAI_ENDPOINT=https://demo.service.example.com");
 
         Assert.Equal([0.0, 40.0, 80.0], areas.Select(area => area.Y));
     }
@@ -86,6 +86,45 @@ public class SensitiveTextTests
     [InlineData("Keyboard: US International")]
     [InlineData("Press the key: Enter")]
     public void ProseThatMentionsAKeyIsLeftAlone(string text) => Assert.Empty(Find(text));
+
+    [Theory]
+    [InlineData("AZURE_OPENAI_ENDPOINT=https://demo-x7k2p9q4-region1.service.example.com/")]
+    [InlineData("MODEL=gpt-4o-2024-08-06")]
+    [InlineData("AZURE_OPENAI_ENDPOINT=https://resource12345678.service.example.com/")]
+    [InlineData("ENDPOINT=https : / / resource12345678. service . example . com/")]
+    [InlineData("VERSION-2025-04-01-preview")]
+    [InlineData("Build 2025.04.01-release-candidate")]
+    public void HostLabelsAndVersionsAreLeftAlone(string text) => Assert.Empty(Find(text));
+
+    [Theory]
+    [InlineData("Slack xox" + "b-1234567890123-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx")]
+    [InlineData("AWS wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")]
+    [InlineData("Key b7NcZ1wYp3HjS6dAØeUg5Ri")]
+    [InlineData("Key Ab12Cd34-Ef56Gh78-Ij90Kl12")]
+    [InlineData("LICENSE=Ab12Cd34-Ef56Gh78-1j9ØK112")]
+    [InlineData("Authorization: Bearer abc.def")]
+    [InlineData("mail jane.doe@example . com")]
+    public void KeysAndAddressesAsRecognitionReadsThemAreCovered(string text) => Assert.NotEmpty(Find(text));
+
+    [Fact]
+    public void ARowReturnedAsSeparateLinesIsSearchedAsOne()
+    {
+        var area = Assert.Single(SensitiveText.Find(
+            [[new TextWord("API_KEY=", new Rect(0, 0, 80, 20))], [new TextWord("abcd1234", new Rect(90, 1, 80, 20))]], padding: 0));
+        Assert.Equal(new Rect(90, 1, 80, 20), area);
+    }
+
+    [Fact]
+    public void AValueStopsAtAWideGapToAnotherColumn()
+    {
+        var area = Assert.Single(SensitiveText.Find(
+            [[new TextWord("API_KEY=", new Rect(0, 0, 80, 20)), new TextWord("abcd1234", new Rect(90, 0, 80, 20))],
+             [new TextWord("unrelated", new Rect(1000, 0, 90, 20))]], padding: 0));
+        Assert.Equal(new Rect(90, 0, 80, 20), area);
+    }
+
+    [Fact]
+    public void TwoMatchesInOneWordCoverItOnce() => Assert.Single(Find("mail a@b.com,c@d.com"));
 
     [Fact]
     public void EachLineIsSearchedOnItsOwn()

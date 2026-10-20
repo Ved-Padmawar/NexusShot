@@ -17,10 +17,8 @@ public static partial class SensitiveText
     public static List<Rect> Find(IReadOnlyList<IReadOnlyList<TextWord>> lines, double padding = 2)
     {
         var areas = new List<Rect>();
-        foreach (var words in lines)
+        foreach (var words in Rows(lines))
         {
-            if (words.Count == 0) continue;
-
             // Word starts are kept so a match across words - a grouped card number - covers them all.
             var starts = new int[words.Count];
             var line = new System.Text.StringBuilder();
@@ -31,15 +29,46 @@ public static partial class SensitiveText
                 line.Append(words[i].Text);
             }
 
-            foreach (Match match in Pattern().Matches(line.ToString()))
+            // Recognition reads 0 as Ø; a same-length swap keeps every word start valid.
+            var text = line.Replace('Ø', '0').Replace('ø', '0').ToString();
+            foreach (Match match in Pattern().Matches(text))
             {
-                if (!IsSensitive(match)) continue;
+                if (!IsSensitive(match, text)) continue;
                 Capture secret = match.Groups["value"] is { Success: true } value ? value : match;
-                if (Cover(words, starts, secret.Index, secret.Index + secret.Length) is { } area)
-                    areas.Add(new Rect(area.X - padding, area.Y - padding, area.Width + padding * 2, area.Height + padding * 2));
+                if (Cover(words, starts, secret.Index, secret.Index + secret.Length) is { } area
+                    && new Rect(area.X - padding, area.Y - padding, area.Width + padding * 2, area.Height + padding * 2) is var padded
+                    && !areas.Contains(padded))
+                    areas.Add(padded);
             }
         }
         return areas;
+    }
+
+    /// <summary>Recognition can split one visual row into several lines, and a value is only found
+    /// after its name on the same line. A wide gap separates columns, so it ends the line.</summary>
+    private static IEnumerable<List<TextWord>> Rows(IReadOnlyList<IReadOnlyList<TextWord>> lines)
+    {
+        var rows = new List<List<TextWord>>();
+        foreach (var word in lines.SelectMany(line => line).OrderBy(word => word.Bounds.Center.Y))
+        {
+            if (rows.Count > 0 && Math.Abs(rows[^1][0].Bounds.Center.Y - word.Bounds.Center.Y) < rows[^1][0].Bounds.Height / 2)
+                rows[^1].Add(word);
+            else rows.Add([word]);
+        }
+        foreach (var row in rows)
+        {
+            var segment = new List<TextWord>();
+            foreach (var word in row.OrderBy(word => word.Bounds.X))
+            {
+                if (segment.Count > 0 && word.Bounds.Left - segment[^1].Bounds.Right > word.Bounds.Height * 4)
+                {
+                    yield return segment;
+                    segment = [];
+                }
+                segment.Add(word);
+            }
+            yield return segment;
+        }
     }
 
     /// <summary>The area of every word that overlaps characters [<paramref name="start"/>,
@@ -61,13 +90,24 @@ public static partial class SensitiveText
         return cover;
     }
 
-    private static bool IsSensitive(Match match)
+    private static bool IsSensitive(Match match, string line)
     {
         if (match.Groups["card"].Success) return PassesLuhn(match.Value);
         // A bare run of digits is an order or ticket number far more often than a phone number.
         if (match.Groups["phone"].Success)
             return match.Value.Count(char.IsDigit) is >= 9 and <= 15 && (match.Value[0] == '+' || match.Value.Any(" -()".Contains));
-        if (match.Groups["key"].Success) return match.Value.Any(char.IsDigit) && match.Value.Any(char.IsLetter);
+        if (match.Groups["key"].Success)
+        {
+            // A URL host label follows "//" or a dot and runs into another dot; recognition spaces out the slashes.
+            var end = match.Index + match.Length;
+            if (end < line.Length && line[end] == '.' && (match.Value[0] == '/' || line[..match.Index].TrimEnd() is [.., '/' or '.']))
+                return false;
+            // Hyphenated names and versions have a group without digits; a grouped key does not.
+            var parts = match.Value.Split(['-', '_', '/', '+'], StringSplitOptions.RemoveEmptyEntries);
+            return match.Value.Any(char.IsDigit) && match.Value.Any(char.IsLetter)
+                && (parts.Any(part => part.Length >= 16)
+                    || parts.Length >= 3 && parts.All(part => part.Length >= 4 && part.Any(char.IsDigit) && part.Any(char.IsLetter)));
+        }
         return true;
     }
 
@@ -90,19 +130,20 @@ public static partial class SensitiveText
     /// <summary>
     /// Alternatives in priority order. A value named as a key, secret, token or password is covered to
     /// the end of the line, since recognition often splits a random key into short words. The name must
-    /// look like an identifier (API_KEY, apiKey), so prose such as "Keyboard:" is left alone.
+    /// look like an identifier (API_KEY, apiKey), so prose such as "Keyboard:" is left alone. Recognition
+    /// splits addresses at dots.
     /// </summary>
     [GeneratedRegex("""
         (?<assignment>
             (?:\b[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PWD|CREDENTIALS?)[A-Z0-9_]*
               |\b[a-z][A-Za-z0-9]*(?:Key|Secret|Token|Password|Credentials?)[A-Za-z0-9]*
-              |(?i:\b(?:password|passwd|secret|api[ _-]?key|access[ _-]?token|client[ _-]?secret)))
+              |(?i:\b(?:password|passwd|secret|api[ _-]?key|access[ _-]?token|client[ _-]?secret|authorization)))
             ["']?\s*[:=]\s*(?<value>\S.{3,}))
-        |(?<email>[\w.+-]+@[\w-]+(?:\.[\w-]+)+)
+        |(?<email>[\w.+-]+@[\w-]+(?:\s?\.\s?[\w-]+)+)
         |(?<ip>\b(?:\d{1,3}\.){3}\d{1,3}\b)
         |(?<card>\b\d(?:[ -]?\d){12,18}\b)
         |(?<phone>(?<!\w)\+?\(?\d[\d ()-]{7,}\d\b)
-        |(?<key>\b[A-Za-z0-9_-]{20,}\b)
+        |(?<key>(?<![A-Za-z0-9_+/-])[A-Za-z0-9_+/-]{16,}(?![A-Za-z0-9_+/-]))
         """, RegexOptions.IgnorePatternWhitespace | RegexOptions.CultureInvariant)]
     private static partial Regex Pattern();
 }
