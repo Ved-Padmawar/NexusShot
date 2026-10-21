@@ -35,6 +35,32 @@ public class DecodeCacheTests
     }
 
     [Fact]
+    public void AFileThatFailedIsTriedAgainOnceItsFailureIsForgotten()
+    {
+        var cache = new DecodeCache();
+        cache.TryStart("bad.png");
+        cache.Finish("bad.png", cache.Generation, succeeded: false);
+        Assert.False(cache.TryStart("bad.png"));
+
+        cache.ForgetFailure("bad.png");
+
+        Assert.False(cache.HasFailed("bad.png"));
+        Assert.True(cache.TryStart("bad.png"));
+    }
+
+    [Fact]
+    public void ForgettingAFailureLeavesDecodesInFlightAdmitted()
+    {
+        var cache = new DecodeCache();
+        cache.TryStart("other.png");
+        var generation = cache.Generation;
+
+        cache.ForgetFailure("bad.png");
+
+        Assert.Equal(DecodeOutcome.Accept, cache.Finish("other.png", generation, succeeded: true));
+    }
+
+    [Fact]
     public void SecondDecodeOfTheSameFileIsRefusedWhileTheFirstIsRunning()
     {
         var cache = new DecodeCache();

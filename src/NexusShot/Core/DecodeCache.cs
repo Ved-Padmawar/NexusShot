@@ -13,8 +13,9 @@ public sealed class DecodeCache
 {
     /// <summary>Decoders allowed to run at once. Scrolling a long history crosses dozens of files
     /// the cache has never seen, and each is a distinct path, so per-path deduplication alone puts
-    /// one WIC decoder per visible row on the pool at the same time.</summary>
-    public const int MaxConcurrentDecodes = 2;
+    /// one WIC decoder per visible row on the pool at the same time. Each holds a full-size copy of its
+    /// image while it works, which is what bounds this.</summary>
+    public const int MaxConcurrentDecodes = 4;
 
     private readonly HashSet<string> _failures = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _running = new(StringComparer.OrdinalIgnoreCase);
@@ -67,6 +68,11 @@ public sealed class DecodeCache
         _generation++;
         _failures.Clear();
     }
+
+    /// <summary>Lets a file that failed to decode be tried again, for a scan that read it afresh: it may have
+    /// been repaired. Unlike <see cref="Invalidate"/> it leaves other decodes in flight alone, since no
+    /// pixels of this file exist to go stale.</summary>
+    public void ForgetFailure(string path) => _failures.Remove(path);
 
     /// <summary>
     /// Invalidates one file, for a save that rewrote it.

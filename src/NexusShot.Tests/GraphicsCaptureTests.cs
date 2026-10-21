@@ -5,12 +5,12 @@ namespace NexusShot.Tests;
 
 /// <summary>Windows.Graphics.Capture end to end, on a window parked off every screen: its own
 /// pixels come back even where the desktop shows none of it.</summary>
-public partial class WindowCaptureTests
+public partial class GraphicsCaptureTests
 {
     [Fact]
     public void AWindowOffTheDesktopIsCapturedAtItsOwnSize()
     {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362) || !WindowCapture.IsSupported) return;
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362) || !GraphicsCapture.IsSupported) return;
 
         // Per-monitor aware, as the app is, or the window is sized in scaled units.
         var previous = SetThreadDpiAwarenessContext(-4);
@@ -21,7 +21,7 @@ public partial class WindowCaptureTests
         Assert.NotEqual(IntPtr.Zero, window);
         try
         {
-            using var image = WindowCapture.Capture(window, includeCursor: false);
+            using var image = GraphicsCapture.CaptureWindow(window, includeCursor: false, hdrWhiteNits: null);
             Assert.Equal((64, 48), (image.Width, image.Height));
         }
         catch (Exception exception) when (exception is ArgumentException or COMException) { }

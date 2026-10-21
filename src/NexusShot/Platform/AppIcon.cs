@@ -47,10 +47,9 @@ public static partial class AppIcon
     }
 
     /// <summary>
-    /// The Alt+Tab and taskbar icon, without the small one the caption draws.
-    ///
-    /// WS_EX_DLGMODALFRAME suppresses the caption icon; the big icon still feeds the shell, so the
-    /// switcher and the taskbar keep theirs.
+    /// The Alt+Tab and taskbar icon, without the small one the caption draws. The window must be
+    /// created with WS_EX_DLGMODALFRAME, which suppresses the caption icon; the big icon still feeds
+    /// the shell, so the switcher and the taskbar keep theirs.
     /// </summary>
     public static void ApplyLargeOnly(IntPtr window)
     {
@@ -59,21 +58,7 @@ public static partial class AppIcon
 
         // D2DRenderWindow may have set ICON_SMALL already; clear it so the caption shows no logo.
         SendMessageW(window, WM_SETICON, ICON_SMALL, IntPtr.Zero);
-
-        var style = WindowInterop.GetWindowLongPtrW(window, GWL_EXSTYLE);
-        WindowInterop.SetWindowLongPtrW(window, GWL_EXSTYLE, style | WS_EX_DLGMODALFRAME);
-
-        // Frame styles only take effect on a recomputed frame.
-        WindowInterop.SetWindowPos(window, IntPtr.Zero, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
-
-    private const int GWL_EXSTYLE = -20;
-    private const nint WS_EX_DLGMODALFRAME = 0x00000001;
-    private const uint SWP_NOSIZE = 0x0001;
-    private const uint SWP_NOMOVE = 0x0002;
-    private const uint SWP_NOZORDER = 0x0004;
-    private const uint SWP_FRAMECHANGED = 0x0020;
 
     private static IntPtr Load(int size)
     {

@@ -6,7 +6,9 @@ using NexusShot.Render;
 namespace NexusShot.Platform;
 
 /// <summary>
-/// Screen capture, via GDI BitBlt.
+/// Screen capture, via GDI BitBlt - and, on a monitor in HDR mode, <see cref="GraphicsCapture"/>:
+/// GDI hands back the HDR desktop already clipped to SDR white, so those monitors are retaken from
+/// the compositor's own frame and tone-mapped.
 ///
 /// Coordinates are physical pixels: the manifest opts into PerMonitorV2, so the virtual desktop
 /// metrics and window rects are already unscaled and no DPI correction is needed anywhere here.
@@ -48,12 +50,27 @@ public static partial class ScreenCapture
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362))
         {
             // IsSupported talks to the capture service, so it can throw like the capture itself.
-            try { if (WindowCapture.IsSupported) return WindowCapture.Capture(window, includeCursor); }
+            try
+            {
+                if (GraphicsCapture.IsSupported)
+                    return GraphicsCapture.CaptureWindow(window, includeCursor, HdrWhiteNitsAt(bounds));
+            }
             catch (Exception exception) when (exception is COMException or TimeoutException
                 or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
             { Log.Error("capture.window_fallback", exception); }
         }
         return Capture(Intersect(bounds, VirtualDesktop), includeCursor);
+    }
+
+    /// <summary>The SDR white level of the HDR monitor the centre of <paramref name="bounds"/> is on; null
+    /// on an SDR one.</summary>
+    private static float? HdrWhiteNitsAt(RectInt bounds)
+    {
+        var x = bounds.X + bounds.Width / 2;
+        var y = bounds.Y + bounds.Height / 2;
+        foreach (var display in DisplayColor.HdrDisplays())
+            if (display.Contains(x, y)) return display.SdrWhiteNits;
+        return null;
     }
 
     /// <summary>
@@ -171,6 +188,7 @@ public static partial class ScreenCapture
                 (new Vector<uint>(words[i..]) | opaque).CopyTo(words[i..]);
             for (; i < words.Length; i++) words[i] |= 0xFF000000;
 
+            RetakeHdrMonitors(image, bounds, includeCursor);
             return image;
         }
         finally
@@ -234,17 +252,58 @@ public static partial class ScreenCapture
     private static partial bool DrawIconEx(IntPtr dc, int x, int y, IntPtr icon, int width, int height,
         uint step, IntPtr flickerFreeBrush, uint flags);
 
-    private static RectInt Intersect(RectInt requested, RectInt available)
+    private static RectInt Intersect(RectInt requested, RectInt available) =>
+        Overlap(requested, available)
+            ?? throw new ArgumentOutOfRangeException(nameof(requested), "The capture area is outside the virtual desktop.");
+
+    private static RectInt? Overlap(RectInt first, RectInt second)
     {
-        var left = Math.Max(requested.X, available.X);
-        var top = Math.Max(requested.Y, available.Y);
-        var right = Math.Min((long)requested.X + requested.Width, (long)available.X + available.Width);
-        var bottom = Math.Min((long)requested.Y + requested.Height, (long)available.Y + available.Height);
+        var left = Math.Max(first.X, second.X);
+        var top = Math.Max(first.Y, second.Y);
+        var right = Math.Min((long)first.X + first.Width, (long)second.X + second.Width);
+        var bottom = Math.Min((long)first.Y + first.Height, (long)second.Y + second.Height);
 
-        if (right <= left || bottom <= top)
-            throw new ArgumentOutOfRangeException(nameof(requested), "The capture area is outside the virtual desktop.");
-
+        if (right <= left || bottom <= top) return null;
         return new RectInt(left, top, checked((int)(right - left)), checked((int)(bottom - top)));
+    }
+
+    /// <summary>
+    /// Overwrites what the blit took of each HDR monitor in the capture with that monitor's tone-mapped
+    /// frame. A monitor that cannot be retaken keeps the blit's pixels: clipped highlights, but a capture.
+    /// </summary>
+    private static void RetakeHdrMonitors(DecodedImage image, RectInt bounds, bool includeCursor)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362)) return;
+
+        foreach (var display in DisplayColor.HdrDisplays())
+        {
+            if (Overlap(bounds, display.Bounds) is null) continue;
+            try
+            {
+                using var monitor = GraphicsCapture.CaptureMonitor(
+                    Monitors.At(display.Bounds.X, display.Bounds.Y), includeCursor, display.SdrWhiteNits);
+                Paste(image, bounds, monitor, display.Bounds);
+            }
+            catch (Exception exception) when (exception is COMException or TimeoutException
+                or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
+            { Log.Error("capture.hdr_fallback", exception); }
+        }
+    }
+
+    /// <summary>Copies the part of a monitor's frame that falls inside the capture.</summary>
+    private static void Paste(DecodedImage image, RectInt bounds, DecodedImage monitor, RectInt monitorBounds)
+    {
+        var frame = new RectInt(monitorBounds.X, monitorBounds.Y, monitor.Width, monitor.Height);
+        if (Overlap(bounds, frame) is not { } area) return;
+
+        var source = monitor.Span;
+        var target = image.Span;
+        for (var row = 0; row < area.Height; row++)
+        {
+            var from = (area.Y - frame.Y + row) * monitor.Stride + (area.X - frame.X) * 4;
+            var to = (area.Y - bounds.Y + row) * image.Stride + (area.X - bounds.X) * 4;
+            source.Slice(from, area.Width * 4).CopyTo(target.Slice(to, area.Width * 4));
+        }
     }
 
     [LibraryImport("user32.dll", SetLastError = true)] private static partial IntPtr GetForegroundWindow();

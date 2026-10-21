@@ -42,7 +42,7 @@ public sealed partial class MainWindow : CaptionWindow
     /// <summary>Tile-sized decodes, with the width each was decoded for. Bounded, or the cache grows
     /// with the history forever; the grid raises the cap to three screens of tiles, so scrolling never
     /// evicts a tile it is about to draw again.</summary>
-    private readonly LruCache<string, (ImageSurface Surface, int Width)> _thumbnails = new(60);
+    private readonly LruCache<string, (ImageSurface Surface, int Width, FileVersion Version)> _thumbnails = new(60);
 
     private readonly LibrarySelection _selection = new();
 
@@ -251,6 +251,18 @@ public sealed partial class MainWindow : CaptionWindow
         Invalidate();
     }
 
+    /// <summary>Forgets a capture's cached tile only if it was decoded from another version of the file
+    /// than <paramref name="current"/>. A scan that merely finds a file the window has already drawn
+    /// leaves the tile alone; dropping it would blank the tile while it decodes again.</summary>
+    public void DropCacheIfStale(string path, FileVersion current)
+    {
+        _decodes.ForgetFailure(path);
+        var stale = _thumbnails.TryGetValue(path, out var cached) ? cached.Version != current
+            : _decoded.TryGetValue(path, out var waiting) ? waiting.Version != current
+            : _decodes.IsRunning(path);
+        if (stale) DropCache(path);
+    }
+
     /// <summary>Forgets a capture's cached tile, so the next frame re-decodes it. Used after an editor
     /// saves over a capture: the file has changed, and the cached pixels are the old ones.</summary>
     public void DropCache(string path)
@@ -307,6 +319,7 @@ public sealed partial class MainWindow : CaptionWindow
         {
             layers.ClearScroll();
             _bands.Clear();
+            _tilesPending = 0;
         }
 
         using (var context = layers.BeginChrome())

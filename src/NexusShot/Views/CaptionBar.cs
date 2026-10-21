@@ -14,7 +14,12 @@ namespace NexusShot.Views;
 /// </summary>
 public abstract partial class CaptionWindow : D2DRenderWindow
 {
-    protected CaptionWindow(string title, string? className = null) : base(title, className: className) { }
+    /// <summary>Set at creation rather than afterwards: a style changed on a live window costs a second
+    /// frame recalculation, and the window redraws through each.</summary>
+    private const uint WS_EX_DLGMODALFRAME = 0x00000001;
+
+    protected CaptionWindow(string title, string? className = null)
+        : base(title, extendedStyle: (WINDOW_EX_STYLE)WS_EX_DLGMODALFRAME, className: className) { }
 
     protected override void CreateRenderTarget()
     {
@@ -163,11 +168,45 @@ public abstract partial class CaptionWindow : D2DRenderWindow
             SetCloaked(true);
             Show();
             RenderCore();
+            if (!ContentReady)
+            {
+                _revealDeadline = Environment.TickCount64 + RevealTimeoutMilliseconds;
+                WindowInterop.SetTimer(Handle, RevealTimerId, RevealPollMilliseconds, IntPtr.Zero);
+                return;
+            }
             WindowInterop.DwmFlush();
         }
+        Present();
+    }
+
+    /// <summary>Whether the first frame is complete. A window that is not ready stays cloaked, drawing
+    /// as its content arrives, and is shown once it is - or after <see cref="RevealTimeoutMilliseconds"/>,
+    /// so content that never arrives cannot keep the window away.</summary>
+    protected virtual bool ContentReady => true;
+
+    private const nuint RevealTimerId = 0x7E58;
+    private const uint RevealPollMilliseconds = 8;
+    private const long RevealTimeoutMilliseconds = 400;
+    private long _revealDeadline;
+
+    private void Present()
+    {
+        WindowInterop.KillTimer(Handle, RevealTimerId);
         SetCloaked(false);
         Show();
         SetForeground();
+    }
+
+    /// <summary>A hidden window has nothing to present, so a reveal that was waiting is dropped.</summary>
+    private void PollReveal()
+    {
+        if (!WindowInterop.IsWindowVisible(Handle))
+            WindowInterop.KillTimer(Handle, RevealTimerId);
+        else if (ContentReady || Environment.TickCount64 >= _revealDeadline)
+        {
+            WindowInterop.DwmFlush();
+            Present();
+        }
     }
 
     private bool _created;
@@ -219,6 +258,10 @@ public abstract partial class CaptionWindow : D2DRenderWindow
 
             case WM_TIMER when (nuint)wParam.Value == RepaintTimerId:
                 Invalidate();
+                return new LRESULT { Value = 0 };
+
+            case WM_TIMER when (nuint)wParam.Value == RevealTimerId:
+                PollReveal();
                 return new LRESULT { Value = 0 };
 
             case WM_ACTIVATE:

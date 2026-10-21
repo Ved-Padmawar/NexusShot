@@ -29,6 +29,9 @@ public static partial class Monitors
         return WorkAreaOf(monitor);
     }
 
+    /// <summary>The monitor a desktop point is on.</summary>
+    public static IntPtr At(int x, int y) => MonitorFromPoint(new POINT { X = x, Y = y }, MONITOR_DEFAULTTONEAREST);
+
     /// <summary>Every monitor's full bounds, taskbar included: what the region picker's Screen mode
     /// takes.</summary>
     public static unsafe List<RectInt> All()

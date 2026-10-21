@@ -75,7 +75,9 @@ public class HistorySyncTests
             _ => true, _ => V1);
 
         Assert.Equal(["new.png", "known.png"], history.Select(item => item.FilePath));
-        Assert.Same(known, Assert.Single(result.Refreshed));
+        var (refreshed, version) = Assert.Single(result.Refreshed);
+        Assert.Same(known, refreshed);
+        Assert.Equal(V1, version);
         Assert.Equal(640, known.Width);
         Assert.Equal(V1, sync.Versions()["new.png"]);
     }

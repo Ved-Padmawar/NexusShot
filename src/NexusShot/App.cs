@@ -513,9 +513,9 @@ public sealed class App : IDisposable
                 _main.ForgetMissingCapture(path);
                 _pipeline.ForgetCapture(path);
             }
-            foreach (var item in result.Refreshed)
+            foreach (var (item, version) in result.Refreshed)
             {
-                _main.DropCache(item.FilePath);
+                _main.DropCacheIfStale(item.FilePath, version);
                 _pipeline.RefreshExistingPreview(item);
             }
             if (result.Changed)

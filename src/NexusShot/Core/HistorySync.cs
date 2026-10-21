@@ -18,11 +18,13 @@ public sealed record HistoryScan(
     IReadOnlyList<string> Missing,
     IReadOnlyList<(string Path, FileVersion Version)> Unreadable);
 
-/// <summary>What applying a scan changed, for the view to refresh. <paramref name="ScanAgain"/> means
-/// a request arrived, or the world moved, while the scan ran.</summary>
+/// <summary>What applying a scan changed, for the view to refresh. <paramref name="Refreshed"/> are the
+/// known files the scan read, each with the version it read: whether a cached tile is out of date is
+/// the view's to say, since it alone knows what it decoded. <paramref name="ScanAgain"/> means a request
+/// arrived, or the world moved, while the scan ran.</summary>
 public sealed record HistorySyncResult(
     IReadOnlyList<string> Removed,
-    IReadOnlyList<ScreenshotHistoryItem> Refreshed,
+    IReadOnlyList<(ScreenshotHistoryItem Item, FileVersion Version)> Refreshed,
     bool Changed,
     bool ScanAgain);
 
@@ -66,7 +68,7 @@ public sealed class HistorySync
     {
         _running = false;
         List<string> removed = [];
-        List<ScreenshotHistoryItem> refreshed = [];
+        List<(ScreenshotHistoryItem, FileVersion)> refreshed = [];
         var changed = false;
 
         if (stale) _queued = true;
@@ -100,7 +102,7 @@ public sealed class HistorySync
                 {
                     existing.Width = candidate.Width;
                     existing.Height = candidate.Height;
-                    refreshed.Add(existing);
+                    refreshed.Add((existing, version));
                 }
                 else history.Add(candidate);
                 changed = true;

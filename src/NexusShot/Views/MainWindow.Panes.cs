@@ -222,6 +222,14 @@ public sealed partial class MainWindow
 
     private bool _gridEmpty;
 
+    /// <summary>Visible tiles still without their thumbnail, as of the last grid pass. A decode that
+    /// failed is not waited for.</summary>
+    private int _tilesPending;
+
+    /// <summary>The Library opens once what is on its first screen is there, rather than filling in
+    /// tile by tile in front of the user.</summary>
+    protected override bool ContentReady => _tilesPending == 0;
+
     /// <summary>
     /// The grid, into the scrolling layer. A band is drawn when it comes within a screen of the view and
     /// again only when its look changes; one showing tile actions is drawn every frame, since those
@@ -261,6 +269,8 @@ public sealed partial class MainWindow
         var visible = tiles.Where(tile => Overlaps(OnScreen(tile.Bounds), bounds)).ToHashSet();
         foreach (var tile in tiles.OrderBy(tile => visible.Contains(tile) ? 0 : Math.Abs(OnScreen(tile.Bounds).Center.Y - bounds.Center.Y)))
             tile.Look = Look(ui, resources, tile, OnScreen(tile.Bounds), bounds, visible.Contains(tile), layout.DecodeWidth, now);
+        _tilesPending = visible.Count(tile =>
+            !_thumbnails.TryGetValue(tile.Item.FilePath, out _) && !_decodes.HasFailed(tile.Item.FilePath));
 
         foreach (var band in bands)
         {

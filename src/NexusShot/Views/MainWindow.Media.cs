@@ -33,7 +33,7 @@ public sealed partial class MainWindow
                 if (uploadContext is not null)
                 {
                     // The evicted surface owns a GPU bitmap: dropping the reference would leak it.
-                    if (_thumbnails.Add(path, (ImageSurface.Upload(ready.Pixels, uploadContext), ready.Width), out var evicted))
+                    if (_thumbnails.Add(path, (ImageSurface.Upload(ready.Pixels, uploadContext), ready.Width, ready.Version), out var evicted))
                         evicted.Surface.Dispose();
                     if (_previews.Remove(path, out var old)) old.Dispose();
                     _previews[path] = ImageSurface.Upload(ready.Preview, uploadContext);
@@ -60,8 +60,8 @@ public sealed partial class MainWindow
     private const int PreviewWidth = 48;
 
     /// <summary>Decoded thumbnail pixels waiting to be uploaded, keyed by file, with the width they
-    /// were decoded for and their preview.</summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DecodedImage Pixels, int Width, DecodedImage Preview)> _decoded = new();
+    /// were decoded for, their preview, and the version of the file they came from.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DecodedImage Pixels, int Width, DecodedImage Preview, FileVersion Version)> _decoded = new();
 
     /// <summary>Drops pixels for files no longer in the history. An entry is only consumed when its
     /// tile is drawn, so one deleted first would be held forever.</summary>
@@ -88,8 +88,11 @@ public sealed partial class MainWindow
         Task.Run(() =>
         {
             DecodedImage? pixels = null, preview = null;
+            FileVersion version = default;
             try
             {
+                // Read first: a file rewritten mid-decode then reads as newer than its pixels, never older.
+                version = FileVersion.Read(path);
                 pixels = ImageSurface.DecodeScaled(path, width, width * 10 / 16, cover: true);
                 var shrunk = Downsample.Box(pixels.Span, pixels.Width, pixels.Height,
                     Downsample.FactorFor(pixels.Width, PreviewWidth), out var previewWidth, out var previewHeight);
@@ -117,7 +120,7 @@ public sealed partial class MainWindow
                         superseded.Pixels.Dispose();
                         superseded.Preview.Dispose();
                     }
-                    _decoded[path] = (pixels!, width, preview!);
+                    _decoded[path] = (pixels!, width, preview!, version);
                 }
 
                 Invalidate();
