@@ -44,8 +44,8 @@ public sealed class CompositionLayers : IDisposable
         try
         {
             Functions.DCompositionCreateDevice2(device, IID_DesktopDevice, out var raw).ThrowOnError();
-            _composition = ComObject.FromPointer<IDCompositionDesktopDevice>(raw, CreateObjectFlags.None, true)!;
-            Marshal.Release(raw);
+            // Unique wrappers release on Dispose; FromPointer consumes the returned native reference.
+            _composition = ComObject.FromPointer<IDCompositionDesktopDevice>(raw, CreateObjectFlags.UniqueInstance)!;
         }
         finally
         {
@@ -181,8 +181,7 @@ public sealed class CompositionLayers : IDisposable
         if (area is { } rect) surface.BeginDraw((nint)(&rect), in iid, out raw, out offset).ThrowOnError();
         else surface.BeginDraw(0, in iid, out raw, out offset).ThrowOnError();
 
-        var context = ComObject.FromPointer<ID2D1DeviceContext>(raw, CreateObjectFlags.None, true)!;
-        Marshal.Release(raw);
+        var context = ComObject.FromPointer<ID2D1DeviceContext>(raw, CreateObjectFlags.UniqueInstance)!;
         context.Object.SetDpi(96, 96);
         return context;
     }
@@ -191,8 +190,7 @@ public sealed class CompositionLayers : IDisposable
     {
         var iid = IID_DeviceContext;
         surface.BeginDraw((nint)(&area), in iid, out var raw, out offset).ThrowOnError();
-        var context = ComObject.FromPointer<ID2D1DeviceContext>(raw, CreateObjectFlags.None, true)!;
-        Marshal.Release(raw);
+        var context = ComObject.FromPointer<ID2D1DeviceContext>(raw, CreateObjectFlags.UniqueInstance)!;
         context.Object.SetDpi(96, 96);
         return context;
     }

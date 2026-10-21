@@ -33,7 +33,7 @@ internal static unsafe partial class WindowCapture
     {
         using var d3d = D3D11Functions.D3D11CreateDevice(null, D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE,
             D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT);
-        var device = WinRTDevice(d3d);
+        using var device = WinRTDevice(d3d);
         var item = ItemFor(window);
 
         using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(
@@ -92,7 +92,8 @@ internal static unsafe partial class WindowCapture
     /// surface can be larger than the window when it was sized before a resize.</summary>
     private static DecodedImage Read(IComObject<ID3D11Device> d3d, Direct3D11CaptureFrame frame)
     {
-        using var texture = Texture(frame.Surface);
+        using var surface = frame.Surface;
+        using var texture = Texture(surface);
         var desc = texture.GetDesc();
         var width = Math.Min((int)desc.Width, frame.ContentSize.Width);
         var height = Math.Min((int)desc.Height, frame.ContentSize.Height);
