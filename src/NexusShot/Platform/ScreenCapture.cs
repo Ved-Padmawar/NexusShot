@@ -47,18 +47,15 @@ public static partial class ScreenCapture
         if (window == IntPtr.Zero || FrameBounds(window) is not { } bounds)
             throw new InvalidOperationException("Could not determine the active window.");
 
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362))
+        // IsSupported talks to the capture service, so it can throw like the capture itself.
+        try
         {
-            // IsSupported talks to the capture service, so it can throw like the capture itself.
-            try
-            {
-                if (GraphicsCapture.IsSupported)
-                    return GraphicsCapture.CaptureWindow(window, includeCursor, HdrWhiteNitsAt(bounds));
-            }
-            catch (Exception exception) when (exception is COMException or TimeoutException
-                or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
-            { Log.Error("capture.window_fallback", exception); }
+            if (GraphicsCapture.IsSupported)
+                return GraphicsCapture.CaptureWindow(window, includeCursor, HdrWhiteNitsAt(bounds));
         }
+        catch (Exception exception) when (exception is COMException or TimeoutException
+            or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
+        { Log.Error("capture.window_fallback", exception); }
         return Capture(Intersect(bounds, VirtualDesktop), includeCursor);
     }
 
@@ -253,19 +250,8 @@ public static partial class ScreenCapture
         uint step, IntPtr flickerFreeBrush, uint flags);
 
     private static RectInt Intersect(RectInt requested, RectInt available) =>
-        Overlap(requested, available)
+        requested.Intersect(available)
             ?? throw new ArgumentOutOfRangeException(nameof(requested), "The capture area is outside the virtual desktop.");
-
-    private static RectInt? Overlap(RectInt first, RectInt second)
-    {
-        var left = Math.Max(first.X, second.X);
-        var top = Math.Max(first.Y, second.Y);
-        var right = Math.Min((long)first.X + first.Width, (long)second.X + second.Width);
-        var bottom = Math.Min((long)first.Y + first.Height, (long)second.Y + second.Height);
-
-        if (right <= left || bottom <= top) return null;
-        return new RectInt(left, top, checked((int)(right - left)), checked((int)(bottom - top)));
-    }
 
     /// <summary>
     /// Overwrites what the blit took of each HDR monitor in the capture with that monitor's tone-mapped
@@ -273,11 +259,9 @@ public static partial class ScreenCapture
     /// </summary>
     private static void RetakeHdrMonitors(DecodedImage image, RectInt bounds, bool includeCursor)
     {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362)) return;
-
         foreach (var display in DisplayColor.HdrDisplays())
         {
-            if (Overlap(bounds, display.Bounds) is null) continue;
+            if (bounds.Intersect(display.Bounds) is null) continue;
             try
             {
                 using var monitor = GraphicsCapture.CaptureMonitor(
@@ -294,7 +278,7 @@ public static partial class ScreenCapture
     private static void Paste(DecodedImage image, RectInt bounds, DecodedImage monitor, RectInt monitorBounds)
     {
         var frame = new RectInt(monitorBounds.X, monitorBounds.Y, monitor.Width, monitor.Height);
-        if (Overlap(bounds, frame) is not { } area) return;
+        if (bounds.Intersect(frame) is not { } area) return;
 
         var source = monitor.Span;
         var target = image.Span;
@@ -361,4 +345,16 @@ public readonly record struct RectInt(int X, int Y, int Width, int Height)
     public int Right => X + Width;
     public int Bottom => Y + Height;
     public Rect ToRect() => new(X, Y, Width, Height);
+
+    /// <summary>The shared area, or null when the two only touch or are apart.</summary>
+    public RectInt? Intersect(RectInt other)
+    {
+        var left = Math.Max(X, other.X);
+        var top = Math.Max(Y, other.Y);
+        var right = Math.Min((long)X + Width, (long)other.X + other.Width);
+        var bottom = Math.Min((long)Y + Height, (long)other.Y + other.Height);
+
+        if (right <= left || bottom <= top) return null;
+        return new RectInt(left, top, checked((int)(right - left)), checked((int)(bottom - top)));
+    }
 }

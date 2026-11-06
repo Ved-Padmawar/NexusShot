@@ -24,6 +24,7 @@ public enum HotkeyId
     RestoreClosed = 5,
     CaptureText = 6,
     TimedCapture = 7,
+    Record = 8,
 }
 
 public static class HotkeyIds
@@ -39,6 +40,7 @@ public static class HotkeyIds
         HotkeyId.RestoreClosed => "Restore closed captures",
         HotkeyId.CaptureText => "Capture text",
         HotkeyId.TimedCapture => "Timed capture",
+        HotkeyId.Record => "Start / stop recording",
         _ => id.ToString(),
     };
 }
@@ -112,6 +114,43 @@ public sealed class AppSettings
     /// <summary>The written format of new captures.</summary>
     public ImageFormat CaptureFormat { get; set; } = ImageFormat.Png;
 
+    /// <summary>Recordings live with the user's videos, as screenshots live with their pictures.</summary>
+    public string RecordingFolder { get; set; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "NexusShot");
+
+    /// <summary>The capture bar's last choice, so the Record shortcut and tray repeat it.</summary>
+    public RecordingFormat RecordingFormat { get; set; } = RecordingFormat.Mp4;
+
+    /// <summary>One of <see cref="RecordingPlan.FrameRates"/>; MP4 only.</summary>
+    public int RecordingFrameRate { get; set; } = 30;
+
+    public RecordingQuality RecordingQuality { get; set; } = RecordingQuality.Standard;
+
+    /// <summary>One of <see cref="RecordingPlan.GifLimits"/>: GIF has no compression across frames, so
+    /// an unbounded one grows past what anyone can share.</summary>
+    public int GifLimitSeconds { get; set; } = 30;
+
+    public IReadOnlyList<string> LibraryFolders() =>
+        string.Equals(Path.TrimEndingDirectorySeparator(ScreenshotFolder), Path.TrimEndingDirectorySeparator(RecordingFolder),
+            StringComparison.OrdinalIgnoreCase) ? [ScreenshotFolder] : [ScreenshotFolder, RecordingFolder];
+
+    /// <summary>Whether the app may delete <paramref name="fullPath"/>: only what sits in a Library folder.</summary>
+    public bool InLibrary(string fullPath) => LibraryFolders().Any(folder => IsUnder(fullPath, folder));
+
+    /// <summary>The trailing separator matters: without it "C:\Shots-elsewhere" prefix-matches "C:\Shots".</summary>
+    private static bool IsUnder(string fullPath, string root)
+    {
+        try
+        {
+            var normalized = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) + Path.DirectorySeparatorChar;
+            return fullPath.StartsWith(normalized, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>A BCP-47 tag for text recognition, or null for the user's profile languages.</summary>
     public string? OcrLanguage { get; set; }
 
@@ -154,6 +193,10 @@ public sealed class AppSettings
     /// shortcut you are already pressing.</summary>
     public HotkeyBinding TimedCaptureHotkey { get; set; } = new();
 
+    /// <summary>Unbound by default: every free Ctrl+Shift letter is some app's own shortcut, and
+    /// Ctrl+Shift+R, the obvious one, is the browsers' hard reload.</summary>
+    public HotkeyBinding RecordHotkey { get; set; } = new();
+
     public HotkeyBinding Hotkey(HotkeyId id) => id switch
     {
         HotkeyId.CaptureRegion => CaptureRegionHotkey,
@@ -163,6 +206,7 @@ public sealed class AppSettings
         HotkeyId.RestoreClosed => RestoreClosedHotkey,
         HotkeyId.CaptureText => CaptureTextHotkey,
         HotkeyId.TimedCapture => TimedCaptureHotkey,
+        HotkeyId.Record => RecordHotkey,
         _ => throw new ArgumentOutOfRangeException(nameof(id)),
     };
 
@@ -272,8 +316,14 @@ public sealed class Storage
         settings.RestoreClosedHotkey ??= defaults.RestoreClosedHotkey;
         settings.CaptureTextHotkey ??= defaults.CaptureTextHotkey;
         settings.TimedCaptureHotkey ??= defaults.TimedCaptureHotkey;
+        settings.RecordHotkey ??= defaults.RecordHotkey;
         settings.DropUnusableHotkeys();
         if (!ImageFiles.IsUsablePath(settings.ScreenshotFolder)) settings.ScreenshotFolder = defaults.ScreenshotFolder;
+        if (!ImageFiles.IsUsablePath(settings.RecordingFolder)) settings.RecordingFolder = defaults.RecordingFolder;
+        if (!Enum.IsDefined(settings.RecordingFormat)) settings.RecordingFormat = defaults.RecordingFormat;
+        if (!Enum.IsDefined(settings.RecordingQuality)) settings.RecordingQuality = defaults.RecordingQuality;
+        if (!RecordingPlan.FrameRates.Contains(settings.RecordingFrameRate)) settings.RecordingFrameRate = defaults.RecordingFrameRate;
+        if (!RecordingPlan.GifLimits.Contains(settings.GifLimitSeconds)) settings.GifLimitSeconds = defaults.GifLimitSeconds;
         settings.PreviewDismissSeconds = Math.Clamp(settings.PreviewDismissSeconds, 0, 120);
         settings.TimedCaptureSeconds = Math.Clamp(settings.TimedCaptureSeconds, 1, 30);
         if (!Enum.IsDefined(settings.Theme)) settings.Theme = AppTheme.System;

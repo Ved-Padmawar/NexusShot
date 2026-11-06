@@ -10,7 +10,7 @@ public partial class GraphicsCaptureTests
     [Fact]
     public void AWindowOffTheDesktopIsCapturedAtItsOwnSize()
     {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362) || !GraphicsCapture.IsSupported) return;
+        if (!GraphicsCapture.IsSupported) return;
 
         // Per-monitor aware, as the app is, or the window is sized in scaled units.
         var previous = SetThreadDpiAwarenessContext(-4);
@@ -30,6 +30,40 @@ public partial class GraphicsCaptureTests
             DestroyWindow(window);
             SetThreadDpiAwarenessContext(previous);
         }
+    }
+
+    [Fact]
+    public void AnAreaStreamDeliversOpaqueFramesAtTheAreaSize()
+    {
+        if (!GraphicsCapture.IsSupported) return;
+        var previous = SetThreadDpiAwarenessContext(-4);
+        try
+        {
+            var monitor = Monitors.All()[0];
+            using var stream = new GraphicsCapture.AreaStream(new RectInt(monitor.X + 10, monitor.Y + 10, 64, 48), includeCursor: false);
+            using var first = stream.Next();
+            using var second = stream.Next();
+            Assert.Equal((64, 48), (second.Width, second.Height));
+            Assert.All(MemoryMarshal.Cast<byte, uint>(second.Span).ToArray(), pixel => Assert.Equal(0xFFu, pixel >> 24));
+        }
+        finally { SetThreadDpiAwarenessContext(previous); }
+    }
+
+    [Fact]
+    public void AnAreaStreamFillsDesktopOutsideEveryMonitorWithBlack()
+    {
+        if (!GraphicsCapture.IsSupported) return;
+        var previous = SetThreadDpiAwarenessContext(-4);
+        try
+        {
+            var desktop = ScreenCapture.VirtualDesktop;
+            using var stream = new GraphicsCapture.AreaStream(new RectInt(desktop.X - 32, desktop.Y, 64, 48), includeCursor: false);
+            using var frame = stream.Next();
+            var pixels = MemoryMarshal.Cast<byte, uint>(frame.Span);
+            for (var row = 0; row < frame.Height; row++)
+                Assert.All(pixels.Slice(row * frame.Width, 32).ToArray(), pixel => Assert.Equal(0xFF000000u, pixel));
+        }
+        finally { SetThreadDpiAwarenessContext(previous); }
     }
 
     [LibraryImport("user32.dll")]

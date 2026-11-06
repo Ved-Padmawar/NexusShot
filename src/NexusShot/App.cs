@@ -12,7 +12,7 @@ namespace NexusShot;
 /// app owns those, and the main window is something it shows and hides. Closing the window does not
 /// exit, or the shortcuts would die with it.
 /// </summary>
-public sealed class App : IDisposable
+public sealed partial class App : IDisposable
 {
     private readonly Storage _storage = new();
     private readonly AppSettings _settings;
@@ -22,7 +22,7 @@ public sealed class App : IDisposable
     private readonly TrayIcon _tray;
     private readonly Hotkeys _hotkeys;
     private readonly CapturePipeline _pipeline;
-    private FolderWatcher? _watcher;
+    private List<FolderWatcher> _watchers = [];
     private readonly TextIndex _texts;
     private readonly TextIndexer _indexer;
 
@@ -34,7 +34,7 @@ public sealed class App : IDisposable
         _history.RemoveAll(item => HistoryScanner.IsDeleted(item.FilePath));
         _texts = _storage.LoadTextIndex();
 
-        _main = new MainWindow(_storage, _settings, _history) { Texts = _texts };
+        _main = new MainWindow(_storage, _settings, _history) { Texts = _texts, Recording = _recording };
         _indexer = new TextIndexer(_settings, (path, version, language, text) => _main.Post(() => Indexed(path, version, language, text)));
         _pipeline = new CapturePipeline(_storage, _settings, _history, _main);
         _main.CaptureRequested += Capture;
@@ -42,6 +42,7 @@ public sealed class App : IDisposable
         _main.PasteRequested += Paste;
         _main.CaptureDeleted += _pipeline.ForgetCapture;
         _main.TimedCaptureRequested += TimedCapture;
+        _main.RecordRequested += ToggleRecording;
         _main.HotkeysChanged += ApplyHotkeys;
         _main.InstallRequested += InstallUpdate;
         _main.UnsavedEditors = () => _pipeline.UnsavedEditors;
@@ -58,7 +59,7 @@ public sealed class App : IDisposable
 
         _main.SettingsChanged += OnSettingsChanged;
         _main.ThemeChanged += RethemeEditors;
-        WatchSaveFolder();
+        WatchLibraryFolders();
 
         // The watcher sees only later changes; this picks up captures already in the folder.
         SyncHistory();
@@ -94,6 +95,11 @@ public sealed class App : IDisposable
         // Unsaved edits hold a shutdown: saving would overwrite files the user never chose to save.
         if (message == SessionLifetime.WM_QUERYENDSESSION)
         {
+            if (_recording.IsBusy)
+            {
+                SessionLifetime.BlockEnd(_main.Handle, "A screen recording is still in progress. Stop it before signing out.");
+                return 0;
+            }
             var unsaved = _pipeline.UnsavedEditors;
             if (unsaved == 0) return null;
             SessionLifetime.BlockEnd(_main.Handle, unsaved == 1 ? "An open editor has unsaved changes." : $"{unsaved} open editors have unsaved changes.");
@@ -137,7 +143,7 @@ public sealed class App : IDisposable
 
         if (message == TrayIcon.WM_TRAY)
         {
-            switch (_tray.OnMessage(lParam))
+            switch (_tray.OnMessage(lParam, _recording.Phase))
             {
                 case TrayIcon.Command.CaptureRegion:
                     Capture(CaptureMode.Region);
@@ -162,6 +168,21 @@ public sealed class App : IDisposable
                     return 0;
                 case TrayIcon.Command.Exit:
                     Exit();
+                    return 0;
+                case TrayIcon.Command.RecordVideo:
+                    Record(RecordingFormat.Mp4);
+                    return 0;
+                case TrayIcon.Command.RecordGif:
+                    Record(RecordingFormat.Gif);
+                    return 0;
+                case TrayIcon.Command.PauseRecording:
+                    TogglePause();
+                    return 0;
+                case TrayIcon.Command.StopRecording:
+                    StopRecording();
+                    return 0;
+                case TrayIcon.Command.DiscardRecording:
+                    DiscardRecording();
                     return 0;
                 default:
                     return 0;
@@ -192,6 +213,9 @@ public sealed class App : IDisposable
                     return 0;
                 case HotkeyId.TimedCapture:
                     TimedCapture();
+                    return 0;
+                case HotkeyId.Record:
+                    ToggleRecording();
                     return 0;
             }
         }
@@ -295,22 +319,23 @@ public sealed class App : IDisposable
     /// <summary>Picks something to read. The picker can still be switched to take an image instead.</summary>
     private void CaptureText() => Capture(CaptureMode.Region, PickerMode.Text);
 
-    private void Capture(CaptureMode mode, PickerMode picker)
+    private void Capture(CaptureMode mode, PickerMode picker, CaptureKind kind = CaptureKind.Photo)
     {
-        if (TryBeginCapture()) RunCapture(mode, picker);
+        if (TryBeginCapture()) RunCapture(mode, picker, kind);
     }
 
     /// <summary>Claims the one capture slot; false while a capture is under way.</summary>
     private bool TryBeginCapture()
     {
-        if (_captureRunning) return false;
+        if (_captureRunning || _recording.IsBusy) return false;
         _captureRunning = true;
         return true;
     }
 
     /// <summary>Runs a capture that holds the slot. The picker, for a region capture, opens in
-    /// <paramref name="picker"/>'s mode; its result is filed, or read when the picker ended in Text.</summary>
-    private void RunCapture(CaptureMode mode, PickerMode picker)
+    /// <paramref name="picker"/>'s mode and <paramref name="kind"/>; its result is filed, read when the
+    /// picker ended in Text, or recorded when it ended in Video.</summary>
+    private void RunCapture(CaptureMode mode, PickerMode picker, CaptureKind kind = CaptureKind.Photo)
     {
         try
         {
@@ -322,18 +347,27 @@ public sealed class App : IDisposable
             else if (mode == CaptureMode.ActiveWindow) pixels = ScreenCapture.CaptureActiveWindow(cursor);
             else
             {
-                if (RegionOverlay.Pick(cursor, Theme, _lastRegion, picker, _settings.ShowMagnifier) is not { } picked)
+                var picked = RegionOverlay.Pick(cursor, Theme, _lastRegion, picker, _settings.ShowMagnifier,
+                    kind, _settings.RecordingFormat);
+                if (picked is not null) _lastRegion = picked.Region;
+                switch (picked)
                 {
-                    _captureRunning = false;
-                    return;
+                    case null:
+                        _captureRunning = false;
+                        return;
+                    case PickedRecording recording:
+                        _captureRunning = false;
+                        BeginRecording(recording);
+                        return;
+                    case PickedImage { Text: true } text:
+                        _ = FinishCaptureText(text.Pixels, _settings.OcrLanguage);
+                        return;
+                    case PickedImage image:
+                        pixels = image.Pixels;
+                        break;
+                    default:
+                        throw new InvalidOperationException("The picker returned an unknown choice.");
                 }
-                _lastRegion = picked.Region;
-                if (picked.Text)
-                {
-                    _ = FinishCaptureText(picked.Pixels, _settings.OcrLanguage);
-                    return;
-                }
-                pixels = picked.Pixels;
             }
             if (_settings.ShutterSound) Shutter.Play();
 
@@ -364,7 +398,7 @@ public sealed class App : IDisposable
             _countdown.Cancel();
             return;
         }
-        if (_captureRunning) return;
+        if (_captureRunning || _recording.IsBusy) return;
 
         _countdown = new CountdownBadge(_settings.TimedCaptureSeconds);
         _countdown.Dismissed += () => _countdown = null;
@@ -445,6 +479,13 @@ public sealed class App : IDisposable
 
     private void Exit()
     {
+        if (_recording.Phase == RecordingPhase.Countdown) EndRecording();
+        if (_recording.IsBusy)
+        {
+            StopRecording();
+            UserFeedback.Info(_main.Handle, "The recording is being saved. Exit once saving finishes.");
+            return;
+        }
         if (_captureRunning)
         {
             UserFeedback.Error(_main.Handle, "Please wait for the capture to finish before exiting.");
@@ -456,21 +497,29 @@ public sealed class App : IDisposable
     /// <summary>Closes the editors, saving or dropping their changes as the restart prompt chose, then
     /// hands over to the installer and exits so it can replace the running exe. The installer starts
     /// NexusShot again when it is done.</summary>
-    private void InstallUpdate(string installer, bool saveEditors) => _pipeline.CloseEditors(saveEditors, () =>
+    private void InstallUpdate(string installer, bool saveEditors)
     {
-        try
+        if (_recording.IsBusy)
         {
-            Updater.Install(installer);
-        }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
-            or IOException or UnauthorizedAccessException or InvalidDataException)
-        {
-            Log.Error("update.install", exception, installer);
-            _main.UpdateFailed(exception is InvalidDataException ? exception.Message : "the installer could not be started");
+            UserFeedback.Info(_main.Handle, "Stop the recording before restarting to update.");
             return;
         }
-        FinishExit();
-    });
+        _pipeline.CloseEditors(saveEditors, () =>
+        {
+            try
+            {
+                Updater.Install(installer);
+            }
+            catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+                or IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                Log.Error("update.install", exception, installer);
+                _main.UpdateFailed(exception is InvalidDataException ? exception.Message : "the installer could not be started");
+                return;
+            }
+            FinishExit();
+        });
+    }
 
     private void FinishExit()
     {
@@ -494,26 +543,29 @@ public sealed class App : IDisposable
         else ApplyHotkeys();
     }
 
-    /// <summary>The save folder may have moved, so the watcher follows it.</summary>
-    private string? _watchedFolder;
+    /// <summary>Either save folder may have moved, so the watchers follow them.</summary>
+    private IReadOnlyList<string> _watchedFolders = [];
 
     private void OnSettingsChanged()
     {
         _main.SweepExpired();
         ReadNewText();
-        if (string.Equals(_watchedFolder, _settings.ScreenshotFolder, StringComparison.OrdinalIgnoreCase)) return;
-        WatchSaveFolder();
+        if (SameFolders(_watchedFolders, _settings.LibraryFolders())) return;
+        WatchLibraryFolders();
         SyncHistory();
     }
+
+    private static bool SameFolders(IReadOnlyList<string> first, IReadOnlyList<string> second) =>
+        first.SequenceEqual(second, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Open editors follow the shell's theme rather than the one they were opened with.</summary>
     private void RethemeEditors() => _pipeline.RethemeEditors();
 
-    private void WatchSaveFolder()
+    private void WatchLibraryFolders()
     {
-        _watcher?.Dispose();
-        _watchedFolder = _settings.ScreenshotFolder;
-        _watcher = new FolderWatcher(_settings.ScreenshotFolder, SyncHistory);
+        foreach (var watcher in _watchers) watcher.Dispose();
+        _watchedFolders = _settings.LibraryFolders();
+        _watchers = [.. _watchedFolders.Select(folder => new FolderWatcher(folder, SyncHistory))];
     }
 
     private readonly HistorySync _sync = new();
@@ -525,19 +577,19 @@ public sealed class App : IDisposable
         _main.Post(() =>
         {
             if (_disposed || !_sync.TryBegin()) return;
-            _ = ScanHistory(_settings.ScreenshotFolder, _history.Select(item => item.FilePath).ToArray(), _sync.Versions());
+            _ = ScanHistory(_settings.LibraryFolders(), _history.Select(item => item.FilePath).ToArray(), _sync.Versions());
         });
     }
 
-    private async Task ScanHistory(string folder, string[] known, Dictionary<string, FileVersion> versions)
+    private async Task ScanHistory(IReadOnlyList<string> folders, string[] known, Dictionary<string, FileVersion> versions)
     {
         HistoryScan? scan = null;
-        try { scan = await Task.Run(() => HistoryScanner.Scan(folder, known, versions)); }
+        try { scan = await Task.Run(() => HistoryScanner.Scan(folders, known, versions)); }
         catch (Exception exception) { Log.Error("history.scan_failed", exception); }
         _main.Post(() =>
         {
             if (_disposed) return;
-            var stale = !string.Equals(folder, _settings.ScreenshotFolder, StringComparison.OrdinalIgnoreCase);
+            var stale = !SameFolders(folders, _settings.LibraryFolders());
             var result = _sync.Complete(_history, scan, stale, File.Exists, FileVersion.Read);
             foreach (var path in result.Removed)
             {
@@ -569,6 +621,7 @@ public sealed class App : IDisposable
         if (!_settings.FindTextInCaptures) return;
         foreach (var item in _history)
         {
+            if (CaptureFiles.IsRecording(item.FilePath)) continue;
             try
             {
                 if (!_texts.IsCurrent(item.FilePath, FileVersion.Read(item.FilePath), _settings.OcrLanguage)) _indexer.Enqueue(item.FilePath);
@@ -602,15 +655,17 @@ public sealed class App : IDisposable
         _main.PasteRequested -= Paste;
         _main.CaptureDeleted -= _pipeline.ForgetCapture;
         _main.TimedCaptureRequested -= TimedCapture;
+        _main.RecordRequested -= ToggleRecording;
         _main.HotkeysChanged -= ApplyHotkeys;
         _main.RecordingChanged -= SuspendHotkeys;
         _main.SettingsChanged -= OnSettingsChanged;
         _main.ThemeChanged -= RethemeEditors;
 
         _countdown?.Cancel();
+        DisposeRecording();
         _pipeline.Dispose();
 
-        _watcher?.Dispose();
+        foreach (var watcher in _watchers) watcher.Dispose();
         _indexer.Dispose();
         _hotkeys.Dispose();
         UserFeedback.Tray = null;

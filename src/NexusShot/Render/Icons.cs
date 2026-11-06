@@ -54,6 +54,10 @@ public static class Icons
     public static readonly Icon Crop = new("M7 3v12a2 2 0 0 0 2 2h12M3 7h12a2 2 0 0 1 2 2v12");
 
     // Actions.
+    public static readonly Icon Video = new(Rect(3, 6, 12, 12, 2) + "M15 10l6-4v12l-6-4");
+    public static readonly Icon Play = new("M9 5l11 7-11 7z");
+    public static readonly Icon Pause = new("M9 5v14M15 5v14");
+    public static readonly Icon Stop = new(Rect(6, 6, 12, 12, 1), Rect(6, 6, 12, 12, 1));
     public static readonly Icon Undo = new("M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11");
     public static readonly Icon Redo = new("M15 14l5-5-5-5M20 9H9.5a5.5 5.5 0 0 0 0 11H13");
     public static readonly Icon Copy = new(Rect(8.5, 8.5, 11.5, 11.5, 2.2)

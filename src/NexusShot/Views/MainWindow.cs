@@ -105,6 +105,9 @@ public sealed partial class MainWindow : CaptionWindow
     /// <summary>Ctrl+V over the Library: open what is on the clipboard.</summary>
     public event Action? PasteRequested;
     public event Action? TimedCaptureRequested;
+    /// <summary>Starts a recording through the capture bar, or ends the one under way.</summary>
+    public event Action? RecordRequested;
+    public required RecordingState Recording { get; init; }
     public event Action<ScreenshotHistoryItem>? EditRequested;
     public event Action<IReadOnlyList<string>>? OpenRequested;
 
@@ -548,7 +551,7 @@ public sealed partial class MainWindow : CaptionWindow
 
     /// <summary>Hides cloaked, so the fade-out never animates the white surface left once the frame is
     /// released. It stays cloaked until <see cref="Reveal"/>.</summary>
-    private void Conceal()
+    internal void Conceal()
     {
         SetCloaked(true);
         Hide();

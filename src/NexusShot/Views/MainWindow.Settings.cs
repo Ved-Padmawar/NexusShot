@@ -17,6 +17,7 @@ public sealed partial class MainWindow
     [
         ("General", Icons.General),
         ("Capture", Icons.Camera),
+        ("Recording", Icons.Video),
         ("Quick access", Icons.Cards),
         ("Shortcuts", Icons.Keyboard),
         ("Output", Icons.Output),
@@ -29,8 +30,7 @@ public sealed partial class MainWindow
     /// <summary>Each page's content height, measured as it is drawn, for the scroll extent.</summary>
     private readonly double[] _pageHeights = new double[Pages.Length];
 
-    /// <summary>The page area's one height: tall enough for the longest page, seven shortcuts, to show
-    /// whole.</summary>
+    /// <summary>The page area's one height; the shortcuts page, the longest, scrolls its last row.</summary>
     private const double PageHeight = 490;
 
     private readonly Dropdown _languageBox = new();
@@ -151,9 +151,10 @@ public sealed partial class MainWindow
         {
             0 => GeneralPage(ui, x, pageTop + S(16), inner),
             1 => CapturePage(ui, x, pageTop + S(16), inner),
-            2 => QuickAccessPage(ui, x, pageTop + S(16), inner),
-            3 => ShortcutsPage(ui, x, pageTop + S(16), inner),
-            4 => OutputPage(ui, x, pageTop + S(16), inner),
+            2 => RecordingPage(ui, x, pageTop + S(16), inner),
+            3 => QuickAccessPage(ui, x, pageTop + S(16), inner),
+            4 => ShortcutsPage(ui, x, pageTop + S(16), inner),
+            5 => OutputPage(ui, x, pageTop + S(16), inner),
             _ => AppearancePage(ui, x, pageTop + S(16), inner),
         };
         _pageHeights[_page] = end + S(20) - pageTop;
@@ -235,6 +236,35 @@ public sealed partial class MainWindow
                     _settings.OcrLanguage = languages[index].Tag;
                     SaveSettings();
                 })),
+        ]);
+    }
+
+    private static readonly string[] RecordingFormatNames = ["MP4", "GIF"];
+    private static readonly string[] FrameRateNames = ["30 fps", "60 fps"];
+    private static readonly string[] QualityNames = ["Standard", "High"];
+    private static readonly string[] GifLimitNames = ["No limit", "15 s", "30 s", "60 s"];
+
+    private double RecordingPage(Ui ui, double x, double y, double width)
+    {
+        y = Intro(ui, "Recordings from the capture bar's Video mode, the tray and the Record shortcut. No audio.", x, y, width);
+        return Group(ui, x, y, width,
+        [
+            Row("Format", "The capture bar switches it and remembers the choice", Segments(ui, RecordingFormatNames),
+                rect => Segmented(ui, "settings.recording.format", rect, RecordingFormatNames, (int)_settings.RecordingFormat,
+                    index => _settings.RecordingFormat = (RecordingFormat)index)),
+            Row("Frame rate", "MP4 only; GIF records at 10 fps", Segments(ui, FrameRateNames),
+                rect => Segmented(ui, "settings.recording.fps", rect, FrameRateNames,
+                    Array.IndexOf(RecordingPlan.FrameRates, _settings.RecordingFrameRate),
+                    index => _settings.RecordingFrameRate = RecordingPlan.FrameRates[index])),
+            Row("Quality", "MP4 only; High keeps fast motion sharp in larger files", Segments(ui, QualityNames),
+                rect => Segmented(ui, "settings.recording.quality", rect, QualityNames, (int)_settings.RecordingQuality,
+                    index => _settings.RecordingQuality = (RecordingQuality)index)),
+            Row("GIF length limit", "The recording stops and saves itself", Segments(ui, GifLimitNames),
+                rect => Segmented(ui, "settings.recording.limit", rect, GifLimitNames,
+                    Array.IndexOf(RecordingPlan.GifLimits, _settings.GifLimitSeconds),
+                    index => _settings.GifLimitSeconds = RecordingPlan.GifLimits[index])),
+            Row("Save folder", null, S(360), rect => FolderField(ui, "settings.recording.folder", rect,
+                _settings.RecordingFolder, folder => _settings.RecordingFolder = folder)),
         ]);
     }
 
@@ -324,22 +354,8 @@ public sealed partial class MainWindow
             + ImageFiles.ExtensionOf(_settings.CaptureFormat);
         return Group(ui, x, y, width,
         [
-            Row("Save folder", _folderUsage, S(360), rect =>
-            {
-                var change = ui.ButtonWidth("Change…", small: true);
-                var path = new Rect(rect.X, rect.Center.Y - S(16), rect.Width - change - S(6), S(32));
-                ReadOnlyBox(ui, path, _settings.ScreenshotFolder, middle: true);
-                if (!ui.Button(Ui.Id("settings.folder"), new Rect(rect.Right - change, rect.Center.Y - S(14), change, S(28)),
-                    "Change…", ButtonStyle.Outline, small: true)) return;
-
-                // The picker is modal and would pump its loop mid-frame.
-                Post(() =>
-                {
-                    if (FolderPicker.Pick(Handle, _settings.ScreenshotFolder) is not { } folder) return;
-                    _settings.ScreenshotFolder = folder;
-                    SaveSettings();
-                });
-            }),
+            Row("Save folder", _folderUsage, S(360), rect => FolderField(ui, "settings.folder", rect,
+                _settings.ScreenshotFolder, folder => _settings.ScreenshotFolder = folder)),
             Row("File format", null, Segments(ui, FormatNames),
                 rect => Segmented(ui, "settings.format", rect, FormatNames, (int)_settings.CaptureFormat,
                     index => _settings.CaptureFormat = (ImageFormat)index)),
@@ -358,6 +374,22 @@ public sealed partial class MainWindow
     }
 
     private static readonly string[] KeepNames = ["Forever", "30 days", "90 days", "1 year"];
+
+    private void FolderField(Ui ui, string name, Rect rect, string current, Action<string> set)
+    {
+        var change = ui.ButtonWidth("Change…", small: true);
+        ReadOnlyBox(ui, new Rect(rect.X, rect.Center.Y - S(16), rect.Width - change - S(6), S(32)), current, middle: true);
+        if (!ui.Button(Ui.Id(name), new Rect(rect.Right - change, rect.Center.Y - S(14), change, S(28)),
+            "Change…", ButtonStyle.Outline, small: true)) return;
+
+        // The picker is modal and would pump its loop mid-frame.
+        Post(() =>
+        {
+            if (FolderPicker.Pick(Handle, current) is not { } folder) return;
+            set(folder);
+            SaveSettings();
+        });
+    }
 
     /// <summary>What the captures take on disk, for the Save folder row. Measured off the UI thread
     /// each time Settings opens; null until it is known.</summary>

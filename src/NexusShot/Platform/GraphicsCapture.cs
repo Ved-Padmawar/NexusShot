@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
 using NexusShot.Core;
 using NexusShot.Render;
 using Windows.Graphics.Capture;
@@ -18,7 +17,6 @@ namespace NexusShot.Platform;
 /// On an HDR display the frame is taken as half-float scRGB and tone-mapped by <see cref="HdrToneMap"/>;
 /// asked for in 8 bits, Windows clips every highlight to white before the app sees it.
 /// </summary>
-[SupportedOSPlatform("windows10.0.18362")]
 internal static unsafe partial class GraphicsCapture
 {
     private static readonly Guid IID_IGraphicsCaptureItemInterop = new("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356");
@@ -32,8 +30,7 @@ internal static unsafe partial class GraphicsCapture
 
     private const int BytesPerHalfPixel = 8;
 
-    /// <summary>A capture item from a window handle arrived in 1903; <c>IsSupported</c> is false where
-    /// capture is disabled by policy.</summary>
+    /// <summary>False where capture is disabled by policy.</summary>
     public static bool IsSupported => GraphicsCaptureSession.IsSupported();
 
     /// <summary>Waits for the one frame taken; a target that never presents one is refused.</summary>
@@ -54,17 +51,8 @@ internal static unsafe partial class GraphicsCapture
             D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT);
         using var device = WinRTDevice(d3d);
 
-        var format = hdrWhiteNits is null ? DirectXPixelFormat.B8G8R8A8UIntNormalized : DirectXPixelFormat.R16G16B16A16Float;
-        using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device, format, 1, item.Size);
-        using var session = pool.CreateCaptureSession(item);
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041)) session.IsCursorCaptureEnabled = includeCursor;
-
-        // Some builds refuse borderless; the frame only flashes for one frame, so that is no failure.
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348))
-        {
-            try { session.IsBorderRequired = false; }
-            catch (Exception exception) when (exception is UnauthorizedAccessException or COMException) { }
-        }
+        using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device, FormatFor(hdrWhiteNits), 1, item.Size);
+        using var session = Session(pool, item, includeCursor);
 
         using var arrived = new ManualResetEventSlim();
         pool.FrameArrived += (_, _) => arrived.Set();
@@ -73,9 +61,34 @@ internal static unsafe partial class GraphicsCapture
 
         using var frame = pool.TryGetNextFrame()
             ?? throw new InvalidOperationException("The capture produced no frame.");
-        return hdrWhiteNits is { } white
-            ? Read(d3d, frame, BytesPerHalfPixel, (source, row) => HdrToneMap.ConvertRow(MemoryMarshal.Cast<byte, Half>(source), row, white))
-            : Read(d3d, frame, 4, (source, row) => source.CopyTo(row));
+        return Read(d3d, frame, hdrWhiteNits);
+    }
+
+    private static DirectXPixelFormat FormatFor(float? hdrWhiteNits) =>
+        hdrWhiteNits is null ? DirectXPixelFormat.B8G8R8A8UIntNormalized : DirectXPixelFormat.R16G16B16A16Float;
+
+    private static int BytesPerPixel(float? hdrWhiteNits) => hdrWhiteNits is null ? 4 : BytesPerHalfPixel;
+
+    /// <summary>One row of frame pixels, as the surface holds them, as BGRA: tone-mapped from scRGB on
+    /// an HDR display.</summary>
+    private static void ConvertRow(ReadOnlySpan<byte> source, Span<byte> destination, float? hdrWhiteNits)
+    {
+        if (hdrWhiteNits is { } white) HdrToneMap.ConvertRow(MemoryMarshal.Cast<byte, Half>(source), destination, white);
+        else source.CopyTo(destination);
+    }
+
+    private static GraphicsCaptureSession Session(Direct3D11CaptureFramePool pool, GraphicsCaptureItem item, bool includeCursor)
+    {
+        var session = pool.CreateCaptureSession(item);
+        session.IsCursorCaptureEnabled = includeCursor;
+
+        // Some builds refuse borderless; the yellow border is cosmetic, so that is no failure.
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348))
+        {
+            try { session.IsBorderRequired = false; }
+            catch (Exception exception) when (exception is UnauthorizedAccessException or COMException) { }
+        }
+        return session;
     }
 
     private static IDirect3DDevice WinRTDevice(IComObject<ID3D11Device> d3d)
@@ -109,14 +122,11 @@ internal static unsafe partial class GraphicsCapture
         finally { Marshal.Release(interop); }
     }
 
-    /// <summary>Turns one row of frame pixels, as the surface holds them, into one row of BGRA bytes.</summary>
-    private delegate void RowConverter(ReadOnlySpan<byte> source, Span<byte> destination);
-
     /// <summary>Copies the frame to a CPU-readable texture and out row by row, cropped to the content:
     /// the pool's surface can be larger than the target when it was sized before a resize.</summary>
-    private static DecodedImage Read(IComObject<ID3D11Device> d3d, Direct3D11CaptureFrame frame,
-        int bytesPerPixel, RowConverter convert)
+    private static DecodedImage Read(IComObject<ID3D11Device> d3d, Direct3D11CaptureFrame frame, float? hdrWhiteNits)
     {
+        var bytesPerPixel = BytesPerPixel(hdrWhiteNits);
         using var surface = frame.Surface;
         using var texture = Texture(surface);
         var desc = texture.GetDesc();
@@ -145,8 +155,8 @@ internal static unsafe partial class GraphicsCapture
             var image = DecodedImage.Allocate(width, height);
             var pixels = image.Span;
             for (var row = 0; row < height; row++)
-                convert(new ReadOnlySpan<byte>((byte*)mapped.pData + row * mapped.RowPitch, width * bytesPerPixel),
-                    pixels.Slice(row * image.Stride, width * 4));
+                ConvertRow(new ReadOnlySpan<byte>((byte*)mapped.pData + row * mapped.RowPitch, width * bytesPerPixel),
+                    pixels.Slice(row * image.Stride, width * 4), hdrWhiteNits);
             return image;
         }
         finally { context.Unmap(destination, 0); }

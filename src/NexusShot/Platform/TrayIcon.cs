@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using NexusShot.Core;
 
 namespace NexusShot.Platform;
 
@@ -27,6 +28,7 @@ public sealed class TrayIcon : IDisposable
     private const uint TPM_RETURNCMD = 0x0100;
 
     private const uint MF_STRING = 0x0000;
+    private const uint MF_GRAYED = 0x0001;
     private const uint MF_SEPARATOR = 0x0800;
 
     /// <summary>The private message the icon posts to our window for every mouse event on it.</summary>
@@ -74,6 +76,11 @@ public sealed class TrayIcon : IDisposable
         RestoreClosed = 6,
         CaptureText = 7,
         TimedCapture = 8,
+        RecordVideo = 9,
+        RecordGif = 10,
+        PauseRecording = 11,
+        StopRecording = 12,
+        DiscardRecording = 13,
     }
 
     /// <summary>A Windows notification: never takes focus, and respects Do Not Disturb.</summary>
@@ -101,18 +108,41 @@ public sealed class TrayIcon : IDisposable
     /// A double-click opens the main window - the convention every tray app follows - and a right
     /// click opens the menu.
     /// </summary>
-    public Command OnMessage(long lParam)
+    public Command OnMessage(long lParam, RecordingPhase recording)
     {
         var message = (uint)(lParam & 0xFFFF);
         return message switch
         {
             WM_LBUTTONDBLCLK => Command.OpenMain,
-            WM_RBUTTONUP => ShowMenu(),
+            WM_RBUTTONUP => ShowMenu(recording),
             _ => Command.None,
         };
     }
 
-    private Command ShowMenu()
+    private static void AppendRecordingItems(IntPtr menu, RecordingPhase phase)
+    {
+        switch (phase)
+        {
+            case RecordingPhase.Idle:
+                AppendMenuW(menu, MF_STRING, (nuint)Command.RecordVideo, "Record video");
+                AppendMenuW(menu, MF_STRING, (nuint)Command.RecordGif, "Record GIF");
+                break;
+            case RecordingPhase.Countdown:
+                AppendMenuW(menu, MF_STRING, (nuint)Command.DiscardRecording, "Cancel recording");
+                break;
+            case RecordingPhase.Recording or RecordingPhase.Paused:
+                AppendMenuW(menu, MF_STRING, (nuint)Command.PauseRecording,
+                    phase == RecordingPhase.Paused ? "Resume recording" : "Pause recording");
+                AppendMenuW(menu, MF_STRING, (nuint)Command.StopRecording, "Stop and save recording");
+                AppendMenuW(menu, MF_STRING, (nuint)Command.DiscardRecording, "Discard recording");
+                break;
+            default:
+                AppendMenuW(menu, MF_GRAYED, 0, "Saving recording…");
+                break;
+        }
+    }
+
+    private Command ShowMenu(RecordingPhase recording)
     {
         var menu = CreatePopupMenu();
         if (menu == IntPtr.Zero) return Command.None;
@@ -124,6 +154,8 @@ public sealed class TrayIcon : IDisposable
             AppendMenuW(menu, MF_STRING, (nuint)Command.CaptureWindow, "Capture active window");
             AppendMenuW(menu, MF_STRING, (nuint)Command.TimedCapture, "Timed capture");
             AppendMenuW(menu, MF_STRING, (nuint)Command.CaptureText, "Capture text");
+            AppendMenuW(menu, MF_SEPARATOR, 0, null);
+            AppendRecordingItems(menu, recording);
             AppendMenuW(menu, MF_SEPARATOR, 0, null);
             AppendMenuW(menu, MF_STRING, (nuint)Command.RestoreClosed, "Restore closed captures");
             AppendMenuW(menu, MF_STRING, (nuint)Command.OpenMain, "Open NexusShot");

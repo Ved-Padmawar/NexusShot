@@ -1,5 +1,4 @@
 using NexusShot.Core;
-using NexusShot.Render;
 
 namespace NexusShot.Platform;
 
@@ -24,7 +23,7 @@ internal static class HistoryScanner
         }
     }
 
-    public static HistoryScan Scan(string folder, IReadOnlyCollection<string> known,
+    public static HistoryScan Scan(IReadOnlyList<string> folders, IReadOnlyCollection<string> known,
         IReadOnlyDictionary<string, FileVersion> versions)
     {
         var changed = new List<(ScreenshotHistoryItem, FileVersion)>();
@@ -33,9 +32,12 @@ internal static class HistoryScanner
 
         // Remembered paths too, so a broken file that is later deleted is reported missing.
         var paths = new HashSet<string>(known.Concat(versions.Keys), StringComparer.OrdinalIgnoreCase);
-        try { paths.UnionWith(Directory.EnumerateFiles(folder).Where(ImageFiles.CanOpen)); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        { Log.Error("history.scan", exception); }
+        foreach (var folder in folders)
+        {
+            try { paths.UnionWith(Directory.EnumerateFiles(folder).Where(CaptureFiles.CanOpen)); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            { Log.Error("history.scan", exception, folder); }
+        }
         foreach (var path in paths)
         {
             FileVersion? read = null;
@@ -44,7 +46,7 @@ internal static class HistoryScanner
                 var version = FileVersion.Read(path);
                 read = version;
                 if (versions.TryGetValue(path, out var previous) && previous == version) continue;
-                var (width, height) = ImageSurface.ReadSize(path);
+                var (width, height) = CaptureMedia.ReadSize(path);
                 // A file still being written will be retried on the next watcher event.
                 if (FileVersion.Read(path) != version) continue;
                 changed.Add((new ScreenshotHistoryItem

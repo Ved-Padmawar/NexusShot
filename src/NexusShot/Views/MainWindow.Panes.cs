@@ -59,16 +59,18 @@ public sealed partial class MainWindow
         ui.Text("Library", new Rect(tile.Right + S(10) + brand + S(5), band.Y, S(60), band.Height),
             theme.TextTertiary, brandFont, Weight.Medium, face: Face.Display);
 
-        (string Label, Icon Icon, Action Run)[] actions =
+        (string Label, Icon Icon, string Title, HotkeyId Hotkey, Action Run)[] actions =
         [
-            ("Region", Icons.CaptureRegion, () => CaptureRequested?.Invoke(CaptureMode.Region)),
-            ("Window", Icons.CaptureWindow, () => CaptureRequested?.Invoke(CaptureMode.ActiveWindow)),
-            ("Screen", Icons.CaptureScreen, () => CaptureRequested?.Invoke(CaptureMode.FullScreen)),
-            ("Text", Icons.Ocr, () => CaptureTextRequested?.Invoke()),
-            ($"{_settings.TimedCaptureSeconds}s", Icons.Timer, () => TimedCaptureRequested?.Invoke()),
+            ("Region", Icons.CaptureRegion, "Capture region", HotkeyId.CaptureRegion, () => CaptureRequested?.Invoke(CaptureMode.Region)),
+            ("Window", Icons.CaptureWindow, "Capture active window", HotkeyId.CaptureActiveWindow,
+                () => CaptureRequested?.Invoke(CaptureMode.ActiveWindow)),
+            ("Screen", Icons.CaptureScreen, "Capture full screen", HotkeyId.CaptureFullScreen,
+                () => CaptureRequested?.Invoke(CaptureMode.FullScreen)),
+            ("Text", Icons.Ocr, "Capture text", HotkeyId.CaptureText, () => CaptureTextRequested?.Invoke()),
+            ($"{_settings.TimedCaptureSeconds}s", Icons.Timer, "Timed capture", HotkeyId.TimedCapture, () => TimedCaptureRequested?.Invoke()),
+            (Recording.IsBusy ? "Stop" : "Record", Recording.IsBusy ? Icons.Stop : Icons.Video,
+                Recording.IsBusy ? "Stop recording" : "Record the screen", HotkeyId.Record, () => RecordRequested?.Invoke()),
         ];
-        HotkeyId?[] shortcuts = [HotkeyId.CaptureRegion, HotkeyId.CaptureActiveWindow, HotkeyId.CaptureFullScreen,
-            HotkeyId.CaptureText, HotkeyId.TimedCapture];
 
         var widths = actions.Select(action => ui.ButtonWidth(action.Label, action.Icon, small: true)).ToArray();
         var groupWidth = widths.Sum() + S(2) * (actions.Length - 1) + S(6);
@@ -84,26 +86,16 @@ public sealed partial class MainWindow
         {
             var bounds = new Rect(x, group.Y + S(3), widths[i], S(30));
             var action = actions[i];
-            var tip = shortcuts[i] is { } id && _settings.Hotkey(id) is { Key: not 0 } binding
-                ? Describe(binding).Replace(" + ", " ") : null;
+            var tip = _settings.Hotkey(action.Hotkey) is { Key: not 0 } binding
+                ? $"{action.Title}  ·  {Describe(binding).Replace(" + ", " ")}" : action.Title;
 
             // Posted: this runs inside Render, and a capture runs the picker's own message loop.
             if (ui.Button(Ui.Id(Ui.Id("library.capture"), i), bounds, action.Label,
-                i == 0 ? ButtonStyle.Primary : ButtonStyle.Ghost, action.Icon, small: true,
-                tooltip: tip is null ? null : $"{Title(i)}  ·  {tip}"))
+                i == 0 ? ButtonStyle.Primary : ButtonStyle.Ghost, action.Icon, small: true, tooltip: tip))
                 Post(action.Run);
             x += widths[i] + S(2);
         }
     }
-
-    private static string Title(int action) => action switch
-    {
-        0 => "Capture region",
-        1 => "Capture active window",
-        2 => "Capture full screen",
-        3 => "Capture text",
-        _ => "Timed capture",
-    };
 
     /// <summary>The count, the update button when there is one, the filters and search box, and the
     /// folder and settings buttons.</summary>
@@ -436,6 +428,14 @@ public sealed partial class MainWindow
             ui.Icon(Icons.StarFilled, badge, theme.Favorite.WithAlpha((byte)(255 * (1 - look.Shown))), S(14));
         }
 
+        if (CaptureFiles.IsRecording(item.FilePath))
+        {
+            var badge = new Rect(image.Right - S(48), image.Y + S(8), S(40), S(22));
+            ui.FillRounded(badge, (float)S(Metrics.RadiusSm), Theme.ImageScrim);
+            ui.Text(CaptureFiles.IsVideo(item.FilePath) ? "MP4" : "GIF", badge, Rgba.White,
+                S(Metrics.FontXs), Weight.Semibold, TextAlign.Center);
+        }
+
         var overlayClicked = false;
         if (look.Shown > 0.01)
         {
@@ -445,9 +445,12 @@ public sealed partial class MainWindow
                 (item.Favorite ? Icons.StarFilled : Icons.Star, item.Favorite ? "Remove from favorites" : "Add to favorites",
                     () => ToggleFavorite(item), false, item.Favorite ? theme.Favorite : null),
                 (Icons.Folder, "Show in folder", () => Reveal(item.FilePath), false, null),
-                (look.Copied ? Icons.Tick : Icons.Copy, look.Copied ? "Copied" : "Copy", () => Post(() => CopyToClipboard(item)), false, null),
+                (look.Copied ? Icons.Tick : Icons.Copy, look.Copied ? "Copied" : CaptureFiles.IsRecording(item.FilePath) ? "Copy file" : "Copy",
+                    () => Post(() => CopyToClipboard(item)), false, null),
                 (Icons.Share, "Share", () => Post(() => Share(item)), false, null),
-                (Icons.Edit, "Open in editor", () => Post(() => EditRequested?.Invoke(item)), false, null),
+                (CaptureFiles.IsRecording(item.FilePath) ? Icons.Play : Icons.Edit,
+                    CaptureFiles.IsRecording(item.FilePath) ? "Play recording" : "Open in editor",
+                    () => Post(() => EditRequested?.Invoke(item)), false, null),
             ];
             var size = S(28);
             var x = image.Right - S(8) - actions.Length * size - (actions.Length - 1) * S(4);

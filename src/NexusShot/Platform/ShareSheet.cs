@@ -36,7 +36,7 @@ internal static class ShareSheet
             request.Data.Properties.Title = file.Name;
             // A List: AOT has marshalling for List<T>, not for a collection expression's hidden type.
             request.Data.SetStorageItems(new List<IStorageItem> { file });
-            request.Data.SetBitmap(RandomAccessStreamReference.CreateFromFile(file));
+            if (!Core.CaptureFiles.IsRecording(path)) request.Data.SetBitmap(RandomAccessStreamReference.CreateFromFile(file));
         }
         catch (Exception exception)
         {

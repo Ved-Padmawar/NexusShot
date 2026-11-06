@@ -93,7 +93,7 @@ public sealed partial class MainWindow
             {
                 // Read first: a file rewritten mid-decode then reads as newer than its pixels, never older.
                 version = FileVersion.Read(path);
-                pixels = ImageSurface.DecodeScaled(path, width, width * 10 / 16, cover: true);
+                pixels = CaptureMedia.Thumbnail(path, width, width * 10 / 16);
                 var shrunk = Downsample.Box(pixels.Span, pixels.Width, pixels.Height,
                     Downsample.FactorFor(pixels.Width, PreviewWidth), out var previewWidth, out var previewHeight);
                 preview = DecodedImage.CopyFrom(shrunk, previewWidth, previewHeight);
@@ -138,7 +138,12 @@ public sealed partial class MainWindow
         if (_copying) return;
         _copying = true;
         Exception? failure = null;
-        try { await MediaWorker.Run(() => { ClipboardImage.Copy(item.FilePath); return true; }); }
+        try { await MediaWorker.Run(() =>
+        {
+            if (CaptureFiles.IsRecording(item.FilePath)) CaptureMedia.CopyFile(item.FilePath);
+            else ClipboardImage.Copy(item.FilePath);
+            return true;
+        }); }
         catch (Exception exception) { failure = exception; }
         Post(() =>
         {
@@ -186,7 +191,7 @@ public sealed partial class MainWindow
     public void SweepExpired()
     {
         var expired = Retention.Expired(_history, _settings.KeepCapturesDays, DateTimeOffset.Now)
-            .Where(item => IsUnder(item.FilePath, _settings.ScreenshotFolder)).ToList();
+            .Where(item => _settings.InLibrary(item.FilePath)).ToList();
         if (expired.Count == 0) return;
         var removed = expired.Count(item => DeleteFile(item, RecycleBin.Recycle));
         _storage.SaveHistory(_history);
@@ -204,8 +209,8 @@ public sealed partial class MainWindow
         try
         {
             var full = Path.GetFullPath(item.FilePath);
-            if (!IsUnder(full, _settings.ScreenshotFolder))
-                throw new InvalidOperationException("The image is outside the managed screenshot folder.");
+            if (!_settings.InLibrary(full))
+                throw new InvalidOperationException("The file is outside the Library folders.");
             remove(full);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
@@ -219,22 +224,6 @@ public sealed partial class MainWindow
         DropCache(item.FilePath);
         CaptureDeleted?.Invoke(item.FilePath);
         return true;
-    }
-
-    /// <summary>Whether the path sits inside root. The trailing separator matters: without it
-    /// "C:\Shots-elsewhere" prefix-matches "C:\Shots".</summary>
-    private static bool IsUnder(string fullPath, string root)
-    {
-        try
-        {
-            var normalized = Path.GetFullPath(root).TrimEnd(
-                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return fullPath.StartsWith(normalized, StringComparison.OrdinalIgnoreCase);
-        }
-        catch (Exception exception) when (exception is ArgumentException or IOException)
-        {
-            return false;
-        }
     }
 
     private void Share(ScreenshotHistoryItem item)

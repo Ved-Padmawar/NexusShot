@@ -10,6 +10,14 @@ public static partial class WindowInterop
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool IsWindowVisible(IntPtr window);
 
+    private const uint WDA_EXCLUDEFROMCAPTURE = 0x11;
+
+    public static bool ExcludeFromCapture(IntPtr window) => SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWindowDisplayAffinity(IntPtr window, uint affinity);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X, Y; }
 

@@ -14,29 +14,34 @@ internal static class CaptureStore
         try
         {
             ImageWriter.Write(temporary, pixels, format);
-            var captured = DateTimeOffset.Now;
-            var name = CaptureName.For(captured.LocalDateTime, app);
-            for (var suffix = 0; ; suffix++)
-            {
-                var destination = Path.Combine(folder,
-                    name + (suffix == 0 ? "" : $"_{suffix:D3}") + ImageFiles.ExtensionOf(format));
-                try
-                {
-                    File.Move(temporary, destination, overwrite: false);
-                    return new ScreenshotHistoryItem
-                    {
-                        FilePath = destination, CapturedAt = captured,
-                        Width = pixels.Width, Height = pixels.Height,
-                    };
-                }
-                catch (IOException) when (File.Exists(destination)) { }
-            }
+            return Commit(temporary, folder, pixels.Width, pixels.Height, ImageFiles.ExtensionOf(format), app);
         }
         finally
         {
             try { File.Delete(temporary); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             { Log.Error("capture.temp_cleanup", exception); }
+        }
+    }
+
+    internal static ScreenshotHistoryItem Commit(string temporary, string folder, int width, int height, string extension, string? app = null)
+    {
+        var captured = DateTimeOffset.Now;
+        var name = CaptureName.For(captured.LocalDateTime, app);
+        for (var suffix = 0; ; suffix++)
+        {
+            var destination = Path.Combine(folder,
+                name + (suffix == 0 ? "" : $"_{suffix:D3}") + extension);
+            try
+            {
+                File.Move(temporary, destination, overwrite: false);
+                return new ScreenshotHistoryItem
+                {
+                    FilePath = destination, CapturedAt = captured,
+                    Width = width, Height = height,
+                };
+            }
+            catch (IOException) when (File.Exists(destination)) { }
         }
     }
 }

@@ -5,13 +5,17 @@ using static NexusShot.Views.MouseMessage;
 
 namespace NexusShot.Views;
 
-/// <summary>A picked region: its pixels, owned by the caller, where it was on the desktop, and
-/// whether its text was asked for rather than the image.</summary>
-public sealed record PickedRegion(DecodedImage Pixels, RectInt Region, bool Text);
+/// <summary>What the picker chose, where it is on the desktop.</summary>
+public abstract record Picked(RectInt Region);
+
+/// <summary>A still: its pixels, owned by the caller, and whether its text was asked for rather than the image.</summary>
+public sealed record PickedImage(DecodedImage Pixels, RectInt Region, bool Text) : Picked(Region);
+
+public sealed record PickedRecording(RectInt Region, RecordingFormat Format) : Picked(Region);
 
 /// <summary>
 /// The region picker: a full-desktop window showing a frozen snapshot of the screen, dimmed, with a
-/// bright cut-out for what would be taken, and a bar of modes at the top.
+/// bright cut-out for what would be taken, and a bar at the top: Photo or Video, then the modes.
 ///
 /// It draws a *snapshot* rather than being transparent over the live desktop. That is what makes
 /// the selection stable - a live overlay has to fight the compositor and can catch its own dimming
@@ -53,8 +57,14 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         (PickerMode.Text, "Text", Icons.Ocr),
     ];
 
+    private static readonly (CaptureKind Kind, Icon Icon, string Tip)[] Kinds =
+        [(CaptureKind.Photo, Icons.Camera, "Screenshot"), (CaptureKind.Video, Icons.Video, "Recording")];
+
     private static readonly (string Label, TextScope Scope)[] TextScopes =
         [("Area", TextScope.Area), ("Window", TextScope.Window)];
+
+    private static readonly (string Label, RecordingFormat Format)[] Formats =
+        [("MP4", RecordingFormat.Mp4), ("GIF", RecordingFormat.Gif)];
 
     private readonly RectInt _desktop;
     private readonly DecodedImage _snapshotPixels;
@@ -73,7 +83,7 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     /// <summary>Where the bar was last drawn, so a press on it is not taken as the start of a drag.</summary>
     private Rect _bar;
 
-    /// <summary>The bar's width in its widest mode, measured once, so switching modes never resizes it.</summary>
+    /// <summary>The bar's width in its widest kind and mode, measured once, so switching never resizes it.</summary>
     private double? _barWidth;
 
     /// <summary>The choice in overlay pixels, or null if cancelled.</summary>
@@ -105,15 +115,18 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     /// choosing what to grab. <paramref name="lastRegion"/> is what Enter repeats.
     ///
     /// The result is cropped from the frozen snapshot, never re-captured from the live screen: the
-    /// overlay's own activation dismisses any open menu, so a re-capture saves a changed desktop.
+    /// overlay's own activation dismisses any open menu, so a re-capture saves a changed desktop. A
+    /// recording takes no pixels from it: it starts from the live screen once the overlay is gone.
     /// </summary>
-    public static PickedRegion? Pick(bool includeCursor, Theme theme, RectInt? lastRegion, PickerMode mode, bool showLoupe) =>
+    public static Picked? Pick(bool includeCursor, Theme theme, RectInt? lastRegion, PickerMode mode, bool showLoupe,
+        CaptureKind kind, RecordingFormat format) =>
         Pick(bounds => ScreenCapture.Capture(bounds, includeCursor), theme, lastRegion, mode, showLoupe,
-            ScreenCapture.VisibleWindows, Monitors.All);
+            ScreenCapture.VisibleWindows, Monitors.All, kind, format);
 
-    internal static PickedRegion? Pick(Func<RectInt, DecodedImage> capture, Theme? theme = null,
+    internal static Picked? Pick(Func<RectInt, DecodedImage> capture, Theme? theme = null,
         RectInt? lastRegion = null, PickerMode mode = PickerMode.Region, bool showLoupe = true,
-        Func<List<RectInt>>? windows = null, Func<List<RectInt>>? screens = null)
+        Func<List<RectInt>>? windows = null, Func<List<RectInt>>? screens = null,
+        CaptureKind kind = CaptureKind.Photo, RecordingFormat format = RecordingFormat.Mp4)
     {
         if (_isPicking) return null;
         _isPicking = true;
@@ -127,7 +140,7 @@ public sealed partial class RegionOverlay : D2DRenderWindow
             var monitors = (screens?.Invoke() ?? []).Select(ToOverlay).ToList();
             using var snapshot = capture(desktop);
             var picker = new RegionPicker(new Size(desktop.Width, desktop.Height), snapTargets, monitors,
-                lastRegion is { } last ? ToOverlay(last) : null, mode);
+                lastRegion is { } last ? ToOverlay(last) : null, mode, kind, format);
 
             PickResult? result;
             using (var overlay = new RegionOverlay(desktop, snapshot, theme ?? Theme.Dark, picker, showLoupe))
@@ -139,12 +152,13 @@ public sealed partial class RegionOverlay : D2DRenderWindow
             }
 
             if (result is not { Region: var region }) return null;
+            var area = new RectInt(desktop.X + (int)region.X, desktop.Y + (int)region.Y, (int)region.Width, (int)region.Height);
+            if (result.Recording is { } recording) return new PickedRecording(area, recording);
 
             // Independent pixels; encoding belongs to the media worker.
             var pixels = snapshot.Crop((int)region.X, (int)region.Y, (int)region.Width, (int)region.Height);
             if (result.Outline is { } outline) pixels.KeepInside(outline);
-            return new PickedRegion(pixels,
-                new RectInt(desktop.X + (int)region.X, desktop.Y + (int)region.Y, pixels.Width, pixels.Height), result.Text);
+            return new PickedImage(pixels, area, result.Text);
         }
         finally
         {
@@ -235,20 +249,14 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     }
 
     /// <summary>
-    /// The modes, as the Library header offers them, with what the current one expects beside them.
-    /// Text adds its two scopes. Hidden while dragging, where it would only be in the way.
+    /// Photo or Video, then the kind's modes, then the mode's options - Text's scopes or Video's formats -
+    /// and what the mode expects. Hidden while dragging, where it would only be in the way.
     /// </summary>
     private void DrawBar(Ui ui)
     {
         var theme = ui.Theme;
-        var widths = Modes.Select(mode => ui.ButtonWidth(mode.Label, mode.Icon, small: true)).ToArray();
-        var scopes = ScopesIn(_picker.Mode);
-        var scopeWidths = scopes.Select(scope => ui.ButtonWidth(scope.Label, small: true)).ToArray();
-        var hint = Hint(_picker.Mode, _picker.TextScope);
-        var hintWidth = Math.Ceiling(ui.MeasureText(hint, S(Metrics.FontSm)));
-
-        var width = _barWidth ??= S(6) + widths.Sum() + S(2) * (widths.Length - 1)
-            + Modes.Max(mode => Enum.GetValues<TextScope>().Max(scope => TailWidth(ui, mode.Mode, scope))) + S(14);
+        var width = _barWidth ??= Kinds.Max(kind => RegionPicker.ModesFor(kind.Kind)
+            .Max(mode => TextScopes.Max(scope => ContentWidth(ui, kind.Kind, mode, scope.Scope))));
         _bar = new Rect(Math.Round(_home.X + (_home.Width - width) / 2), _home.Y + S(16), width, S(40));
         ui.Shadow(_bar, (float)S(Metrics.RadiusLg), S(18), S(6), theme.Shadow);
         ui.FillRounded(_bar, (float)S(Metrics.RadiusLg), theme.SurfacePane);
@@ -256,43 +264,69 @@ public sealed partial class RegionOverlay : D2DRenderWindow
 
         var x = _bar.X + S(4);
         var y = _bar.Y + S(5);
-        for (var i = 0; i < Modes.Length; i++)
+        for (var i = 0; i < Kinds.Length; i++)
         {
-            var (mode, label, icon) = Modes[i];
-            if (ui.Button(Ui.Id(Ui.Id("picker.mode"), i), new Rect(x, y, widths[i], S(30)), label,
+            var (kind, icon, tip) = Kinds[i];
+            if (ui.IconButton(Ui.Id(Ui.Id("picker.kind"), i), new Rect(x, y, S(30), S(30)), icon, tip,
+                on: _picker.Kind == kind, iconSize: 16))
+                _picker.SetKind(kind);
+            x += S(32);
+        }
+        x = GroupEnd(ui, x);
+
+        foreach (var mode in _picker.Modes)
+        {
+            var (_, label, icon) = Entry(mode);
+            var button = ui.ButtonWidth(label, icon, small: true);
+            if (ui.Button(Ui.Id(Ui.Id("picker.mode"), (int)mode), new Rect(x, y, button, S(30)), label,
                 _picker.Mode == mode ? ButtonStyle.Primary : ButtonStyle.Ghost, icon, small: true))
                 _picker.SetMode(mode);
-            x += widths[i] + S(2);
+            x += button + S(2);
         }
+        x = GroupEnd(ui, x);
 
-        if (scopes.Length > 0)
+        var video = _picker.Kind == CaptureKind.Video;
+        var options = OptionsIn(_picker.Kind, _picker.Mode);
+        for (var i = 0; i < options.Length; i++)
         {
-            ui.Separator(new Point(x + S(6), _bar.Center.Y));
-            x += S(15);
-            for (var i = 0; i < scopes.Length; i++)
+            var button = ui.ButtonWidth(options[i], small: true);
+            var on = video ? _picker.Format == Formats[i].Format : _picker.TextScope == TextScopes[i].Scope;
+            if (ui.Button(Ui.Id(Ui.Id("picker.option"), i), new Rect(x, y, button, S(30)), options[i],
+                on ? ButtonStyle.Secondary : ButtonStyle.Ghost, small: true))
             {
-                var (label, scope) = scopes[i];
-                if (ui.Button(Ui.Id(Ui.Id("picker.scope"), i), new Rect(x, y, scopeWidths[i], S(30)), label,
-                    _picker.TextScope == scope ? ButtonStyle.Secondary : ButtonStyle.Ghost, small: true))
-                    _picker.SetTextScope(scope);
-                x += scopeWidths[i] + S(2);
+                if (video) _picker.SetFormat(Formats[i].Format);
+                else _picker.SetTextScope(TextScopes[i].Scope);
             }
+            x += button + S(2);
         }
+        if (options.Length > 0) x = GroupEnd(ui, x);
 
-        ui.Separator(new Point(x + S(6), _bar.Center.Y));
-        x += S(15);
-        ui.Text(hint, new Rect(x, _bar.Y, hintWidth + 1, _bar.Height), theme.TextSecondary, S(Metrics.FontSm));
+        var hint = Hint(_picker.Mode, _picker.TextScope);
+        ui.Text(hint, new Rect(x, _bar.Y, Math.Ceiling(ui.MeasureText(hint, S(Metrics.FontSm))) + 1, _bar.Height),
+            theme.TextSecondary, S(Metrics.FontSm));
     }
 
-    private static (string Label, TextScope Scope)[] ScopesIn(PickerMode mode) => mode == PickerMode.Text ? TextScopes : [];
-
-    /// <summary>Everything right of the mode buttons in <paramref name="mode"/>: its scope buttons and
-    /// its hint, each behind a separator.</summary>
-    private double TailWidth(Ui ui, PickerMode mode, TextScope scope)
+    private double GroupEnd(Ui ui, double x)
     {
-        var scopes = ScopesIn(mode);
-        return (scopes.Length > 0 ? S(17) + scopes.Sum(choice => ui.ButtonWidth(choice.Label, small: true)) + S(2) : 0)
-            + S(17) + Math.Ceiling(ui.MeasureText(Hint(mode, scope), S(Metrics.FontSm)));
+        ui.Separator(new Point(x + S(5), _bar.Center.Y));
+        return x + S(13);
+    }
+
+    private static (PickerMode Mode, string Label, Icon Icon) Entry(PickerMode mode) => Modes.First(entry => entry.Mode == mode);
+
+    private static string[] OptionsIn(CaptureKind kind, PickerMode mode) =>
+        kind == CaptureKind.Video ? [.. Formats.Select(format => format.Label)]
+        : mode == PickerMode.Text ? [.. TextScopes.Select(scope => scope.Label)]
+        : [];
+
+    /// <summary>The bar's width in one state, walked the way <see cref="DrawBar"/> lays it out.</summary>
+    private double ContentWidth(Ui ui, CaptureKind kind, PickerMode mode, TextScope scope)
+    {
+        var options = OptionsIn(kind, mode);
+        return S(4) + Kinds.Length * S(32) + S(13)
+            + RegionPicker.ModesFor(kind).Sum(each => ui.ButtonWidth(Entry(each).Label, Entry(each).Icon, small: true) + S(2)) + S(13)
+            + (options.Length > 0 ? options.Sum(option => ui.ButtonWidth(option, small: true) + S(2)) + S(13) : 0)
+            + Math.Ceiling(ui.MeasureText(Hint(mode, scope), S(Metrics.FontSm))) + S(12);
     }
 
     private string Hint(PickerMode mode, TextScope scope) => mode switch

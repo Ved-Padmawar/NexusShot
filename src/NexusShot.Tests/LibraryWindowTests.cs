@@ -32,7 +32,7 @@ public sealed class LibraryWindowTests : IDisposable
                 var storage = new Storage(_directory);
                 var settings = new AppSettings { ScreenshotFolder = _directory };
                 using var screen = new Offscreen(Width, Height);
-                using var window = new MainWindow(storage, settings, history) { DeleteToBin = File.Delete };
+                using var window = new MainWindow(storage, settings, history) { DeleteToBin = File.Delete, Recording = new() };
                 test(new Library(window, screen, settings, storage));
             }
             catch (Exception exception) { failure = exception; }
@@ -114,7 +114,7 @@ public sealed class LibraryWindowTests : IDisposable
 
         public void OpenTab(int index)
         {
-            var tabWidth = (SheetWidth - 24 - 4 * 5) / 6;
+            var tabWidth = (SheetWidth - 24 - 4 * 6) / 7;
             Click(new Point(SheetLeft + 12 + index * (tabWidth + 4) + tabWidth / 2, SheetTop + 52 + 29));
         }
 
@@ -158,7 +158,7 @@ public sealed class LibraryWindowTests : IDisposable
         var rethemed = 0;
         library.Window.ThemeChanged += () => rethemed++;
         library.OpenSettings();
-        library.OpenTab(5);
+        library.OpenTab(6);
 
         library.SweepControls(() => library.Settings.Theme == AppTheme.Light && library.Settings.Accent == "Mono");
 
@@ -194,7 +194,7 @@ public sealed class LibraryWindowTests : IDisposable
     public void AClosedSheetNoLongerAnswersClicks() => WithLibrary([], library =>
     {
         library.OpenSettings();
-        library.OpenTab(5);
+        library.OpenTab(6);
         library.Key(0x1B);   // Escape
         library.Settle();
 

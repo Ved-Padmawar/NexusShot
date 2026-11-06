@@ -145,12 +145,12 @@ public class WorkflowRegressionTests : IDisposable
         var broken = Path.Combine(_directory, "broken.png");
         File.WriteAllBytes(broken, [0x89, 0x50, 0x4E, 0x47, 1, 2, 3]);
 
-        var (path, version) = Assert.Single(HistoryScanner.Scan(_directory, [], new Dictionary<string, FileVersion>()).Unreadable);
+        var (path, version) = Assert.Single(HistoryScanner.Scan([_directory], [], new Dictionary<string, FileVersion>()).Unreadable);
         var versions = new Dictionary<string, FileVersion>(StringComparer.OrdinalIgnoreCase) { [path] = version };
-        Assert.Empty(HistoryScanner.Scan(_directory, [], versions).Unreadable);
+        Assert.Empty(HistoryScanner.Scan([_directory], [], versions).Unreadable);
 
         File.AppendAllText(broken, "rewritten");
-        Assert.Single(HistoryScanner.Scan(_directory, [], versions).Unreadable);
+        Assert.Single(HistoryScanner.Scan([_directory], [], versions).Unreadable);
     }
 
     [Fact]
@@ -162,7 +162,7 @@ public class WorkflowRegressionTests : IDisposable
 
         File.Delete(broken);
 
-        Assert.Contains(broken, HistoryScanner.Scan(_directory, [], versions).Missing);
+        Assert.Contains(broken, HistoryScanner.Scan([_directory], [], versions).Missing);
     }
 
     [Fact]
@@ -170,16 +170,16 @@ public class WorkflowRegressionTests : IDisposable
     {
         var path = await MakeImage(40, 30);
         var versions = new Dictionary<string, FileVersion>(StringComparer.OrdinalIgnoreCase);
-        var first = HistoryScanner.Scan(_directory, [], versions);
+        var first = HistoryScanner.Scan([_directory], [], versions);
         var found = Assert.Single(first.Changed);
         versions[path] = found.Version;
-        Assert.Empty(HistoryScanner.Scan(_directory, [path], versions).Changed);
+        Assert.Empty(HistoryScanner.Scan([_directory], [path], versions).Changed);
         await MakeImage(80, 60, path);
-        var changed = Assert.Single(HistoryScanner.Scan(_directory, [path], versions).Changed);
+        var changed = Assert.Single(HistoryScanner.Scan([_directory], [path], versions).Changed);
         Assert.Equal(80, changed.Item.Width);
         Assert.Equal(60, changed.Item.Height);
         File.Delete(path);
-        Assert.Contains(path, HistoryScanner.Scan(_directory, [path], versions).Missing);
+        Assert.Contains(path, HistoryScanner.Scan([_directory], [path], versions).Missing);
     }
 
     [Fact]
@@ -197,11 +197,11 @@ public class WorkflowRegressionTests : IDisposable
         });
         File.WriteAllText(Path.Combine(_directory, "notes.txt"), "not an image");
 
-        var found = HistoryScanner.Scan(_directory, [], new Dictionary<string, FileVersion>()).Changed;
+        var found = HistoryScanner.Scan([_directory], [], new Dictionary<string, FileVersion>()).Changed;
         Assert.Equal(["photo.jpg", "scan.bmp"], found.Select(entry => entry.Item.FileName).Order());
 
         File.Delete(bitmap);
-        Assert.Equal([bitmap], HistoryScanner.Scan(_directory, [jpeg, bitmap], found.ToDictionary(
+        Assert.Equal([bitmap], HistoryScanner.Scan([_directory], [jpeg, bitmap], found.ToDictionary(
             entry => entry.Item.FilePath, entry => entry.Version, StringComparer.OrdinalIgnoreCase)).Missing);
     }
 

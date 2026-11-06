@@ -31,6 +31,8 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; Matches SupportedOSPlatformVersion: Windows 10 2004, for recording's capture APIs.
+MinVersion=10.0.19041
 OutputDir=..\dist
 OutputBaseFilename=NexusShot-{#AppVersion}
 SetupIconFile=..\assets\icons\nexus-shot.ico

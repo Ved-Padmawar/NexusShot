@@ -25,6 +25,22 @@ public class StorageTests : IDisposable
         Assert.Equal(0, settings.PreviewDismissSeconds);
     }
 
+    [Fact]
+    public void UnknownRecordingChoicesFallBackToTheDefaults()
+    {
+        var storage = new Storage(_directory);
+        File.WriteAllText(storage.SettingsPath, """
+            {"RecordingFolder":"videos","RecordingFormat":7,"RecordingQuality":9,"RecordingFrameRate":24,
+             "GifLimitSeconds":45,"RecordHotkey":null}
+            """);
+        var settings = storage.LoadSettings();
+        var defaults = new AppSettings();
+        Assert.Equal(defaults.RecordingFolder, settings.RecordingFolder);
+        Assert.Equal((defaults.RecordingFormat, defaults.RecordingQuality), (settings.RecordingFormat, settings.RecordingQuality));
+        Assert.Equal((defaults.RecordingFrameRate, defaults.GifLimitSeconds), (settings.RecordingFrameRate, settings.GifLimitSeconds));
+        Assert.Equal(0u, settings.RecordHotkey.Key);
+    }
+
     [Theory]
     [InlineData("   ")]
     [InlineData("shots")]

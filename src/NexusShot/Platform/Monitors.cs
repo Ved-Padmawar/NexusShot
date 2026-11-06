@@ -32,6 +32,10 @@ public static partial class Monitors
     /// <summary>The monitor a desktop point is on.</summary>
     public static IntPtr At(int x, int y) => MonitorFromPoint(new POINT { X = x, Y = y }, MONITOR_DEFAULTTONEAREST);
 
+    public static RectInt WorkAreaAt(int x, int y) => WorkAreaOf(At(x, y));
+
+    public static double DpiScaleAt(int x, int y) => TryGetDpiForMonitor(At(x, y), out var dpi) ? dpi / 96.0 : 1;
+
     /// <summary>Every monitor's full bounds, taskbar included: what the region picker's Screen mode
     /// takes.</summary>
     public static unsafe List<RectInt> All()

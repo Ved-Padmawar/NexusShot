@@ -42,7 +42,7 @@ public sealed class FolderWatcher : IDisposable
 
         // Every format the app writes and opens, or a JPEG or BMP deleted in Explorer stays listed.
         _watcher = new FileSystemWatcher { NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite };
-        foreach (var extension in ImageFiles.Extensions) _watcher.Filters.Add("*" + extension);
+        foreach (var extension in CaptureFiles.Extensions) _watcher.Filters.Add("*" + extension);
 
         _watcher.Created += OnChanged;
         _watcher.Deleted += OnChanged;

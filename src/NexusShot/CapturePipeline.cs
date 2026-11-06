@@ -240,6 +240,16 @@ public sealed class CapturePipeline : IDisposable
 
     private void Edit(ScreenshotHistoryItem item)
     {
+        if (CaptureFiles.IsRecording(item.FilePath))
+        {
+            try { CaptureMedia.Play(item.FilePath); }
+            catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or IOException)
+            {
+                Log.Error("recording.play", exception, item.FilePath);
+                UserFeedback.Error(_main.Handle, "Could not open this recording. Choose a default app for GIF or MP4 files in Windows Settings.");
+            }
+            return;
+        }
         if (_editors.Owner(item.FilePath) is { } existing)
         {
             existing.Reveal();
