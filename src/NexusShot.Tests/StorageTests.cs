@@ -48,6 +48,18 @@ public class StorageTests : IDisposable
     }
 
     [Fact]
+    public void HistoryRowsWithUnusablePathsAreDroppedAndTheRestKept()
+    {
+        var storage = new Storage(_directory);
+        File.WriteAllText(storage.HistoryPath, """
+            [{"FilePath":"\u0000bad.png","CapturedAt":"2026-11-05T00:00:00Z"},
+             {"FilePath":"relative.png","CapturedAt":"2026-11-05T00:00:00Z"},
+             {"FilePath":"C:\\shots\\good.png","CapturedAt":"2026-11-05T00:00:00Z"}]
+            """);
+        Assert.Equal(@"C:\shots\good.png", Assert.Single(storage.LoadHistory()).FilePath);
+    }
+
+    [Fact]
     public void MalformedJsonIsPreservedBeforeFallingBack()
     {
         var storage = new Storage(_directory);

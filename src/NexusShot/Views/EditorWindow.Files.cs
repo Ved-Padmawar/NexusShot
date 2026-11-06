@@ -12,6 +12,7 @@ public sealed partial class EditorWindow
     private bool _closeAfterSave;
     private Action? _afterCloseSave;
     internal string FilePath => _files.Path;
+    internal bool IsFileBusy => _fileBusy;
     internal string? PendingSavePath { get; private set; }
     internal Func<string, bool>? CanSaveTo { get; set; }
 
@@ -117,6 +118,7 @@ public sealed partial class EditorWindow
     private async Task ExecuteFileAction(ExportRequest request, FileAction action)
     {
         var saveAs = action == FileAction.SaveAs;
+        var saving = action is FileAction.Save or FileAction.SaveAs;
         Exception? failure = null;
         var lines = 0;
         string? shared = null;
@@ -140,12 +142,16 @@ public sealed partial class EditorWindow
             PendingSavePath = null;
             if (failure is not null)
             {
-                _closeAfterSave = false;
-                _afterCloseSave = null;
+                if (saving)
+                {
+                    _closeAfterSave = false;
+                    _afterCloseSave = null;
+                }
                 Log.Error("editor.file_action", failure, _files.Path);
                 if (action == FileAction.CopyText && failure is InvalidOperationException)
                     UserFeedback.Error(Handle, failure.Message);
                 ShowToast("Could not complete action. Check the file or clipboard and retry.");
+                ContinuePendingClose();
                 return;
             }
             if (action == FileAction.Copy) ShowToast("Copied to clipboard");
@@ -169,15 +175,25 @@ public sealed partial class EditorWindow
                 });
             }
             Invalidate();
-            if (_closeAfterSave)
-            {
-                _closeAfterSave = false;
-                var continuation = _afterCloseSave;
-                _afterCloseSave = null;
-                Close();
-                continuation?.Invoke();
-            }
+            ContinuePendingClose();
         });
+    }
+
+    /// <summary>Continues a save-then-close once file work ends: closes when nothing is unsaved, else
+    /// saves now. A copy or text search that was busy saved nothing, so it cannot stand in for the save.</summary>
+    private void ContinuePendingClose()
+    {
+        if (!_closeAfterSave) return;
+        if (HasUnsavedChanges())
+        {
+            RunFileAction(Save);
+            return;
+        }
+        _closeAfterSave = false;
+        var continuation = _afterCloseSave;
+        _afterCloseSave = null;
+        Close();
+        continuation?.Invoke();
     }
 
     /// <summary>Reads the image under the annotations - they are what does the covering - and redacts
@@ -206,6 +222,7 @@ public sealed partial class EditorWindow
                 Log.Error("editor.find_sensitive", failure!, _files.Path);
                 if (failure is InvalidOperationException) UserFeedback.Error(Handle, failure.Message);
                 else ShowToast("Could not read the text in this image");
+                ContinuePendingClose();
                 return;
             }
             _document.AddRedactions(areas);
@@ -216,6 +233,7 @@ public sealed partial class EditorWindow
                 _ => $"Covered {areas.Count} items · check for anything missed",
             });
             Invalidate();
+            ContinuePendingClose();
         });
     }
 
@@ -225,11 +243,13 @@ public sealed partial class EditorWindow
         return _document.HasUnsavedChanges;
     }
 
+    /// <summary>Saves, closes, then runs <paramref name="afterSave"/>; while file work is busy, waits
+    /// for it to end.</summary>
     internal void SaveThenClose(Action? afterSave)
     {
         _closeAfterSave = true;
         _afterCloseSave = afterSave;
-        RunFileAction(Save);
+        if (!_fileBusy) RunFileAction(Save);
     }
 
     internal bool RequestClose(Action? afterSave = null)

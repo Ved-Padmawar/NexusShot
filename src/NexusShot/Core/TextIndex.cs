@@ -40,10 +40,12 @@ public sealed class TextIndex
         Generation++;
     }
 
-    /// <summary>Drops entries for captures no longer in <paramref name="paths"/>.</summary>
-    public void Retain(IEnumerable<string> paths)
+    /// <summary>Drops entries for captures no longer in <paramref name="paths"/>; true when any went.</summary>
+    public bool Retain(IEnumerable<string> paths)
     {
         var live = paths.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in _entries.Keys.Where(path => !live.Contains(path)).ToList()) _entries.Remove(path);
+        var gone = _entries.Keys.Where(path => !live.Contains(path)).ToList();
+        foreach (var path in gone) _entries.Remove(path);
+        return gone.Count > 0;
     }
 }

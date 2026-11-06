@@ -62,6 +62,7 @@ public sealed class App : IDisposable
 
         // The watcher sees only later changes; this picks up captures already in the folder.
         SyncHistory();
+        _ = Task.Run(ExportRequest.ClearExpiredShares);
 
         // Rewrites a Run entry from an older build, which had no --startup flag.
         if (_settings.StartWithWindows) Startup.Set(true);
@@ -87,16 +88,16 @@ public sealed class App : IDisposable
         application.Run();
     }
 
-    /// <summary>Returns true when the message was ours; a handled message answers 0.</summary>
-    private bool OnMessage(uint message, long wParam, long lParam)
+    /// <summary>The answer to a message that was ours, or null to leave it to the window.</summary>
+    private long? OnMessage(uint message, long wParam, long lParam)
     {
         // Unsaved edits hold a shutdown: saving would overwrite files the user never chose to save.
         if (message == SessionLifetime.WM_QUERYENDSESSION)
         {
             var unsaved = _pipeline.UnsavedEditors;
-            if (unsaved == 0) return false;
+            if (unsaved == 0) return null;
             SessionLifetime.BlockEnd(_main.Handle, unsaved == 1 ? "An open editor has unsaved changes." : $"{unsaved} open editors have unsaved changes.");
-            return true;
+            return 0;
         }
 
         // No Exit runs when the session ends, so write out what it would.
@@ -110,27 +111,28 @@ public sealed class App : IDisposable
                 _storage.SaveTextIndex(_texts);
                 Log.Info("app.session_end");
             }
-            return false;
+            return null;
         }
 
         if (message == Platform.SingleInstance.WM_COPYDATA)
         {
             // Read now, while the sender's buffer lives; handled after returning, which frees the sender.
-            if (Platform.SingleInstance.ReadForwarded(lParam) is { } request) _main.Post(() => Handle(request));
-            return true;
+            return Platform.SingleInstance.ReadForwarded(lParam) is { } request && Accept(request)
+                ? Platform.SingleInstance.Accepted
+                : 0;
         }
 
         // A second launch asking us to come to the front.
         if (Platform.SingleInstance.WM_SHOW_EXISTING != 0 && message == Platform.SingleInstance.WM_SHOW_EXISTING)
         {
             ShowMain();
-            return true;
+            return 0;
         }
 
         if (TrayIcon.WM_TASKBARCREATED != 0 && message == TrayIcon.WM_TASKBARCREATED)
         {
             _tray.Add();
-            return true;
+            return 0;
         }
 
         if (message == TrayIcon.WM_TRAY)
@@ -139,30 +141,30 @@ public sealed class App : IDisposable
             {
                 case TrayIcon.Command.CaptureRegion:
                     Capture(CaptureMode.Region);
-                    return true;
+                    return 0;
                 case TrayIcon.Command.CaptureFullScreen:
                     Capture(CaptureMode.FullScreen);
-                    return true;
+                    return 0;
                 case TrayIcon.Command.CaptureWindow:
                     Capture(CaptureMode.ActiveWindow);
-                    return true;
+                    return 0;
                 case TrayIcon.Command.TimedCapture:
                     TimedCapture();
-                    return true;
+                    return 0;
                 case TrayIcon.Command.CaptureText:
                     CaptureText();
-                    return true;
+                    return 0;
                 case TrayIcon.Command.RestoreClosed:
                     _pipeline.ToggleRestoreStrip();
-                    return true;
+                    return 0;
                 case TrayIcon.Command.OpenMain:
                     ShowMain();
-                    return true;
+                    return 0;
                 case TrayIcon.Command.Exit:
                     Exit();
-                    return true;
+                    return 0;
                 default:
-                    return true;
+                    return 0;
             }
         }
 
@@ -172,28 +174,28 @@ public sealed class App : IDisposable
             {
                 case HotkeyId.CaptureRegion:
                     Capture(CaptureMode.Region);
-                    return true;
+                    return 0;
                 case HotkeyId.CaptureFullScreen:
                     Capture(CaptureMode.FullScreen);
-                    return true;
+                    return 0;
                 case HotkeyId.CaptureActiveWindow:
                     Capture(CaptureMode.ActiveWindow);
-                    return true;
+                    return 0;
                 case HotkeyId.OpenMainWindow:
                     ShowMain();
-                    return true;
+                    return 0;
                 case HotkeyId.RestoreClosed:
                     _pipeline.ToggleRestoreStrip();
-                    return true;
+                    return 0;
                 case HotkeyId.CaptureText:
                     CaptureText();
-                    return true;
+                    return 0;
                 case HotkeyId.TimedCapture:
                     TimedCapture();
-                    return true;
+                    return 0;
             }
         }
-        return false;
+        return null;
     }
 
     /// <summary>Opens images in the editor: from Explorer, or handed over by a second launch.</summary>
@@ -243,12 +245,30 @@ public sealed class App : IDisposable
     private void Handle(LaunchRequest request)
     {
         if (request.File is { } file) Open([file]);
-        switch (request.Capture)
+        if (request.Capture is { } capture && TryBeginCapture()) RunCapture(capture);
+    }
+
+    /// <summary>Takes a forwarded request, answering whether it was taken. A capture claims the slot
+    /// before the sender is answered, so one that would be dropped is refused instead.</summary>
+    private bool Accept(LaunchRequest request)
+    {
+        if (request.Capture is { } capture)
         {
-            case CaptureCommand.Region: Capture(CaptureMode.Region); break;
-            case CaptureCommand.Window: Capture(CaptureMode.ActiveWindow); break;
-            case CaptureCommand.Screen: Capture(CaptureMode.FullScreen); break;
-            case CaptureCommand.Text: CaptureText(); break;
+            if (!TryBeginCapture()) return false;
+            _main.Post(() => RunCapture(capture));
+        }
+        if (request.File is { } file) _main.Post(() => Open([file]));
+        return true;
+    }
+
+    private void RunCapture(CaptureCommand capture)
+    {
+        switch (capture)
+        {
+            case CaptureCommand.Region: RunCapture(CaptureMode.Region, PickerMode.Region); break;
+            case CaptureCommand.Window: RunCapture(CaptureMode.ActiveWindow, PickerMode.Region); break;
+            case CaptureCommand.Screen: RunCapture(CaptureMode.FullScreen, PickerMode.Region); break;
+            case CaptureCommand.Text: RunCapture(CaptureMode.Region, PickerMode.Text); break;
         }
     }
 
@@ -275,12 +295,23 @@ public sealed class App : IDisposable
     /// <summary>Picks something to read. The picker can still be switched to take an image instead.</summary>
     private void CaptureText() => Capture(CaptureMode.Region, PickerMode.Text);
 
-    /// <summary>The picker, for a region capture, opens in <paramref name="picker"/>'s mode; its result
-    /// is filed, or read when the picker ended in Text.</summary>
     private void Capture(CaptureMode mode, PickerMode picker)
     {
-        if (_captureRunning) return;
+        if (TryBeginCapture()) RunCapture(mode, picker);
+    }
+
+    /// <summary>Claims the one capture slot; false while a capture is under way.</summary>
+    private bool TryBeginCapture()
+    {
+        if (_captureRunning) return false;
         _captureRunning = true;
+        return true;
+    }
+
+    /// <summary>Runs a capture that holds the slot. The picker, for a region capture, opens in
+    /// <paramref name="picker"/>'s mode; its result is filed, or read when the picker ended in Text.</summary>
+    private void RunCapture(CaptureMode mode, PickerMode picker)
+    {
         try
         {
             // Sampled before focus changes; a pointer drawn into a text capture would only hide letters.
@@ -530,11 +561,12 @@ public sealed class App : IDisposable
         });
     }
 
-    /// <summary>Queues every capture whose text is unread or out of date, newest first.</summary>
+    /// <summary>Forgets the text of captures that are gone - with reading off too, or it would outlive
+    /// the image - then queues every capture whose text is unread or out of date, newest first.</summary>
     private void ReadNewText()
     {
+        if (_texts.Retain(_history.Select(item => item.FilePath))) _storage.SaveTextIndex(_texts);
         if (!_settings.FindTextInCaptures) return;
-        _texts.Retain(_history.Select(item => item.FilePath));
         foreach (var item in _history)
         {
             try
@@ -548,10 +580,12 @@ public sealed class App : IDisposable
     /// <summary>Saved at most every few seconds while a backlog is read, and at exit.</summary>
     private DateTime _textsSaved;
 
+    /// <summary>Stores a finished read, unless settings changed or the capture was deleted meanwhile:
+    /// a late read would bring back text the delete removed.</summary>
     private void Indexed(string path, FileVersion version, string? language, string text)
     {
-        // A read begun under other settings is dropped; a language change already queued it again.
-        if (_disposed || !_settings.FindTextInCaptures || language != _settings.OcrLanguage) return;
+        if (_disposed || !_settings.FindTextInCaptures || language != _settings.OcrLanguage
+            || !_history.Any(item => string.Equals(item.FilePath, path, StringComparison.OrdinalIgnoreCase))) return;
         _texts.Set(path, version, language, text);
         if (text.Length > 0) _main.Invalidate();
         if (DateTime.UtcNow - _textsSaved < TimeSpan.FromSeconds(10)) return;

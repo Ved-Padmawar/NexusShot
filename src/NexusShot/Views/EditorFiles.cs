@@ -74,19 +74,22 @@ public sealed record ExportRequest(EditorDocument Document, DecodedImage Pixels,
     /// </summary>
     public string SaveShareCopy()
     {
-        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "NexusShot share");
-        ClearExpiredShares(root);
-        var folder = Directory.CreateDirectory(System.IO.Path.Combine(root, Guid.NewGuid().ToString("N"))).FullName;
+        ClearExpiredShares();
+        var folder = Directory.CreateDirectory(System.IO.Path.Combine(ShareRoot, Guid.NewGuid().ToString("N"))).FullName;
 
         var path = System.IO.Path.Combine(folder, System.IO.Path.GetFileNameWithoutExtension(Source) + ".png");
         Exporter.Save(Document, Pixels, path);
         return path;
     }
 
-    private static void ClearExpiredShares(string root)
+    private static string ShareRoot => System.IO.Path.Combine(System.IO.Path.GetTempPath(), "NexusShot share");
+
+    /// <summary>Deletes shares past their lifetime. Run at startup too, or the last share's copy would
+    /// stay in temp for good.</summary>
+    public static void ClearExpiredShares()
     {
-        if (!Directory.Exists(root)) return;
-        foreach (var share in new DirectoryInfo(root).EnumerateDirectories())
+        if (!Directory.Exists(ShareRoot)) return;
+        foreach (var share in new DirectoryInfo(ShareRoot).EnumerateDirectories())
         {
             if (DateTime.UtcNow - share.CreationTimeUtc < ShareLifetime) continue;
             try { share.Delete(recursive: true); }

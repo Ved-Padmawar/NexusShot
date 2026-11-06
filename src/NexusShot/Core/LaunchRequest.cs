@@ -29,6 +29,18 @@ public sealed record LaunchRequest(string? File = null, CaptureCommand? Capture 
             : new LaunchRequest(AtSignIn: atSignIn);
     }
 
+    /// <summary>A file another launch handed over, or null when it is not a usable path. Any process can
+    /// send one, and a NUL that reached the history would fail every later scan.</summary>
+    public static LaunchRequest? ForwardedFile(string path) =>
+        ImageFiles.IsUsablePath(path) ? new LaunchRequest(File: path) : null;
+
+    /// <summary>A capture another launch handed over, or null. Defined values only: Enum.TryParse also
+    /// accepts a bare number.</summary>
+    public static LaunchRequest? ForwardedCapture(string name) =>
+        Enum.TryParse<CaptureCommand>(name, out var capture) && Enum.IsDefined(capture)
+            ? new LaunchRequest(Capture: capture)
+            : null;
+
     /// <summary>Marks a launch as Windows', not the user's: a sign-in launch stays in the tray.</summary>
     public const string Startup = "--startup";
 

@@ -30,7 +30,8 @@ public sealed partial class MainWindow
     private static readonly string[] PeriodNames = ["All time", "Today", "Last 7 days", "Last 30 days"];
     private readonly Dropdown _periodBox = new();
 
-    private List<LibraryGroups.Group> Groups() => LibraryGroups.Build(_history, _filter, DateTime.Now, Texts.TextOf);
+    private List<LibraryGroups.Group> Groups() => LibraryGroups.Build(_history, _filter, DateTime.Now,
+        _settings.FindTextInCaptures ? Texts.TextOf : null);
 
     private void Filter(LibraryFilter filter)
     {
@@ -254,7 +255,8 @@ public sealed partial class MainWindow
         layers.PlaceScroll(bounds, (int)bounds.Width, (int)Math.Ceiling(contentHeight), scroll);
         var origin = new Point(bounds.X, bounds.Y - scroll);
 
-        var signature = HashCode.Combine(bounds.Width, _scale, theme, _filter, _filter.Query.Length > 0 ? Texts.Generation : 0);
+        var signature = HashCode.Combine(bounds.Width, _scale, theme, _filter, _settings.FindTextInCaptures,
+            _filter.Query.Length > 0 ? Texts.Generation : 0);
         if (signature != _gridSignature)
         {
             _bands.Clear();

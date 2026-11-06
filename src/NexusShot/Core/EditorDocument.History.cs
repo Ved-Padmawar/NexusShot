@@ -1,7 +1,8 @@
 namespace NexusShot.Core;
 
 /// <summary>Undo and redo: whole-document snapshots, with the creation of an annotation and its
-/// first edits folded into one step.</summary>
+/// first edits folded into one step. Snapshots share the stored copy of every annotation a step left
+/// alone, so history grows with what each step changed, not with the whole document.</summary>
 public sealed partial class EditorDocument
 {
     public void Undo()
@@ -54,14 +55,33 @@ public sealed partial class EditorDocument
         _creationHistory = null;
     }
 
-    private DocumentSnapshot Snapshot() => new(_annotations.Select(a => a.Clone()).ToList(), CropBounds, PendingCrop, Revision);
+    /// <summary>The newest snapshot's stored copies by id, for the next snapshot to reuse.</summary>
+    private Dictionary<Guid, Annotation> _stored = [];
 
+    private DocumentSnapshot Snapshot()
+    {
+        var annotations = _annotations
+            .Select(live => _stored.TryGetValue(live.Id, out var copy) && copy.SameContent(live) ? copy : live.Clone())
+            .ToList();
+        Remember(annotations);
+        return new(annotations, CropBounds, PendingCrop, Revision);
+    }
+
+    private void Remember(IReadOnlyList<Annotation> stored)
+    {
+        _stored = new Dictionary<Guid, Annotation>(stored.Count);
+        foreach (var copy in stored) _stored[copy.Id] = copy;
+    }
+
+    /// <summary>Restores as fresh clones: stored copies are shared, so one edited live would change
+    /// every step holding it.</summary>
     private void Restore(DocumentSnapshot snapshot)
     {
         _creationHistory = null;
         EndAdjustment();
         var selectedId = Selected?.Id;
-        ReplaceAnnotations(snapshot.Annotations);
+        ReplaceAnnotations(snapshot.Annotations.Select(stored => stored.Clone()).ToList());
+        Remember(snapshot.Annotations);
         CropBounds = snapshot.CropBounds;
         PendingCrop = snapshot.PendingCrop;
         Revision = snapshot.Revision;

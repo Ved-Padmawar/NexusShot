@@ -13,8 +13,9 @@ internal static partial class Program
     [LibraryImport("ole32.dll")]
     private static partial void OleUninitialize();
 
+    /// <summary>Exits 1 when the running instance refused a forwarded request, so a script knows.</summary>
     [STAThread]
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
         // A crash in a windowed app has nowhere to print, and the runtime's own handler needs a
         // TaskDialog to report it. Write the fault somewhere it can actually be read.
@@ -37,19 +38,23 @@ internal static partial class Program
                     Platform.Monitors.DpiScaleUnderCursor(preview.Handle), 0);
                 preview.Show();
                 application.Run();
-                return;
+                return 0;
             }
 
             // Headless render check: exercises the real renderer and exporter with no window.
             if (args.Length >= 2 && args[0] == "--render-test")
             {
                 RenderTest.Run(args[1]);
-                return;
+                return 0;
             }
 
             // Files and captures go to the running instance, which owns the hotkeys, history and cards.
             var request = Core.LaunchRequest.Parse(args, File.Exists);
-            if (!Platform.SingleInstance.Claim(request)) return;
+            switch (Platform.SingleInstance.Claim(request))
+            {
+                case Platform.SingleInstance.ClaimResult.Handed: return 0;
+                case Platform.SingleInstance.ClaimResult.Refused: return 1;
+            }
 
             try
             {
@@ -60,6 +65,7 @@ internal static partial class Program
             {
                 Platform.SingleInstance.Release();
             }
+            return 0;
         }
         catch (Exception exception)
         {

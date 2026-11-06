@@ -81,7 +81,8 @@ public class LibraryFilterTests
         Assert.Equal("hello", index.TextOf(@"C:\shots\a.png"));
 
         var generation = index.Generation;
-        index.Retain([]);
+        Assert.True(index.Retain([]));
+        Assert.False(index.Retain([]));
         Assert.Null(index.TextOf(@"C:\shots\a.png"));
         Assert.Equal(generation, index.Generation);
     }

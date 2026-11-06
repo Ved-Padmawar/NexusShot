@@ -25,17 +25,25 @@ public static partial class SingleInstance
     private const nint OpenFileTag = 0x4E53_4F46;
     private const nint CaptureTag = 0x4E53_4341;
 
+    /// <summary>The running instance's answer to a request it took; any other answer is a refusal.</summary>
+    public const long Accepted = 1;
+
+    /// <summary>The longest path Windows accepts; no request is longer.</summary>
+    private const uint MaxForwardedChars = 32_767;
+
     /// <summary>Broadcast by a second instance; the running one shows its window.</summary>
     public static readonly uint WM_SHOW_EXISTING = RegisterWindowMessageW("NexusShot.ShowExisting");
 
     private static Mutex? _mutex;
 
+    public enum ClaimResult { Owned, Handed, Refused }
+
     /// <summary>
-    /// True when this process is the one that gets to run. False means another instance already has
-    /// it, and has been handed <paramref name="request"/>'s file or capture, or asked to come to the
-    /// front - the caller should exit.
+    /// Owned when this process gets to run. Otherwise the running instance was handed
+    /// <paramref name="request"/>'s file or capture - Refused when it did not take it - or asked to
+    /// come to the front.
     /// </summary>
-    public static bool Claim(LaunchRequest request)
+    public static ClaimResult Claim(LaunchRequest request)
     {
         // Ownership comes from the wait, not the constructor: an instance that was killed leaves the
         // mutex abandoned but still named, so construction reports created: false and only the wait
@@ -47,27 +55,28 @@ public static partial class SingleInstance
         try { owned = _mutex.WaitOne(TimeSpan.Zero, exitContext: false); }
         catch (AbandonedMutexException) { owned = true; }
 
-        if (owned) return true;
+        if (owned) return ClaimResult.Owned;
 
         _mutex.Dispose();
         _mutex = null;
 
-        var handed = request switch
+        var accepted = request switch
         {
             { File: { } file } => Send(OpenFileTag, file),
             { Capture: { } capture } => Send(CaptureTag, capture.ToString()),
-            _ => false,
+            _ => (bool?)null,
         };
-        if (!handed && WM_SHOW_EXISTING != 0)
+        if (accepted is null && WM_SHOW_EXISTING != 0)
             PostMessageW(HWND_BROADCAST, WM_SHOW_EXISTING, IntPtr.Zero, IntPtr.Zero);
 
-        return false;
+        return accepted == false ? ClaimResult.Refused : ClaimResult.Handed;
     }
 
     /// <summary>
     /// Hands a request to the running instance's main window. A launch that races the first one's
     /// startup finds no window yet, so it waits briefly for one rather than dropping the file. The
     /// send times out, so a hung first instance cannot hang Explorer's "Open with" along with it.
+    /// True only when the running instance answered that it took the request.
     /// </summary>
     private static unsafe bool Send(nint tag, string text)
     {
@@ -87,24 +96,23 @@ public static partial class SingleInstance
         {
             var data = new COPYDATASTRUCT { dwData = tag, cbData = (uint)(text.Length * 2), lpData = (IntPtr)characters };
             return SendMessageTimeoutW(window, WM_COPYDATA, IntPtr.Zero, (IntPtr)(&data),
-                SMTO_ABORTIFHUNG, 5000, out _) != IntPtr.Zero;
+                SMTO_ABORTIFHUNG, 5000, out var reply) != IntPtr.Zero && reply == Accepted;
         }
     }
 
     private const uint SMTO_ABORTIFHUNG = 0x0002;
 
-    /// <summary>The request in a WM_COPYDATA another launch sent, or null if it is not one.</summary>
+    /// <summary>The request in a WM_COPYDATA another launch sent, or null if it is not one. Any
+    /// process can send the message, so tag and size are checked before a string is made of it.</summary>
     public static unsafe LaunchRequest? ReadForwarded(long lParam)
     {
         var data = (COPYDATASTRUCT*)lParam;
         if (data == null || data->lpData == IntPtr.Zero) return null;
+        if (data->dwData is not (OpenFileTag or CaptureTag)) return null;
+        if (data->cbData % 2 != 0 || data->cbData / 2 > MaxForwardedChars) return null;
+
         var text = new string((char*)data->lpData, 0, (int)(data->cbData / 2));
-        return data->dwData switch
-        {
-            OpenFileTag => new LaunchRequest(File: text),
-            CaptureTag when Enum.TryParse<CaptureCommand>(text, out var capture) => new LaunchRequest(Capture: capture),
-            _ => null,
-        };
+        return data->dwData == OpenFileTag ? LaunchRequest.ForwardedFile(text) : LaunchRequest.ForwardedCapture(text);
     }
 
     /// <summary>Releases ownership before disposing. Disposing alone leaves the mutex abandoned, and

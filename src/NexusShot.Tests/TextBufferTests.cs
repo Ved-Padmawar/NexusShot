@@ -43,4 +43,54 @@ public class TextBufferTests
 
         Assert.Equal("a", text.Text);
     }
+
+    [Fact]
+    public void UndoAndRedoWalkEveryStepOfEditsMadeAllOverTheText()
+    {
+        var text = new TextBuffer("");
+        List<string> states = [""];
+        for (var i = 0; i < 60; i++)
+        {
+            text.MoveTo(i * 7 % (text.Text.Length + 1));
+            text.Insert(((char)('a' + i % 3)).ToString());
+            states.Add(text.Text);
+        }
+
+        for (var i = states.Count - 1; i > 0; i--)
+        {
+            Assert.Equal(states[i], text.Text);
+            text.Undo();
+        }
+        Assert.Equal("", text.Text);
+        Assert.False(text.CanUndo);
+        for (var i = 1; i < states.Count; i++)
+        {
+            text.Redo();
+            Assert.Equal(states[i], text.Text);
+        }
+    }
+
+    [Fact]
+    public void UndoRestoresTheTextFormattingAndCaretOfEachStep()
+    {
+        var text = new TextBuffer("");
+        text.Insert("hello");
+        text.Backspace();
+        text.Backspace();
+        text.Toggle(TextStyle.Bold);
+
+        text.Undo();
+        Assert.Equal("hel", text.Text);
+        Assert.Equal(TextStyle.None, text.ActiveStyle);
+        text.Undo();
+        Assert.Equal("hello", text.Text);
+        Assert.Equal(5, text.Caret);
+        text.Undo();
+        Assert.Equal("", text.Text);
+        text.Redo();
+        text.Redo();
+        text.Redo();
+        Assert.Equal("hel", text.Text);
+        Assert.Equal(TextStyle.Bold, text.ActiveStyle);
+    }
 }

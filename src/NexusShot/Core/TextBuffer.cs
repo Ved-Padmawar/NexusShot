@@ -35,47 +35,88 @@ public class TextBuffer(string text, TextFormat format = default, TextRun[]? run
     /// <summary>Solid while typing, rather than winking out mid-keystroke.</summary>
     private void Wake() => _caretEpoch = Environment.TickCount64;
 
-    private readonly Stack<(string Text, TextFormat Format, TextRun[] Runs, int Caret, int Anchor)> _undo = new();
-    private readonly Stack<(string Text, TextFormat Format, TextRun[] Runs, int Caret, int Anchor)> _redo = new();
+    /// <summary>An undo or redo step: <paramref name="Text"/> replaces the <paramref name="Length"/>
+    /// characters at <paramref name="Start"/>. Only the changed span is kept; whole copies made memory
+    /// grow with the text's length times the number of steps.</summary>
+    private readonly record struct Step(int Start, int Length, string Text, TextFormat Format, TextRun[] Runs,
+        int Caret, int Anchor);
+
+    private readonly Stack<Step> _undo = new();
+    private readonly Stack<Step> _redo = new();
+
+    /// <summary>The state before the run under way, held whole until the run ends and its changed span
+    /// is known. Set exactly while <see cref="_lastEdit"/> is not None.</summary>
+    private Step? _runStart;
 
     private EditKind _lastEdit = EditKind.None;
 
     private enum EditKind { None, Insert, Delete, Style, Resize }
 
-    public bool CanUndo => _undo.Count > 0;
+    public bool CanUndo => _runStart is not null || _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
 
-    /// <summary>Snapshots before a mutation. Consecutive edits of the same kind coalesce, so a run
-    /// of typing is one undo entry rather than one per keystroke.</summary>
+    /// <summary>Starts an undo step before a mutation. Consecutive edits of the same kind coalesce, so
+    /// a run of typing is one undo entry rather than one per keystroke.</summary>
     private void PushUndo(EditKind kind)
     {
-        if (kind != _lastEdit || _undo.Count == 0)
-            _undo.Push((Text, Format, Runs, Caret, Anchor));
-
-        _lastEdit = kind;
+        if (kind != _lastEdit)
+        {
+            BreakRun();
+            _runStart = new Step(0, 0, Text, Format, Runs, Caret, Anchor);
+            _lastEdit = kind;
+        }
         _redo.Clear();
     }
 
-    /// <summary>Moving the caret ends the run, so the next edit starts a fresh entry.</summary>
-    private void BreakRun() => _lastEdit = EditKind.None;
+    /// <summary>Files the run as one step. Moving the caret ends a run, so the next edit starts a fresh
+    /// entry.</summary>
+    private void BreakRun()
+    {
+        if (_runStart is { } start) _undo.Push(StepBackTo(start));
+        _runStart = null;
+        _lastEdit = EditKind.None;
+    }
+
+    /// <summary>The step back to <paramref name="target"/>: what lies between the shared prefix and
+    /// suffix.</summary>
+    private Step StepBackTo(Step target)
+    {
+        var prefix = Text.AsSpan().CommonPrefixLength(target.Text);
+        var limit = Math.Min(Text.Length, target.Text.Length) - prefix;
+        var suffix = 0;
+        while (suffix < limit && Text[^(suffix + 1)] == target.Text[^(suffix + 1)]) suffix++;
+        return target with
+        {
+            Start = prefix,
+            Length = Text.Length - prefix - suffix,
+            Text = target.Text.Substring(prefix, target.Text.Length - prefix - suffix),
+        };
+    }
+
+    /// <summary>Applies <paramref name="step"/> and returns the step that reverses it.</summary>
+    private Step Apply(Step step)
+    {
+        var reverse = new Step(step.Start, step.Text.Length, Text.Substring(step.Start, step.Length), Format, Runs, Caret, Anchor);
+        Text = string.Concat(Text.AsSpan(0, step.Start), step.Text, Text.AsSpan(step.Start + step.Length));
+        (Format, Runs, Caret, Anchor) = (step.Format, step.Runs, step.Caret, step.Anchor);
+        return reverse;
+    }
 
     public void Undo()
     {
+        BreakRun();
         if (!_undo.TryPop(out var previous)) return;
 
-        _redo.Push((Text, Format, Runs, Caret, Anchor));
-        (Text, Format, Runs, Caret, Anchor) = previous;
-        BreakRun();
+        _redo.Push(Apply(previous));
         Wake();
     }
 
     public void Redo()
     {
+        BreakRun();
         if (!_redo.TryPop(out var next)) return;
 
-        _undo.Push((Text, Format, Runs, Caret, Anchor));
-        (Text, Format, Runs, Caret, Anchor) = next;
-        BreakRun();
+        _undo.Push(Apply(next));
         Wake();
     }
 

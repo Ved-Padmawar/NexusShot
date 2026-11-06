@@ -149,4 +149,67 @@ public class UndoHistoryTests
         document.ClearCrop();
         Assert.False(document.CanUndo);
     }
+
+    [Fact]
+    public void EditingAnAnnotationAfterUndoLeavesTheStepsThatShareItIntact()
+    {
+        var document = NewDocument();
+        DrawRectangle(document, 100, 100);
+        DrawRectangle(document, 300, 300);
+        document.Undo();
+
+        document.SelectAnnotation(document.Annotations[0]);
+        document.NudgeSelected(10, 0);
+        document.EndAdjustment();
+
+        document.Undo();
+        Assert.Equal(new Point(100, 100), Assert.Single(document.Annotations).Start);
+        document.Undo();
+        Assert.Empty(document.Annotations);
+        document.Redo();
+        document.Redo();
+        Assert.Equal(new Point(110, 100), Assert.Single(document.Annotations).Start);
+    }
+
+    [Fact]
+    public void SameContentNoticesAChangeToEveryCopiedField()
+    {
+        // Every field a caller can set. A new one fails here until SameContent compares it.
+        Assert.Equal(
+            ["ColorHex", "CounterRun", "CounterValue", "Dashed", "End", "Erasures", "Fill", "Format", "Id",
+             "Points", "Runs", "Start", "StrokeThickness", "Text", "Tool"],
+            typeof(Annotation).GetProperties().Where(p => p.SetMethod?.IsPublic == true).Select(p => p.Name).Order());
+
+        Action<Annotation>[] changes =
+        [
+            a => a.Start = new Point(1, 2),
+            a => a.End = new Point(3, 4),
+            a => a.Points.Add(new Point(5, 6)),
+            a => a.Points[0] = new Point(9, 9),
+            a => a.Erasures.Add(new EraserMask { Radius = 2 }),
+            a => a.Erasures[0].Points.Add(new Point(1, 1)),
+            a => a.Text = "changed",
+            a => a.CounterValue = 7,
+            a => a.CounterRun = 3,
+            a => a.Fill = ShapeFill.Solid,
+            a => a.Dashed = true,
+            a => a.ColorHex = "#00FF00",
+            a => a.StrokeThickness = 9,
+            a => a.Format = new TextFormat(TextStyle.Bold, 30),
+            a => a.Runs = [new TextRun(1, new TextFormat(TextStyle.Italic, 12))],
+        ];
+        foreach (var change in changes)
+        {
+            var original = new Annotation
+            {
+                Tool = EditorTool.Pen, Points = [new Point(0, 0)], Erasures = [new EraserMask { Radius = 1 }],
+            };
+            var copy = original.Clone();
+            Assert.True(copy.SameContent(original));
+            change(original);
+            Assert.False(copy.SameContent(original));
+        }
+        var annotation = new Annotation { Tool = EditorTool.Rectangle };
+        Assert.False(annotation.Duplicate().SameContent(annotation));
+    }
 }

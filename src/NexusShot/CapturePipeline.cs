@@ -136,13 +136,13 @@ public sealed class CapturePipeline : IDisposable
     public int UnsavedEditors => _editors.All.Count(editor => editor.HasUnsavedChanges());
 
     /// <summary>Closes every editor without asking: each saves first when <paramref name="save"/> is
-    /// set, or drops its changes. A save that fails stops here, leaving that editor open with its
-    /// error, and <paramref name="completed"/> does not run.</summary>
+    /// set, or drops its changes; saving also waits for file work under way, such as a Save as. A save
+    /// that fails stops here, leaving that editor open with its error.</summary>
     public void CloseEditors(bool save, Action completed)
     {
         foreach (var editor in _editors.All.ToArray())
         {
-            if (save && editor.HasUnsavedChanges())
+            if (save && (editor.IsFileBusy || editor.HasUnsavedChanges()))
             {
                 editor.SaveThenClose(() => CloseEditors(save, completed));
                 return;

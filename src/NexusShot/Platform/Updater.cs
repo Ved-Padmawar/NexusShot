@@ -82,13 +82,13 @@ public static class Updater
     /// <summary>
     /// Verifies the installer again, then runs it; the caller exits straight after, so it can replace
     /// the running exe. The prompt may have sat open for hours with the file in a user-writable
-    /// folder, so the check at download time does not vouch for what runs now.
+    /// folder, so the check at download time does not vouch for what runs now. The file stays locked
+    /// against writes and deletes until the installer starts, so the verified bytes cannot be swapped.
     /// </summary>
     public static void Install(string installer)
     {
-        byte[] digest;
-        using (var file = File.OpenRead(installer)) digest = SHA256.HashData(file);
-        if (!Updates.IsSigned(digest, File.ReadAllText(SignaturePath(installer))))
+        using var file = new FileStream(installer, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (!Updates.IsSigned(SHA256.HashData(file), File.ReadAllText(SignaturePath(installer))))
             throw new InvalidDataException("the installer changed after it was verified");
 
         Process.Start(new ProcessStartInfo(installer, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1")

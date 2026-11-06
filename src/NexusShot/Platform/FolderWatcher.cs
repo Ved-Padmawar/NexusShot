@@ -8,14 +8,24 @@ namespace NexusShot.Platform;
 /// Events are coalesced onto a short timer rather than acted on individually: a single save can
 /// raise Created plus two Changed, and a rename arrives as Deleted-then-Created. Reacting to each
 /// one would rebuild the history several times for one user action.
+///
+/// The folder's own name is watched in its parent as well. A watcher's handle follows the directory,
+/// not the path: renamed away, the folder is still watched under its new name, and a folder created
+/// at the path again would never be seen.
 /// </summary>
 public sealed class FolderWatcher : IDisposable
 {
     private readonly FileSystemWatcher _watcher;
+
+    /// <summary>Null for a drive root, which has no parent to be renamed in.</summary>
+    private readonly FileSystemWatcher? _parent;
+    private readonly string? _parentFolder;
+
     private readonly Timer _debounce;
     private readonly Timer _retry;
     private readonly string _folder;
     private readonly Action _changed;
+    private readonly Lock _gate = new();
     private volatile bool _disposed;
 
     public FolderWatcher(string folder, Action changed)
@@ -40,6 +50,16 @@ public sealed class FolderWatcher : IDisposable
         _watcher.Changed += OnChanged;
         _watcher.Error += OnError;
 
+        var trimmed = Path.TrimEndingDirectorySeparator(folder);
+        _parentFolder = Path.GetDirectoryName(trimmed);
+        if (!string.IsNullOrEmpty(_parentFolder))
+        {
+            _parent = new FileSystemWatcher { NotifyFilter = NotifyFilters.DirectoryName, Filter = Path.GetFileName(trimmed) };
+            _parent.Created += OnFolderMoved;
+            _parent.Deleted += OnFolderMoved;
+            _parent.Renamed += OnFolderRenamed;
+        }
+
         TryStart();
     }
 
@@ -50,6 +70,10 @@ public sealed class FolderWatcher : IDisposable
     /// delegate instance, and -= would silently not match.</summary>
     private void OnRenamed(object? sender, RenamedEventArgs e) => Schedule();
 
+    private void OnFolderMoved(object? sender, FileSystemEventArgs e) => Rearm();
+
+    private void OnFolderRenamed(object? sender, RenamedEventArgs e) => Rearm();
+
     /// <summary>
     /// The watcher's internal buffer overflowed, or the handle was lost: the events it dropped are
     /// gone, so the folder is rescanned rather than trusted to keep arriving.
@@ -59,27 +83,43 @@ public sealed class FolderWatcher : IDisposable
     /// <summary>Restarts the watcher and rescans, as events may have been missed.</summary>
     private void Rearm()
     {
-        if (!_disposed && TryStart()) Schedule();
+        if (TryStart()) Schedule();
     }
 
-    /// <summary>Starts watching, or restarts. A network or removable folder can be gone for a while,
-    /// at launch or later, so a failed start tries again every few seconds until the folder is back.</summary>
+    /// <summary>Starts watching, or restarts, reopening the folder at its path. A network or removable
+    /// folder can be gone for a while, so a failed start retries every few seconds. Locked, as the
+    /// retry timer and both watchers call it from their own threads.</summary>
     private bool TryStart()
     {
+        lock (_gate)
+        {
+            if (_disposed) return false;
+            WatchParent();
+            try
+            {
+                _watcher.EnableRaisingEvents = false;
+                _watcher.Path = _folder;
+                _watcher.EnableRaisingEvents = true;
+                return true;
+            }
+            catch (Exception exception) when (exception is IOException or ArgumentException or UnauthorizedAccessException)
+            {
+                _retry.Change(5000, Timeout.Infinite);
+                return false;
+            }
+        }
+    }
+
+    /// <summary>Best effort: an unwatchable parent leaves the retry timer to notice a move.</summary>
+    private void WatchParent()
+    {
+        if (_parent is null || _parent.EnableRaisingEvents) return;
         try
         {
-            _watcher.EnableRaisingEvents = false;
-            _watcher.Path = _folder;
-            _watcher.EnableRaisingEvents = true;
-            return true;
+            _parent.Path = _parentFolder!;
+            _parent.EnableRaisingEvents = true;
         }
-        catch (ObjectDisposedException) { return false; }
-        catch (Exception exception) when (exception is IOException or ArgumentException or UnauthorizedAccessException)
-        {
-            try { _retry.Change(5000, Timeout.Infinite); }
-            catch (ObjectDisposedException) { }
-            return false;
-        }
+        catch (Exception exception) when (exception is IOException or ArgumentException or UnauthorizedAccessException) { }
     }
 
     /// <summary>Restarts the debounce. Events can arrive on a watcher thread while the owner is
@@ -100,17 +140,29 @@ public sealed class FolderWatcher : IDisposable
 
     public void Dispose()
     {
-        _disposed = true;
-        _watcher.EnableRaisingEvents = false;
+        lock (_gate)
+        {
+            _disposed = true;
+            _watcher.EnableRaisingEvents = false;
 
-        _watcher.Created -= OnChanged;
-        _watcher.Deleted -= OnChanged;
-        _watcher.Renamed -= OnRenamed;
-        _watcher.Changed -= OnChanged;
-        _watcher.Error -= OnError;
+            _watcher.Created -= OnChanged;
+            _watcher.Deleted -= OnChanged;
+            _watcher.Renamed -= OnRenamed;
+            _watcher.Changed -= OnChanged;
+            _watcher.Error -= OnError;
+            _watcher.Dispose();
 
-        _watcher.Dispose();
-        _debounce.Dispose();
-        _retry.Dispose();
+            if (_parent is not null)
+            {
+                _parent.EnableRaisingEvents = false;
+                _parent.Created -= OnFolderMoved;
+                _parent.Deleted -= OnFolderMoved;
+                _parent.Renamed -= OnFolderRenamed;
+                _parent.Dispose();
+            }
+
+            _debounce.Dispose();
+            _retry.Dispose();
+        }
     }
 }

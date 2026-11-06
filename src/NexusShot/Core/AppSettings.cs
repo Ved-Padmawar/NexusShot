@@ -273,7 +273,7 @@ public sealed class Storage
         settings.CaptureTextHotkey ??= defaults.CaptureTextHotkey;
         settings.TimedCaptureHotkey ??= defaults.TimedCaptureHotkey;
         settings.DropUnusableHotkeys();
-        if (!IsUsableFolder(settings.ScreenshotFolder)) settings.ScreenshotFolder = defaults.ScreenshotFolder;
+        if (!ImageFiles.IsUsablePath(settings.ScreenshotFolder)) settings.ScreenshotFolder = defaults.ScreenshotFolder;
         settings.PreviewDismissSeconds = Math.Clamp(settings.PreviewDismissSeconds, 0, 120);
         settings.TimedCaptureSeconds = Math.Clamp(settings.TimedCaptureSeconds, 1, 30);
         if (!Enum.IsDefined(settings.Theme)) settings.Theme = AppTheme.System;
@@ -288,12 +288,6 @@ public sealed class Storage
         return settings;
     }
 
-    /// <summary>An absolute path the file system accepts. An empty or relative one, or one holding a
-    /// character such as NUL, would fail every use of the folder, startup's included.</summary>
-    private static bool IsUsableFolder(string? folder) =>
-        !string.IsNullOrWhiteSpace(folder) && Path.IsPathFullyQualified(folder)
-        && folder.IndexOfAny(Path.GetInvalidPathChars()) < 0;
-
     /// <summary>Drops anything in a colour list that is not a colour, and caps its length.</summary>
     private static List<string> ValidColors(List<string>? colors, int limit) =>
         (colors ?? []).Where(hex => Palette.TryParse(hex, out _)).Distinct(StringComparer.OrdinalIgnoreCase)
@@ -302,10 +296,12 @@ public sealed class Storage
     public void SaveSettings(AppSettings settings) =>
         Write(SettingsPath, settings, AppJsonContext.Default.AppSettings);
 
+    /// <summary>Rows with unusable paths are dropped and logged, or one would fail every scan.</summary>
     public List<ScreenshotHistoryItem> LoadHistory()
     {
         var history = Read(HistoryPath, AppJsonContext.Default.ListScreenshotHistoryItem) ?? [];
-        history.RemoveAll(item => item is null || string.IsNullOrWhiteSpace(item.FilePath));
+        var rejected = history.RemoveAll(item => item is null || !ImageFiles.IsUsablePath(item.FilePath));
+        if (rejected > 0) Log.Info("history.rows_rejected", rejected);
         return history.DistinctBy(item => item.FilePath, StringComparer.OrdinalIgnoreCase).ToList();
     }
 

@@ -56,4 +56,15 @@ public class LaunchAndPasteTests
     {
         Assert.Throws<IOException>(() => ClipboardReader.AsBitmapFile(new byte[12]));
     }
+
+    [Fact]
+    public void AForwardedRequestIsCheckedLikeAnyOther()
+    {
+        Assert.Equal(@"C:\shots\a.png", LaunchRequest.ForwardedFile(@"C:\shots\a.png")?.File);
+        Assert.Null(LaunchRequest.ForwardedFile("C:\\sh\0ots\\a.png"));
+        Assert.Null(LaunchRequest.ForwardedFile("a.png"));
+        Assert.Equal(CaptureCommand.Screen, LaunchRequest.ForwardedCapture("Screen")?.Capture);
+        Assert.Null(LaunchRequest.ForwardedCapture("7"));
+        Assert.Null(LaunchRequest.ForwardedCapture("Everything"));
+    }
 }

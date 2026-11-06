@@ -34,6 +34,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
 OutputBaseFilename=NexusShot-{#AppVersion}
 SetupIconFile=..\assets\icons\nexus-shot.ico
+; Sizes per DPI. Not stretched, as the logo is square and the finish panel tall; unstretched
+; images are cropped, so no small image exceeds its slot.
+WizardSmallImageFile=..\assets\icons\nexus-shot-48.png,..\assets\icons\nexus-shot-64.png
+WizardImageFile=..\assets\icons\nexus-shot-128.png,..\assets\icons\nexus-shot-256.png
+WizardImageStretch=no
 UninstallDisplayIcon={app}\{#AppExeName}
 ; Installed apps shows the bare name; the version stays in its own column via AppVersion.
 UninstallDisplayName={#AppName}

@@ -270,6 +270,18 @@ public sealed class Annotation
     /// <summary>Deep copy, for undo snapshots: undo must restore values, not shared references.</summary>
     public Annotation Clone() => CloneAs(Id);
 
+    /// <summary>Whether <paramref name="other"/> holds every value <see cref="CloneAs"/> copies, so undo
+    /// can share one stored copy. A field copied but not compared would let undo restore a stale value.</summary>
+    public bool SameContent(Annotation other) =>
+        Id == other.Id && Tool == other.Tool && Start == other.Start && End == other.End
+        && Points.SequenceEqual(other.Points)
+        && Erasures.Count == other.Erasures.Count
+        && Erasures.Zip(other.Erasures).All(pair =>
+            pair.First.Radius == pair.Second.Radius && pair.First.Points.SequenceEqual(pair.Second.Points))
+        && Text == other.Text && CounterValue == other.CounterValue && CounterRun == other.CounterRun
+        && Fill == other.Fill && Dashed == other.Dashed && ColorHex == other.ColorHex
+        && StrokeThickness == other.StrokeThickness && Format == other.Format && Runs.SequenceEqual(other.Runs);
+
     /// <summary>A copy that is a new annotation in its own right, with its own identity.</summary>
     public Annotation Duplicate() => CloneAs(Guid.NewGuid());
 

@@ -111,9 +111,10 @@ public sealed partial class MainWindow : CaptionWindow
     /// <summary>
     /// Lets the app see raw messages first. The tray icon and the global hotkeys both post to this
     /// window's handle - it is the app's message pump - so the app needs a way in without the window
-    /// having to know what a tray or a hotkey is. Returning true marks the message handled.
+    /// having to know what a tray or a hotkey is. A value is the handled message's answer; null leaves
+    /// the message to the window.
     /// </summary>
-    public Func<uint, long, long, bool>? MessageIntercept { get; set; }
+    public Func<uint, long, long, long?>? MessageIntercept { get; set; }
 
     public MainWindow(Storage storage, AppSettings settings, List<ScreenshotHistoryItem> history)
         : base(Platform.SingleInstance.MainWindowTitle, Platform.SingleInstance.MainWindowClass)
@@ -388,9 +389,8 @@ public sealed partial class MainWindow : CaptionWindow
 
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
     {
-        if (MessageIntercept is { } intercept
-            && intercept(msg, (long)wParam.Value, lParam.Value.ToInt64()))
-            return new LRESULT { Value = 0 };
+        if (MessageIntercept?.Invoke(msg, (long)wParam.Value, lParam.Value.ToInt64()) is { } answer)
+            return new LRESULT { Value = (nint)answer };
 
         switch (msg)
         {
