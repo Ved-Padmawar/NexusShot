@@ -1,7 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
-using static NexusShot.Views.MouseMessage;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -11,27 +11,8 @@ namespace NexusShot.Views;
 /// interrupt what you were doing. Hovering reveals the actions; auto-dismiss pauses under the
 /// pointer and while pinned.
 /// </summary>
-public sealed partial class FloatingPreview : D2DRenderWindow
+public sealed partial class FloatingPreview : PopupWindow
 {
-    protected override void CreateRenderTarget()
-    {
-        RenderTarget?.Dispose();
-        RenderTarget = null;
-        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions, software: true);
-    }
-    // This tool window has no taskbar icon; avoid the dependency's per-window owned icon.
-    protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
-    private const uint WS_POPUP = 0x80000000;
-    private const uint WS_EX_TOPMOST = 0x00000008;
-    private const uint WS_EX_TOOLWINDOW = 0x00000080;
-    private const uint WS_EX_NOACTIVATE = 0x08000000;
-
-    private const uint WmMouseMove = 0x0200;
-    private const uint WmLButtonDown = 0x0201;
-    private const uint WmLButtonUp = 0x0202;
-    private const uint WmMouseLeave = 0x02A3;
-    private const uint WmTimer = 0x0113;
-
     private const nuint DismissTimerId = 1;
     private const nuint DismissAnimationTimerId = 2;
     private const nuint CopyFeedbackTimerId = 3;
@@ -51,7 +32,6 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private readonly QuickAccess _stack;
     private readonly QuickAccessCard _card;
 
-    private D2DResources? _resources;
     private Ui? _ui;
     private ImageSurface? _thumbnail;
 
@@ -69,9 +49,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
     private double S(double units) => units * _scale;
 
     public FloatingPreview(QuickAccess stack, QuickAccessCard card)
-        : base("NexusShot preview",
-            (WINDOW_STYLE)WS_POPUP,
-            (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
+        : base("NexusShot preview", WS_EX_NOACTIVATE)
     {
         _stack = stack;
         _card = card;
@@ -152,8 +130,7 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         using var target = renderTarget.AsRenderTarget();
         target.Object.SetDpi(96, 96);
 
-        _resources ??= new D2DResources(target);
-        _ui ??= new Ui(_resources);
+        _ui ??= new Ui(Resources(target));
         _ui.Theme = Theme;
 
         var client = ClientRect;
@@ -383,7 +360,6 @@ public sealed partial class FloatingPreview : D2DRenderWindow
             Math.Clamp((int)y, 0, decoded.Height));
     }
 
-
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
         _dispatch.Clear();
@@ -392,21 +368,11 @@ public sealed partial class FloatingPreview : D2DRenderWindow
         WindowInterop.KillTimer(Handle, DismissAnimationTimerId);
         _thumbnail?.Dispose();
         _thumbnailPixels?.Dispose();
-        _resources?.Dispose();
         _thumbnail = null;
         _thumbnailPixels = null;
-        _resources = null;
 
-        // Clear our reference as part of explicit window teardown.
-        RenderTarget?.Dispose();
-        RenderTarget = null;
         base.OnDestroyed(sender, e);
     }
-
-    private static readonly IntPtr HWND_TOPMOST = new(-1);
-    private const uint SWP_NOSIZE = 0x0001;
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private const uint SWP_SHOWWINDOW = 0x0040;
 
     private const int GWL_EXSTYLE = -20;
     private const nint WS_EX_LAYERED = 0x00080000;

@@ -1,7 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
-using static NexusShot.Views.MouseMessage;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -13,31 +13,12 @@ namespace NexusShot.Views;
 /// before the window appears, drawn full-screen. Sampling the snapshot rather than the live screen
 /// means the loupe can never sample itself.
 /// </summary>
-public sealed unsafe class ColorDropper : D2DRenderWindow
+public sealed unsafe class ColorDropper : PopupWindow
 {
-    protected override void CreateRenderTarget()
-    {
-        RenderTarget?.Dispose();
-        RenderTarget = null;
-        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions);
-    }
-    protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
-
-    private const uint WS_POPUP = 0x80000000;
-    private const uint WS_EX_TOPMOST = 0x00000008;
-    private const uint WS_EX_TOOLWINDOW = 0x00000080;
-
-    private const uint WmMouseMove = 0x0200;
-    private const uint WmLButtonDown = 0x0201;
-    private const uint WmRButtonDown = 0x0204;
-    private const uint WmKeyDown = 0x0100;
-    private const uint WmSetCursor = 0x0020;
-
     private readonly RectInt _desktop;
     private readonly DecodedImage _pixels;
     private readonly Theme _theme;
 
-    private D2DResources? _resources;
     private Ui? _ui;
     private ImageSurface? _snapshot;
     private Point _cursor = new(-1, -1);
@@ -45,7 +26,7 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
     public Rgba? Picked { get; private set; }
 
     private ColorDropper(RectInt desktop, DecodedImage pixels, Theme theme)
-        : base("NexusShot eyedropper", (WINDOW_STYLE)WS_POPUP, (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
+        : base("NexusShot eyedropper", software: false)
     {
         _desktop = desktop;
         _pixels = pixels;
@@ -81,10 +62,9 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
         using var target = renderTarget.AsRenderTarget();
         target.Object.SetDpi(96, 96);
 
-        if (_resources is null)
+        if (_ui is null)
         {
-            _resources = new D2DResources(target);
-            _ui = new Ui(_resources) { Theme = _theme };
+            _ui = new Ui(Resources(target)) { Theme = _theme };
             using var context = target.AsDeviceContext();
             if (context is not null) _snapshot = ImageSurface.Upload(_pixels, context);
         }
@@ -146,8 +126,6 @@ public sealed unsafe class ColorDropper : D2DRenderWindow
         _snapshot?.Dispose();
         _snapshot = null;
         _ui = null;
-        _resources?.Dispose();
-        _resources = null;
     }
 
     protected override void Dispose(bool disposing)

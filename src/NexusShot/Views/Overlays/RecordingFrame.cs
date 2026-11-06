@@ -1,6 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -34,24 +35,13 @@ public sealed class RecordingFrame : IDisposable
     }
 
     /// <summary>Never activates and lets clicks through to what is being recorded.</summary>
-    private sealed class Strip : D2DRenderWindow
+    private sealed class Strip : PopupWindow
     {
-        private const uint WS_POPUP = 0x80000000;
-        private const uint WS_EX_TOPMOST = 0x00000008;
-        private const uint WS_EX_TRANSPARENT = 0x00000020;
-        private const uint WS_EX_TOOLWINDOW = 0x00000080;
-        private const uint WS_EX_NOACTIVATE = 0x08000000;
-        private const uint SWP_NOACTIVATE = 0x0010;
-        private const uint SWP_SHOWWINDOW = 0x0040;
-        private static readonly IntPtr HWND_TOPMOST = new(-1);
-
         private readonly Rgba _color;
-        private D2DResources? _resources;
         private Ui? _ui;
 
         public Strip(RectInt bounds, Rgba color)
-            : base("NexusShot recording outline", (WINDOW_STYLE)WS_POPUP,
-                (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
+            : base("NexusShot recording outline", WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
         {
             _color = color;
             if (!WindowInterop.ExcludeFromCapture(Handle)) return;
@@ -59,32 +49,14 @@ public sealed class RecordingFrame : IDisposable
                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
 
-        protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
-
-        protected override void CreateRenderTarget()
-        {
-            RenderTarget?.Dispose();
-            RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions, software: true);
-        }
-
         protected override void Render(IComObject<ID2D1HwndRenderTarget> renderTarget)
         {
             using var target = renderTarget.AsRenderTarget();
             target.Object.SetDpi(96, 96);
-            _resources ??= new D2DResources(target);
-            _ui ??= new Ui(_resources);
+            _ui ??= new Ui(Resources(target));
             _ui.BeginFrame(target, new Point(-1, -1));
             _ui.FillRect(new Rect(0, 0, ClientRect.Width, ClientRect.Height), _color);
             _ui.EndFrame();
-        }
-
-        protected override void OnDestroyed(object? sender, EventArgs e)
-        {
-            _resources?.Dispose();
-            _resources = null;
-            RenderTarget?.Dispose();
-            RenderTarget = null;
-            base.OnDestroyed(sender, e);
         }
     }
 }

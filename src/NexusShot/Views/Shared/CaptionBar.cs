@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -141,7 +142,7 @@ public abstract partial class CaptionWindow : D2DRenderWindow
         // Close alone gets the red hover, which is the one convention users actually rely on.
         if (CaptionButton(ui, CaptionIdBase + 2, new Rect(x, 0, button, height),
             Icons.CaptionClose, glyph, true))
-            WindowInterop.PostMessageW(Handle, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            WindowInterop.PostMessageW(Handle, WmClose, IntPtr.Zero, IntPtr.Zero);
     }
 
     /// <summary>Defers state changes until the current WM_PAINT has completed. Calling ShowWindow
@@ -256,15 +257,15 @@ public abstract partial class CaptionWindow : D2DRenderWindow
             case WM_NCHITTEST:
                 return OnNcHitTest(lParam);
 
-            case WM_TIMER when (nuint)wParam.Value == RepaintTimerId:
+            case WmTimer when (nuint)wParam.Value == RepaintTimerId:
                 Invalidate();
                 return new LRESULT { Value = 0 };
 
-            case WM_TIMER when (nuint)wParam.Value == RevealTimerId:
+            case WmTimer when (nuint)wParam.Value == RevealTimerId:
                 PollReveal();
                 return new LRESULT { Value = 0 };
 
-            case WM_ACTIVATE:
+            case WmActivate:
                 // The caption glyphs dim with focus, and they are ours to repaint.
                 Invalidate();
                 break;
@@ -353,13 +354,10 @@ public abstract partial class CaptionWindow : D2DRenderWindow
     }
 
     private const uint WM_ERASEBKGND = 0x0014;
-    private const uint WM_TIMER = 0x0113;
-    private const uint WM_ACTIVATE = 0x0006;
     private const uint WM_NCCALCSIZE = 0x0083;
     private const uint WM_NCHITTEST = 0x0084;
     private const uint WM_DPICHANGED = 0x02E0;
     private const uint WM_SYSCOMMAND = 0x0112;
-    private const uint WM_CLOSE = 0x0010;
 
     private const int HTCLIENT = 1;
     private const int HTCAPTION = 2;
@@ -379,9 +377,6 @@ public abstract partial class CaptionWindow : D2DRenderWindow
     private const int SC_MAXIMIZE = 0xF030;
     private const int SC_RESTORE = 0xF120;
 
-    private const uint SWP_NOSIZE = 0x0001;
-    private const uint SWP_NOMOVE = 0x0002;
-    private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_FRAMECHANGED = 0x0020;
 
     [StructLayout(LayoutKind.Sequential)]

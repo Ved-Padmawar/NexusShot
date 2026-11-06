@@ -1,7 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
-using static NexusShot.Views.MouseMessage;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -22,27 +22,8 @@ public sealed record PickedRecording(RectInt Region, RecordingFormat Format) : P
 /// in the capture. The snapshot is taken before the window appears, so what the user selects is
 /// exactly what they get. What the input means is <see cref="RegionPicker"/>'s to decide.
 /// </summary>
-public sealed partial class RegionOverlay : D2DRenderWindow
+public sealed partial class RegionOverlay : PopupWindow
 {
-    protected override void CreateRenderTarget()
-    {
-        RenderTarget?.Dispose();
-        RenderTarget = null;
-        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions,
-            software: true);
-    }
-    protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
-    private const uint WS_POPUP = 0x80000000;
-    private const uint WS_EX_TOPMOST = 0x00000008;
-    private const uint WS_EX_TOOLWINDOW = 0x00000080;
-
-    private const uint WmMouseMove = 0x0200;
-    private const uint WmLButtonDown = 0x0201;
-    private const uint WmLButtonUp = 0x0202;
-    private const uint WmRButtonDown = 0x0204;
-    private const uint WmKeyDown = 0x0100;
-    private const uint WmSetCursor = 0x0020;
-
     private static readonly Rgba Dim = Rgba.Black.WithAlpha(110);
 
     /// <summary>A hovered window in a mode that also drags: lit a little, a hint rather than a choice.</summary>
@@ -76,7 +57,6 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     private readonly Rect _home;
     private readonly double _scale;
 
-    private D2DResources? _resources;
     private Ui? _ui;
     private ImageSurface? _snapshot;
 
@@ -93,9 +73,7 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     private readonly Theme _theme;
 
     private RegionOverlay(RectInt desktop, DecodedImage snapshotPixels, Theme theme, RegionPicker picker, bool showLoupe)
-        : base("NexusShot region",
-            (WINDOW_STYLE)WS_POPUP,
-            (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
+        : base("NexusShot region")
     {
         _desktop = desktop;
         _snapshotPixels = snapshotPixels;
@@ -173,10 +151,9 @@ public sealed partial class RegionOverlay : D2DRenderWindow
         using var target = renderTarget.AsRenderTarget();
         target.Object.SetDpi(96, 96);
 
-        if (_resources is null)
+        if (_ui is null)
         {
-            _resources = new D2DResources(target);
-            _ui = new Ui(_resources) { Theme = _theme, Scale = _scale };
+            _ui = new Ui(Resources(target)) { Theme = _theme, Scale = _scale };
             using var context = target.AsDeviceContext();
             if (context is not null) _snapshot = ImageSurface.Upload(_snapshotPixels, context);
         }
@@ -433,15 +410,12 @@ public sealed partial class RegionOverlay : D2DRenderWindow
     private void ReleaseResources()
     {
         _snapshot?.Dispose();
-        _ui = null;
-        _resources?.Dispose();
         _snapshot = null;
-        _resources = null;
+        _ui = null;
     }
 
     protected override void Dispose(bool disposing)
     {
-        // Idempotent: OnDestroyed already ran if the window closed normally.
         ReleaseResources();
         base.Dispose(disposing);
     }

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using NexusShot.Platform;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -26,7 +27,7 @@ internal static partial class ModalLoop
         {
             // The claimed Esc arrives as the key-down each picker already cancels on.
             if (message.message == Hotkeys.WM_HOTKEY && message.wParam == Hotkeys.EscapeId)
-                (message.message, message.wParam) = (WM_KEYDOWN, (nint)VIRTUAL_KEY.VK_ESCAPE);
+                (message.message, message.wParam) = (WmKeyDown, (nint)VIRTUAL_KEY.VK_ESCAPE);
             TranslateMessage(ref message);
             DispatchMessageW(ref message);
         }
@@ -34,8 +35,6 @@ internal static partial class ModalLoop
         // WM_QUIT ignores the filter (a tray Exit): re-post it for the main loop. -1 is an error, not a quit.
         if (result == 0) PostQuitMessage(0);
     }
-
-    private const uint WM_KEYDOWN = 0x0100;
 
     [LibraryImport("user32.dll", EntryPoint = "GetMessageW", SetLastError = true)]
     private static partial int GetMessageW(out MSG message, IntPtr window, uint min, uint max);

@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
-using static NexusShot.Views.MouseMessage;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -10,28 +10,8 @@ namespace NexusShot.Views;
 /// Recently closed captures across the top of the screen; clicking one restores its card. Unlike a
 /// card it takes focus, because Esc and clicking elsewhere are how it goes away.
 /// </summary>
-public sealed partial class RestoreStrip : D2DRenderWindow
+public sealed partial class RestoreStrip : PopupWindow
 {
-    protected override void CreateRenderTarget()
-    {
-        RenderTarget?.Dispose();
-        RenderTarget = null;
-        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions, software: true, translucent: true);
-    }
-
-    protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
-
-    private const uint WS_POPUP = 0x80000000;
-    private const uint WS_EX_TOPMOST = 0x00000008;
-    private const uint WS_EX_TOOLWINDOW = 0x00000080;
-
-    private const uint WmActivate = 0x0006;
-    private const uint WmKeyDown = 0x0100;
-    private const uint WmMouseMove = 0x0200;
-    private const uint WmLButtonDown = 0x0201;
-    private const uint WmLButtonUp = 0x0202;
-    private const uint WmCaptureChanged = 0x0215;
-    private const uint WmMouseLeave = 0x02A3;
     private const int VkEscape = 0x1B;
 
     private const double EdgeMargin = 12;
@@ -39,7 +19,6 @@ public sealed partial class RestoreStrip : D2DRenderWindow
     private readonly QuickAccess _stack;
     private readonly UiThreadDispatch _dispatch;
 
-    private D2DResources? _resources;
     private Ui? _ui;
     private double _scale = 1;
     private double S(double units) => units * _scale;
@@ -59,9 +38,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
     public event Action? Dismissed;
 
     public RestoreStrip(QuickAccess stack)
-        : base("NexusShot recently closed",
-            (WINDOW_STYLE)WS_POPUP,
-            (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
+        : base("NexusShot recently closed", translucent: true)
     {
         _stack = stack;
         // Not in OnCreated: the message loop raises that after the thumbnail worker may post.
@@ -142,8 +119,7 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         using var target = renderTarget.AsRenderTarget();
         target.Object.SetDpi(96, 96);
 
-        _resources ??= new D2DResources(target);
-        _ui ??= new Ui(_resources);
+        _ui ??= new Ui(Resources(target));
         _ui.Theme = SystemTheme.Resolve(AppTheme.Dark, _stack.Settings.Accent);
         _ui.Scale = _scale;
         var ui = _ui;
@@ -295,7 +271,6 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         return base.WindowProc(hwnd, msg, wParam, lParam);
     }
 
-
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
         _dispatch.Clear();
@@ -303,17 +278,10 @@ public sealed partial class RestoreStrip : D2DRenderWindow
         foreach (var pixels in _decoded.Values) pixels.Dispose();
         _thumbnails.Clear();
         _decoded.Clear();
-        _resources?.Dispose();
-        _resources = null;
 
-        RenderTarget?.Dispose();
-        RenderTarget = null;
         base.OnDestroyed(sender, e);
         Dismissed?.Invoke();
     }
-
-    private static readonly IntPtr HWND_TOPMOST = new(-1);
-    private const uint SWP_SHOWWINDOW = 0x0040;
 
     private const int DWMSBT_TRANSIENTWINDOW = 3;
 }

@@ -63,7 +63,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#PublishDir}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Registry]
-; "Open with" for the image types the editor reads (Core/ImageFiles.cs). An Applications entry
+; "Open with" for the image types the editor reads (Core/Capture/ImageFiles.cs). An Applications entry
 ; offers NexusShot without taking over any type's default app.
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{#AppName}"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Applications\{#AppExeName}\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExeName}"" ""%1"""

@@ -1,7 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
-using static NexusShot.Views.MouseMessage;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -12,24 +12,12 @@ namespace NexusShot.Views;
 /// </summary>
 public sealed partial class MainWindow : CaptionWindow
 {
-    private const uint WmMouseMove = 0x0200;
-    private const uint WmLButtonDown = 0x0201;
-    private const uint WmLButtonUp = 0x0202;
-    private const uint WmCaptureChanged = 0x0215;
-    private const uint WmKeyDown = 0x0100;
-    private const uint WmSysKeyDown = 0x0104;
-    private const uint WmSysChar = 0x0106;
-    private const uint WmChar = 0x0102;
-    private const uint WmMouseWheel = 0x020A;
 
     /// <summary>One wheel notch. Touchpads report fractions of it, scrolled as they arrive -
     /// quantizing them to notches makes a smooth drag land as jumps.</summary>
     private const double WheelDelta = 120;
-    private const uint WmTimer = 0x0113;
     private const uint WmPowerBroadcast = 0x0218;
     private const ulong PbtApmResumeAutomatic = 0x12;
-    private const uint WmClose = 0x0010;
-    private const uint WmSetCursor = 0x0020;
     private const long HtClient = 1;
 
     private readonly Storage _storage;

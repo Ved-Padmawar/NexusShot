@@ -1,6 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -15,19 +16,6 @@ public sealed partial class EditorWindow
     // Input mutates the document and invalidates. There is no per-event render and no buffering of
     // samples: WM_PAINT is already coalesced to the display rate, so a burst of pointer messages
     // collapses into one frame on its own.
-
-    private const uint WmMouseMove = 0x0200;
-    private const uint WmLButtonDown = 0x0201;
-    private const uint WmLButtonUp = 0x0202;
-    private const uint WmMouseWheel = 0x020A;
-    private const uint WmMouseHWheel = 0x020E;
-    private const uint WmKeyDown = 0x0100;
-    private const uint WmChar = 0x0102;
-    private const uint WmSetCursor = 0x0020;
-    private const uint WmCaptureChanged = 0x0215;
-    private const uint WmKeyUp = 0x0101;
-    private const uint WmMButtonDown = 0x0207;
-    private const uint WmMButtonUp = 0x0208;
 
     /// <summary>One wheel notch; touchpads send fractions of it, applied as they arrive.</summary>
     private const double WheelDelta = 120;
@@ -46,7 +34,7 @@ public sealed partial class EditorWindow
 
     protected override LRESULT? WindowProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam)
     {
-        if (msg == 0x0010 && !RequestClose()) return Handled; // WM_CLOSE
+        if (msg == 0x0010 && !RequestClose()) return Handled; // WmClose
         // Repaints and caption messages remain responsive; editing waits for the save result.
         if ((_fileBusy || _confirmingClose)
             && msg is WmLButtonDown or WmLButtonUp or WmMButtonDown or WmMouseMove or WmKeyDown or WmChar or WmMouseWheel)
@@ -705,7 +693,6 @@ public sealed partial class EditorWindow
         var pointer = PointerNow() ?? _clientPointer;
         if (InCanvas(pointer)) SetToolCursor(pointer);
     }
-
 
     private static bool KeyDown(VIRTUAL_KEY key) => (Functions.GetKeyState((int)key) & 0x8000) != 0;
 

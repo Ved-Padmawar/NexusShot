@@ -1,6 +1,7 @@
 using NexusShot.Core;
 using NexusShot.Platform;
 using NexusShot.Render;
+using static NexusShot.Views.Win32Window;
 
 namespace NexusShot.Views;
 
@@ -8,29 +9,12 @@ namespace NexusShot.Views;
 /// The timed-capture countdown. Never activates and lets clicks through: activating would close
 /// the menu or tooltip the timer exists to capture.
 /// </summary>
-public sealed partial class CountdownBadge : D2DRenderWindow
+public sealed partial class CountdownBadge : PopupWindow
 {
-    protected override void CreateRenderTarget()
-    {
-        RenderTarget?.Dispose();
-        RenderTarget = null;
-        RenderTarget = GraphicsBackend.CreateWindowTarget(Handle, ClientRect.Size.ToD2D_SIZE_U(), FactoryType, FactoryOptions, software: true);
-    }
-
-    protected override DirectN.Extensions.Utilities.Icon? LoadCreationIcon() => null;
-
-    private const uint WS_POPUP = 0x80000000;
-    private const uint WS_EX_TOPMOST = 0x00000008;
-    private const uint WS_EX_TRANSPARENT = 0x00000020;
-    private const uint WS_EX_TOOLWINDOW = 0x00000080;
-    private const uint WS_EX_NOACTIVATE = 0x08000000;
-
-    private const uint WmTimer = 0x0113;
     private const nuint TickTimerId = 1;
 
     private int _remaining;
     private bool _cancelled;
-    private D2DResources? _resources;
     private Ui? _ui;
     private double _scale = 1;
 
@@ -39,9 +23,7 @@ public sealed partial class CountdownBadge : D2DRenderWindow
     public event Action? Dismissed;
 
     public CountdownBadge(int seconds)
-        : base("NexusShot timer",
-            (WINDOW_STYLE)WS_POPUP,
-            (WINDOW_EX_STYLE)(WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
+        : base("NexusShot timer", WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
     {
         _remaining = seconds;
     }
@@ -73,8 +55,7 @@ public sealed partial class CountdownBadge : D2DRenderWindow
         using var target = renderTarget.AsRenderTarget();
         target.Object.SetDpi(96, 96);
 
-        _resources ??= new D2DResources(target);
-        _ui ??= new Ui(_resources) { Theme = Theme.Dark };
+        _ui ??= new Ui(Resources(target)) { Theme = Theme.Dark };
 
         var client = ClientRect;
         var bounds = new Rect(0, 0, client.Width, client.Height);
@@ -111,21 +92,10 @@ public sealed partial class CountdownBadge : D2DRenderWindow
     protected override void OnDestroyed(object? sender, EventArgs e)
     {
         WindowInterop.KillTimer(Handle, TickTimerId);
-        _resources?.Dispose();
-        _resources = null;
-        RenderTarget?.Dispose();
-        RenderTarget = null;
         base.OnDestroyed(sender, e);
 
         Dismissed?.Invoke();
         if (!_cancelled && _remaining <= 0) Elapsed?.Invoke();
     }
 
-    private static readonly IntPtr HWND_TOPMOST = new(-1);
-    private const uint SWP_NOSIZE = 0x0001;
-    private const uint SWP_NOMOVE = 0x0002;
-    private const uint SWP_NOZORDER = 0x0004;
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private const uint SWP_SHOWWINDOW = 0x0040;
-    private const uint SWP_HIDEWINDOW = 0x0080;
 }
